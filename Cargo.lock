@@ -993,7 +993,7 @@ version = "0.2.0-dev.14"
 dependencies = [
  "anyhow",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "clap",
  "dalker-core",
  "dalker-mcp",
@@ -1033,7 +1033,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "dalker-core",
  "image",
  "rand 0.10.3",
