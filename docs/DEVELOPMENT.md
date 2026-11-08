@@ -131,11 +131,13 @@ pwsh packaging/windows/build-msi.ps1                            # -> dist/Dalker
 
 ### CI and releases
 
-Every push to `main` and every pull request is built, linted (clippy) and tested on Windows and
-Ubuntu by [`ci.yml`](.github/workflows/ci.yml). The version is set once, in `[workspace.package]`
+Every push to `main` and `develop` and every pull request is checked for formatting (rustfmt), built,
+linted (clippy) and tested on Windows and Ubuntu by [`ci.yml`](../.github/workflows/ci.yml), and
+[`pr-rules.yml`](../.github/workflows/pr-rules.yml) checks each pull request against the rules in
+[CONTRIBUTING.md](../CONTRIBUTING.md). The version is set once, in `[workspace.package]`
 of `Cargo.toml`; the crates, the `.deb`, the MSI and the web client (connection details → Version) all
 take it from there. Pushing a `vX.Y.Z` tag builds both installers and publishes a GitHub Release
-([`release.yml`](.github/workflows/release.yml)). See [RELEASING.md](RELEASING.md).
+([`release.yml`](../.github/workflows/release.yml)). See [RELEASING.md](../RELEASING.md).
 
 ## How the host runs
 
@@ -413,14 +415,5 @@ followed by up to 60 KiB of data. See `crates/dalker-webrtc/src/files.rs`.
 
 ## Contributing
 
-Contributions are welcome!
-
-1. Open an issue to discuss larger changes before you start.
-2. Fork, create a feature branch, and keep commits focused.
-3. Run `cargo fmt --all`, `cargo clippy --workspace` and `cargo test --workspace` before opening a
-   pull request.
-4. Describe what changed and how you tested it (which host OS and session type).
-
-Dalker is licensed under AGPL-3.0-only, with a commercial license offered by the copyright
-holder. Every pull request must be covered by the [Contributor Agreement (copyright assignment)](../CLA.md); the
-full rules are in [CONTRIBUTING.md](../CONTRIBUTING.md).
+Branches, commit messages, pull requests, the checks they must pass and the
+[Contributor Agreement](../CLA.md) are described in [CONTRIBUTING.md](../CONTRIBUTING.md).
