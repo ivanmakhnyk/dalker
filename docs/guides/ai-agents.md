@@ -93,7 +93,9 @@ In **AI Agents (MCP)** each token has its own row:
 - **Revoke** it: assistants using it are disconnected at once and it can't be used again.
 
 To stop all assistants at once, switch off **Enable MCP server**. Assistants that stay idle for 10
-minutes are disconnected automatically.
+minutes are disconnected automatically, and an assistant that quits or crashes is disconnected
+within seconds (the red border goes off). When the host already has as many assistants or viewers
+as it allows, a new assistant can't connect and is told why.
 
 People signed in to the web client can manage tokens too, from the **AI agents** button in the
 toolbar (shown while the MCP server is on). Only the host's Dalker Settings can turn the server on

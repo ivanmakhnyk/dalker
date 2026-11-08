@@ -1035,6 +1035,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "dalker-core",
+ "http-body",
  "image",
  "rand 0.10.3",
  "reqwest",
