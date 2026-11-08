@@ -48,7 +48,7 @@ webrtc = "0.17"
 openh264 = "0.9"
 
 # Platform
-x11rb = { version = "0.13", features = ["shm", "shape"] }
+x11rb = { version = "0.14", features = ["shm", "shape"] }
 libc = "0.2"
 evdev = "0.13"
 zbus = "5"
