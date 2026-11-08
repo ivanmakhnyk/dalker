@@ -17,11 +17,16 @@ env:
 
 jobs:
   check:
-    name: ${{ matrix.os }}
+    # Fixed names, because required checks are matched by name.
+    name: ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - name: Linux
+            os: ubuntu-latest
+          - name: Windows
+            os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
