@@ -980,6 +980,11 @@ fn spawn_input_thread(
                             apply(&mut injector, &ev);
                         }
                     }
+                    // Some keyboards (IME, dead keys, some mobile keyboards) send key events
+                    // with no physical code: nothing to press, so drop them quietly.
+                    ControlMessage::Input(InputEvent::Key { code, .. }) if code.is_empty() => {
+                        tracing::debug!("ignoring key event without a code");
+                    }
                     ControlMessage::Input(ev) => {
                         tracker.observe(&ev);
                         apply(&mut injector, &ev);
