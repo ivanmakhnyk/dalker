@@ -33,7 +33,7 @@ use dalker_core::{
 use dalker_mcp::tokens::{self, TokenRecord};
 use dalker_mcp::{HostCommand, McpServer};
 use dalker_web::{Authenticator, BoxFuture, Credentials, SignalingHandler};
-use dalker_webrtc::{ClipboardState, ControlMessage, SessionId, WebRtcConfig, WebRtcEngine};
+use dalker_webrtc::{ClipboardState, ControlMessage, EndReason, SessionId, WebRtcConfig, WebRtcEngine};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use cli::{CaptureMode, Cli, Command, McpTokenCommand, OnOff};
@@ -397,7 +397,8 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
         clipboard: clipboard_rx,
         control: control_tx,
         active,
-        sign_out: watch::channel(0).0,
+        sign_out: watch::channel(None).0,
+        streams: Arc::new(AtomicUsize::new(0)),
         max_sessions: cli.max_sessions,
         info: serde_json::json!({
             "hostname": hostname(),
@@ -478,7 +479,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
     {
         let signaling = Arc::clone(&signaling);
         tokio::spawn(follow_password_changes(cli::config_path(), Arc::clone(&auth), move || {
-            signaling.sign_out.send_modify(|n| *n += 1)
+            signaling.end_streams(EndReason::PasswordChanged)
         }));
     }
 
@@ -503,7 +504,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
         signaling: Arc::clone(&signaling) as Arc<dyn SignalingHandler>,
         sign_out: {
             let signaling = Arc::clone(&signaling);
-            Box::new(move || signaling.sign_out.send_modify(|n| *n += 1))
+            Box::new(move |reason| signaling.end_streams(reason))
         },
     };
     let mcp = listeners::McpParts { server: mcp, allow_plaintext: cli.mcp_allow_plaintext };
@@ -514,6 +515,12 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
         _ = exit.notified() => {}
     }
     tracing::info!("shutting down");
+    // Tell the viewers the host is going away, and give the message a moment to leave.
+    signaling.end_streams(EndReason::HostShutdown);
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    while signaling.streams.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let _ = stop_tx.send(true);
     let _ = supervisor.await;
     Ok(())
@@ -823,8 +830,11 @@ struct Agent {
     clipboard: watch::Receiver<ClipboardState>,
     control: mpsc::UnboundedSender<(SessionId, ControlMessage)>,
     active: Arc<AtomicUsize>,
-    /// Bumped when the password changes on the host: every running stream is closed.
-    sign_out: watch::Sender<u64>,
+    /// Set when the host ends every running stream (password changed, web access turned off,
+    /// shutdown): each stream tells its viewer the reason and closes.
+    sign_out: watch::Sender<Option<EndReason>>,
+    /// WebRTC streams still running (unlike `active`, without MCP sessions).
+    streams: Arc<AtomicUsize>,
     max_sessions: usize,
     info: serde_json::Value,
     /// False while the border can't be shown (capture is off then).
@@ -832,6 +842,13 @@ struct Agent {
     input_available: bool,
     clipboard_requests: std::sync::mpsc::Sender<ClipboardRequest>,
     next_mcp_id: AtomicU64,
+}
+
+impl Agent {
+    /// Ends every running WebRTC stream, telling each viewer why.
+    fn end_streams(&self, reason: EndReason) {
+        self.sign_out.send_replace(Some(reason));
+    }
 }
 
 impl SignalingHandler for Agent {
@@ -848,19 +865,23 @@ impl SignalingHandler for Agent {
         let frames = self.frames.subscribe();
         let clipboard = self.clipboard.clone();
         let mut sign_out = self.sign_out.subscribe();
+        let streams = Arc::clone(&self.streams);
         let control = self.control.clone();
         let engine = Arc::clone(&self.engine);
         Box::pin(async move {
             match engine.accept_offer(offer_sdp, frames, clipboard, control).await {
                 Ok((answer, mut session)) => {
+                    streams.fetch_add(1, Ordering::SeqCst);
                     tokio::spawn(async move {
                         tokio::select! {
                             _ = session.wait_closed() => {}
-                            _ = sign_out.changed() => {
-                                tracing::info!(session = session.id, "password changed on the host; closing the stream");
-                                session.close().await;
+                            Ok(()) = sign_out.changed() => {
+                                let reason = sign_out.borrow_and_update().unwrap_or(EndReason::HostShutdown);
+                                tracing::info!(session = session.id, reason = reason.as_str(), "the host ends the stream");
+                                session.end(reason).await;
                             }
                         }
+                        streams.fetch_sub(1, Ordering::SeqCst);
                         let n = active.fetch_sub(1, Ordering::SeqCst) - 1;
                         tracing::info!(session = session.id, remaining = n, "viewer left");
                     });

@@ -88,7 +88,7 @@ pub struct WebParts {
     pub auth: Arc<Authenticator>,
     pub signaling: Arc<dyn SignalingHandler>,
     /// Called when the web server is turned off: ends the viewers' streams.
-    pub sign_out: Box<dyn Fn() + Send + Sync>,
+    pub sign_out: Box<dyn Fn(dalker_webrtc::EndReason) + Send + Sync>,
 }
 
 /// What the MCP listener serves.
@@ -177,7 +177,7 @@ async fn reconcile_web(slot: &mut Slot, want: Option<SocketAddr>, parts: &WebPar
     let Some(addr) = want else {
         if was_running {
             tracing::info!("web server turned off on the host; viewers disconnected");
-            (parts.sign_out)();
+            (parts.sign_out)(dalker_webrtc::EndReason::WebOff);
         }
         slot.last_error = None;
         return;
