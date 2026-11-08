@@ -189,7 +189,8 @@ It runs as the systemd service `dalker`, starts at boot and restarts on failure.
 - The GNOME lock screen is streamed and can be unlocked from the viewer: the border extension lifts
   GNOME's "no screen cast while locked" rule only while a Dalker viewer is connected.
 - The red border is cropped out of the stream, so the outer 5 pixels of the screen are not visible
-  in the viewer.
+  in the viewer. The pointer still reaches the screen's edges: the outermost 5 pixels of the
+  picture stretch across the border.
 - **No border, no desktop.** If the extension isn't loaded the agent serves nothing and says why in
   `journalctl -u dalker`.
 - Change web access, the password and the MCP server with **Dalker Settings** in the app grid

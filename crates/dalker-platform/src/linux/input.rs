@@ -313,15 +313,35 @@ fn us_key(c: char) -> Option<(&'static str, bool)> {
 }
 
 /// Device position for a normalized point on the streamed screen. On GNOME the stream
-/// is the primary monitor minus the red border, so the border strip is skipped too.
+/// is the primary monitor minus the red border, so the picture maps onto the area inside
+/// the border, and the outermost pixels of the picture reach out to the screen edge.
 fn map_point(p: NormPoint, display: DisplayInfo, layout: Option<MonitorLayout>) -> (i32, i32) {
     match layout {
         Some(l) => {
             let inset = gnome::BORDER_INSET.min(l.width / 2).min(l.height / 2);
             let (x, y) = p.to_pixels(l.width - 2 * inset, l.height - 2 * inset);
-            ((l.x + inset) as i32 + x, (l.y + inset) as i32 + y)
+            (l.x as i32 + across_border(x, l.width, inset), l.y as i32 + across_border(y, l.height, inset))
         }
         None => p.to_pixels(display.width, display.height),
+    }
+}
+
+/// Offset on a monitor `size` pixels long for pixel `s` of a picture cropped by `inset` on
+/// both sides. Inside, a picture pixel is the screen pixel under it. In the outermost `inset`
+/// pixels at each end the mapping stretches across the border, so the edge of the picture is
+/// the edge of the screen (GNOME's hot corner, edge-docked panels) and every step still moves.
+fn across_border(s: i32, size: u32, inset: u32) -> i32 {
+    let (size, inset) = (size as i32, inset as i32);
+    let last = size - 2 * inset - 1; // last pixel of the picture
+    if inset == 0 || last < 2 * inset {
+        return s + inset;
+    }
+    if s < inset {
+        2 * s
+    } else if s > last - inset {
+        size - 1 - 2 * (last - s)
+    } else {
+        s + inset
     }
 }
 
@@ -418,18 +438,33 @@ mod tests {
     }
 
     #[test]
+    fn picture_edges_stretch_across_the_border() {
+        // 1280 px monitor, 5 px border: the picture is 1270 px wide (pixels 0..=1269).
+        let m: Vec<i32> = (0..1270).map(|s| across_border(s, 1280, 5)).collect();
+        assert_eq!(&m[..7], &[0, 2, 4, 6, 8, 10, 11]);
+        assert_eq!(&m[1263..], &[1268, 1269, 1271, 1273, 1275, 1277, 1279]);
+        assert!(m.windows(2).all(|w| w[1] > w[0]), "every picture pixel moves the pointer");
+        // No border: unchanged.
+        assert_eq!(across_border(0, 1280, 0), 0);
+        assert_eq!(across_border(1279, 1280, 0), 1279);
+    }
+
+    #[test]
     fn points_map_onto_the_primary_monitor_of_the_desktop() {
         let display = DisplayInfo { width: 1280, height: 800 };
         // Two monitors side by side, the streamed (primary) one on the left.
         let left = MonitorLayout { x: 0, y: 0, width: 1280, height: 800, desktop_width: 2560, desktop_height: 800 };
         assert_eq!(map_point(NormPoint::new(0.5, 0.5), display, Some(left)), (640, 400));
-        // The stream's edges are just inside the 5 px red border, which is not streamed.
-        assert_eq!(map_point(NormPoint::new(0.0, 0.0), display, Some(left)), (5, 5));
-        assert_eq!(map_point(NormPoint::new(1.0, 1.0), display, Some(left)), (1274, 794));
+        // The 5 px red border is not streamed, but the picture's edges still reach the
+        // screen's edges (GNOME's hot corner).
+        assert_eq!(map_point(NormPoint::new(0.0, 0.0), display, Some(left)), (0, 0));
+        assert_eq!(map_point(NormPoint::new(1.0, 1.0), display, Some(left)), (1279, 799));
+        // Away from the edges a picture pixel is the screen pixel under it.
+        assert_eq!(map_point(NormPoint::new(20.0 / 1269.0, 0.0), display, Some(left)).0, 25);
         // ...and on the right, lower than a taller neighbour.
         let right = MonitorLayout { x: 1920, y: 100, width: 1280, height: 800, desktop_width: 3200, desktop_height: 1200 };
-        assert_eq!(map_point(NormPoint::new(0.0, 0.0), display, Some(right)), (1925, 105));
-        assert_eq!(map_point(NormPoint::new(1.0, 1.0), display, Some(right)), (3194, 894));
+        assert_eq!(map_point(NormPoint::new(0.0, 0.0), display, Some(right)), (1920, 100));
+        assert_eq!(map_point(NormPoint::new(1.0, 1.0), display, Some(right)), (3199, 899));
         // Scaled monitor: the stream is in physical pixels, the layout in logical ones.
         let hidpi = MonitorLayout { x: 0, y: 0, width: 1280, height: 720, desktop_width: 1280, desktop_height: 720 };
         let big = DisplayInfo { width: 2560, height: 1440 };
