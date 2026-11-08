@@ -3,7 +3,8 @@
 //! The 2026-07-28 MCP protocol has no sessions, and older clients open a new one on every
 //! reconnect, so the desktop session belongs to the *token*: every request with the same token
 //! shares it. It starts with the first tool call, counts as a viewer (the border goes on), and
-//! ends when it is idle too long, its token is revoked or expires, or the person at the host
+//! ends when it is idle too long, the agent goes away (its connection closes, or it has no
+//! request open for a while), its token is revoked or expires, or the person at the host
 //! disconnects AI agents. Ending it releases every key and button it held.
 
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -895,6 +895,16 @@ impl dalker_mcp::DesktopHandle for Agent {
         self.input_available
     }
 
+    fn check_viewer_slot(&self) -> Result<(), String> {
+        if self.active.load(Ordering::SeqCst) >= self.max_sessions {
+            return Err(format!(
+                "too many viewers connected (max {})",
+                self.max_sessions
+            ));
+        }
+        Ok(())
+    }
+
     fn open_viewer(&self) -> Result<u64, String> {
         // Shares the viewer limit (and the border) with WebRTC viewers.
         self.active

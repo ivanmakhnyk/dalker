@@ -10,8 +10,12 @@ use dalker_core::input::MAX_TEXT_CHARS;
 use dalker_core::{InputEvent, MouseButton, MAX_CLIPBOARD_BYTES};
 use rmcp::handler::server::tool::{Extension, ToolRouter};
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
-use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler};
+use rmcp::model::{
+    CallToolResult, ContentBlock, ErrorCode, Implementation, InitializeRequestParams,
+    InitializeResult, ServerCapabilities, ServerConfig,
+};
+use rmcp::service::RequestContext;
+use rmcp::{tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -884,6 +888,25 @@ impl ServerHandler for DalkerTools {
                 Implementation::new("dalker", env!("CARGO_PKG_VERSION")).with_title("Dalker"),
             )
             .with_instructions(INSTRUCTIONS)
+    }
+
+    /// Refused when the agent could not start a session now, so the client fails fast instead
+    /// of connecting and then failing every tool call.
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        let parts = context
+            .extensions
+            .get::<Parts>()
+            .ok_or_else(|| ErrorData::internal_error("unauthenticated request", None))?;
+        if let Err(why) = self.shared.admit(&identity(parts)?) {
+            tracing::info!("AI agent refused: {why}");
+            return Err(ErrorData::new(ErrorCode::INVALID_REQUEST, why, None));
+        }
+        context.peer.set_peer_info(request.clone());
+        self.negotiate_initialize(&request)
     }
 }
 

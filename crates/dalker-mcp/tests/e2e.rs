@@ -128,12 +128,12 @@ struct Host {
 }
 
 async fn start(tokens: Vec<tokens::TokenRecord>) -> Host {
+    start_with(tokens, McpConfig::default()).await
+}
+
+async fn start_with(tokens: Vec<tokens::TokenRecord>, config: McpConfig) -> Host {
     let (desktop, injector) = MockDesktop::start();
-    let server = McpServer::new(
-        desktop.clone(),
-        Arc::new(TokenStore::new(tokens)),
-        McpConfig::default(),
-    );
+    let server = McpServer::new(desktop.clone(), Arc::new(TokenStore::new(tokens)), config);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/mcp", listener.local_addr().unwrap());
     let s = server.clone();
@@ -485,9 +485,23 @@ async fn revoking_a_token_ends_its_session() {
         .set_tokens(vec![host.server.tokens().records()[0].clone(), third]);
     let a = connect(&host.url, &other_secret).await;
     assert!(ok(&call(&a, "get_host_info", serde_json::json!({})).await));
-    let b = connect(&host.url, &third_secret).await;
-    let r = call(&b, "get_host_info", serde_json::json!({})).await;
-    assert!(!ok(&r) && text(&r).contains("too many"), "{r:?}");
+    // A full host refuses the handshake itself, so the client fails fast.
+    let transport = StreamableHttpClientTransport::from_config(
+        StreamableHttpClientTransportConfig::with_uri(host.url.clone()).auth_header(&third_secret),
+    );
+    let Err(refused) = ().serve(transport).await else {
+        panic!("refused when full")
+    };
+    assert!(
+        refused.to_string().contains("too many AI agents"),
+        "{refused}"
+    );
+    // The token that has the slot can still reconnect.
+    let again = connect(&host.url, &other_secret).await;
+    assert!(ok(
+        &call(&again, "get_host_info", serde_json::json!({})).await
+    ));
+    let _ = again.cancel().await;
 
     // Blocked from the host: sessions end and calls are refused until allowed again.
     host.server.set_blocked(true);
@@ -500,7 +514,6 @@ async fn revoking_a_token_ends_its_session() {
     host.server.set_blocked(false);
     assert!(ok(&call(&a, "get_host_info", serde_json::json!({})).await));
     let _ = a.cancel().await;
-    let _ = b.cancel().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -554,4 +567,157 @@ async fn http_requests_need_a_token_and_no_origin() {
         403
     );
     assert_eq!(post(Some(format!("Bearer {secret}")), None).await, 200);
+}
+
+/// A hand-driven Streamable HTTP client, to leave the way a crashed or killed agent does.
+struct RawClient {
+    http: reqwest::Client,
+    url: String,
+    auth: String,
+    session: Option<String>,
+}
+
+impl RawClient {
+    fn new(url: &str, secret: &str) -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            url: url.to_owned(),
+            auth: format!("Bearer {secret}"),
+            session: None,
+        }
+    }
+
+    fn request(&self, method: reqwest::Method) -> reqwest::RequestBuilder {
+        let mut req = self
+            .http
+            .request(method, &self.url)
+            .header("authorization", &self.auth)
+            .header("accept", "application/json, text/event-stream");
+        if let Some(id) = &self.session {
+            req = req
+                .header("mcp-session-id", id)
+                .header("mcp-protocol-version", "2025-06-18");
+        }
+        req
+    }
+
+    async fn post(&self, body: serde_json::Value) -> String {
+        let resp = self
+            .request(reqwest::Method::POST)
+            .header("content-type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success(), "{}", resp.status());
+        resp.text().await.unwrap()
+    }
+
+    async fn initialize(&mut self) {
+        let resp = self
+            .request(reqwest::Method::POST)
+            .header("content-type", "application/json")
+            .body(
+                serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                    "protocolVersion": "2025-06-18", "capabilities": {},
+                    "clientInfo": {"name": "raw", "version": "1"}}})
+                .to_string(),
+            )
+            .send()
+            .await
+            .unwrap();
+        self.session = resp
+            .headers()
+            .get("mcp-session-id")
+            .map(|v| v.to_str().unwrap().to_owned());
+        assert!(self.session.is_some(), "stateful session");
+        resp.text().await.unwrap();
+        self.post(serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+            .await;
+    }
+
+    /// Opens the event stream for server messages and keeps it open.
+    async fn open_stream(&self) -> reqwest::Response {
+        let resp = self.request(reqwest::Method::GET).send().await.unwrap();
+        assert!(resp.status().is_success(), "{}", resp.status());
+        resp
+    }
+
+    async fn host_info(&self) -> String {
+        self.post(
+            serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "get_host_info", "arguments": {}}}),
+        )
+        .await
+    }
+}
+
+async fn wait_until(what: &str, limit: Duration, mut done: impl FnMut() -> bool) -> Duration {
+    let t0 = std::time::Instant::now();
+    while !done() {
+        assert!(t0.elapsed() < limit, "{what}: not within {limit:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    t0.elapsed()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_goes_away_gives_its_slot_back() {
+    let (secret, rec) = token("crashy", "view");
+    let host = start_with(
+        vec![rec],
+        McpConfig {
+            detached_timeout: Duration::from_secs(3),
+            reconnect_grace: Duration::from_millis(200),
+            ..Default::default()
+        },
+    )
+    .await;
+
+    // Its event stream breaks off (the process was killed): the slot is free in seconds.
+    let mut agent = RawClient::new(&host.url, &secret);
+    agent.initialize().await;
+    let stream = agent.open_stream().await;
+    assert!(agent.host_info().await.contains("mock-host"));
+    assert_eq!(host.server.session_count(), 1);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(
+        host.server.session_count(),
+        1,
+        "kept while the stream is open"
+    );
+    drop(stream);
+    drop(agent);
+    wait_until("released on disconnect", Duration::from_secs(20), || {
+        host.desktop.viewers.load(Ordering::SeqCst) == 0
+    })
+    .await;
+    assert_eq!(host.server.session_count(), 0);
+
+    // No stream and no calls: released after the shorter timeout, long before the idle one.
+    let mut agent = RawClient::new(&host.url, &secret);
+    agent.initialize().await;
+    assert!(agent.host_info().await.contains("mock-host"));
+    assert_eq!(host.server.session_count(), 1);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(host.server.session_count(), 1, "kept between calls");
+    let waited = wait_until("released when quiet", Duration::from_secs(10), || {
+        host.server.session_count() == 0
+    })
+    .await;
+    assert!(waited >= Duration::from_millis(500), "{waited:?}");
+    assert_eq!(host.desktop.viewers.load(Ordering::SeqCst), 0);
+
+    // Closing the MCP session releases at once.
+    let mut agent = RawClient::new(&host.url, &secret);
+    agent.initialize().await;
+    assert!(agent.host_info().await.contains("mock-host"));
+    assert_eq!(host.server.session_count(), 1);
+    let resp = agent.request(reqwest::Method::DELETE).send().await.unwrap();
+    assert!(resp.status().is_success(), "{}", resp.status());
+    drop(resp);
+    wait_until("released on close", Duration::from_secs(1), || {
+        host.server.session_count() == 0
+    })
+    .await;
 }

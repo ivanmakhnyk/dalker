@@ -294,7 +294,9 @@ its session at once. Requests carry
 **Stopping it at the host.** The Windows tray menu has **Disconnect AI agents**: it ends their
 sessions and keeps them out until you choose **Allow AI agents again** (the service runs without a
 tray; there, turn the MCP server off in Dalker Settings or revoke the token). Idle agents are disconnected after 10
-minutes, and each agent is rate limited. Every tool call is logged with the token name and a short
+minutes; an agent that goes away without closing its session gives its slot back within seconds of
+its connection closing, or after 2 minutes without any request open. When every slot is taken, a
+new agent's `initialize` is refused. Each agent is rate limited. Every tool call is logged with the token name and a short
 summary (coordinates, key chord, text length), never the typed text or clipboard contents.
 
 > [!WARNING]
