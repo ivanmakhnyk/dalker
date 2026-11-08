@@ -16,7 +16,11 @@ pub struct KeyCodes {
 }
 
 const fn k(evdev: u16, win_scan: u16, win_extended: bool) -> KeyCodes {
-    KeyCodes { evdev, win_scan, win_extended }
+    KeyCodes {
+        evdev,
+        win_scan,
+        win_extended,
+    }
 }
 
 /// Windows virtual-key for `Pause`, which has no usable single scancode
@@ -141,18 +145,113 @@ pub fn lookup(code: &str) -> Option<KeyCodes> {
 
 /// Every DOM code that [`lookup`] knows, for building uinput capability sets.
 pub const ALL_CODES: &[&str] = &[
-    "Escape", "Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8",
-    "Digit9", "Digit0", "Minus", "Equal", "Backspace", "Tab", "KeyQ", "KeyW", "KeyE", "KeyR",
-    "KeyT", "KeyY", "KeyU", "KeyI", "KeyO", "KeyP", "BracketLeft", "BracketRight", "Enter",
-    "ControlLeft", "KeyA", "KeyS", "KeyD", "KeyF", "KeyG", "KeyH", "KeyJ", "KeyK", "KeyL",
-    "Semicolon", "Quote", "Backquote", "ShiftLeft", "Backslash", "KeyZ", "KeyX", "KeyC", "KeyV",
-    "KeyB", "KeyN", "KeyM", "Comma", "Period", "Slash", "ShiftRight", "NumpadMultiply", "AltLeft",
-    "Space", "CapsLock", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "NumLock",
-    "ScrollLock", "Numpad7", "Numpad8", "Numpad9", "NumpadSubtract", "Numpad4", "Numpad5",
-    "Numpad6", "NumpadAdd", "Numpad1", "Numpad2", "Numpad3", "Numpad0", "NumpadDecimal",
-    "IntlBackslash", "F11", "F12", "F15", "NumpadEnter", "ControlRight", "NumpadDivide", "PrintScreen",
-    "AltRight", "Home", "ArrowUp", "PageUp", "ArrowLeft", "ArrowRight", "End", "ArrowDown",
-    "PageDown", "Insert", "Delete", "NumpadEqual", "Pause", "MetaLeft", "MetaRight", "ContextMenu",
+    "Escape",
+    "Digit1",
+    "Digit2",
+    "Digit3",
+    "Digit4",
+    "Digit5",
+    "Digit6",
+    "Digit7",
+    "Digit8",
+    "Digit9",
+    "Digit0",
+    "Minus",
+    "Equal",
+    "Backspace",
+    "Tab",
+    "KeyQ",
+    "KeyW",
+    "KeyE",
+    "KeyR",
+    "KeyT",
+    "KeyY",
+    "KeyU",
+    "KeyI",
+    "KeyO",
+    "KeyP",
+    "BracketLeft",
+    "BracketRight",
+    "Enter",
+    "ControlLeft",
+    "KeyA",
+    "KeyS",
+    "KeyD",
+    "KeyF",
+    "KeyG",
+    "KeyH",
+    "KeyJ",
+    "KeyK",
+    "KeyL",
+    "Semicolon",
+    "Quote",
+    "Backquote",
+    "ShiftLeft",
+    "Backslash",
+    "KeyZ",
+    "KeyX",
+    "KeyC",
+    "KeyV",
+    "KeyB",
+    "KeyN",
+    "KeyM",
+    "Comma",
+    "Period",
+    "Slash",
+    "ShiftRight",
+    "NumpadMultiply",
+    "AltLeft",
+    "Space",
+    "CapsLock",
+    "F1",
+    "F2",
+    "F3",
+    "F4",
+    "F5",
+    "F6",
+    "F7",
+    "F8",
+    "F9",
+    "F10",
+    "NumLock",
+    "ScrollLock",
+    "Numpad7",
+    "Numpad8",
+    "Numpad9",
+    "NumpadSubtract",
+    "Numpad4",
+    "Numpad5",
+    "Numpad6",
+    "NumpadAdd",
+    "Numpad1",
+    "Numpad2",
+    "Numpad3",
+    "Numpad0",
+    "NumpadDecimal",
+    "IntlBackslash",
+    "F11",
+    "F12",
+    "F15",
+    "NumpadEnter",
+    "ControlRight",
+    "NumpadDivide",
+    "PrintScreen",
+    "AltRight",
+    "Home",
+    "ArrowUp",
+    "PageUp",
+    "ArrowLeft",
+    "ArrowRight",
+    "End",
+    "ArrowDown",
+    "PageDown",
+    "Insert",
+    "Delete",
+    "NumpadEqual",
+    "Pause",
+    "MetaLeft",
+    "MetaRight",
+    "ContextMenu",
 ];
 
 #[cfg(test)]
@@ -170,7 +269,10 @@ mod tests {
     fn evdev_codes_are_unique() {
         let mut seen = std::collections::HashSet::new();
         for code in ALL_CODES {
-            assert!(seen.insert(lookup(code).unwrap().evdev), "duplicate evdev code for {code}");
+            assert!(
+                seen.insert(lookup(code).unwrap().evdev),
+                "duplicate evdev code for {code}"
+            );
         }
     }
 
@@ -180,7 +282,10 @@ mod tests {
         for code in ALL_CODES {
             let kc = lookup(code).unwrap();
             if kc.win_scan != 0 {
-                assert!(seen.insert((kc.win_scan, kc.win_extended)), "duplicate scancode for {code}");
+                assert!(
+                    seen.insert((kc.win_scan, kc.win_extended)),
+                    "duplicate scancode for {code}"
+                );
             }
         }
     }

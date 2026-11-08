@@ -24,10 +24,12 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
+use axum::body::{Body, Bytes};
 use axum::extract::{Request, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Router;
@@ -71,6 +73,11 @@ pub trait DesktopHandle: Send + Sync + 'static {
     fn input_available(&self) -> bool {
         true
     }
+    /// Whether a viewer slot is free now, or why not (what [`Self::open_viewer`] would say).
+    /// Checked when an agent connects, so it fails fast instead of on its first tool call.
+    fn check_viewer_slot(&self) -> Result<(), String> {
+        Ok(())
+    }
     /// Takes a viewer slot (the border goes on) and returns a new input-session id, or why not.
     fn open_viewer(&self) -> Result<u64, String>;
     /// Gives the slot back.
@@ -91,12 +98,24 @@ pub struct McpConfig {
     pub max_sessions: usize,
     /// A session without tool calls for this long ends.
     pub idle_timeout: Duration,
+    /// A session ends this long after its agent has no request left open (no tool call
+    /// running, no event stream): the agent may have gone away without saying so.
+    pub detached_timeout: Duration,
+    /// A session ends this long after its agent's event stream closed with nothing else open:
+    /// the agent went away, unless it reconnects first.
+    pub reconnect_grace: Duration,
     pub limits: RateLimits,
 }
 
 impl Default for McpConfig {
     fn default() -> Self {
-        Self { max_sessions: 1, idle_timeout: Duration::from_secs(600), limits: RateLimits::default() }
+        Self {
+            max_sessions: 1,
+            idle_timeout: Duration::from_secs(600),
+            detached_timeout: Duration::from_secs(120),
+            reconnect_grace: Duration::from_secs(10),
+            limits: RateLimits::default(),
+        }
     }
 }
 
@@ -106,15 +125,62 @@ pub(crate) struct Shared {
     config: McpConfig,
     /// By token id.
     sessions: Mutex<HashMap<String, Arc<Session>>>,
+    /// Open HTTP requests, by token id.
+    links: Mutex<HashMap<String, Link>>,
     /// Set from the host ("Disconnect AI agents"): no tool call is served until cleared.
     blocked: AtomicBool,
 }
 
+const BLOCKED: &str =
+    "the person at the host has disconnected AI agents; ask them to allow AI agents again";
+
+/// The HTTP requests one token has open: tool calls in flight and event streams the agent
+/// keeps open. While there are none, the token's session is on a short clock.
+struct Link {
+    open: usize,
+    /// Set once nothing is open: the session ends then unless a request comes first.
+    release_at: Option<(Instant, &'static str)>,
+}
+
+/// How an HTTP request of an agent ended, which sets how long its session may wait for more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Closed {
+    /// A POST was answered: the agent may be thinking about the next call.
+    Request,
+    /// A GET event stream ended: the agent went away or lost its connection.
+    Stream,
+    /// The agent closed its MCP session.
+    Delete,
+}
+
 impl Shared {
+    /// Whether `who` may connect now: refused while AI agents are blocked or there is no free
+    /// slot (unless it has a session already).
+    pub(crate) fn admit(&self, who: &Identity) -> Result<(), String> {
+        if self.blocked.load(Ordering::SeqCst) {
+            return Err(BLOCKED.into());
+        }
+        let sessions = self.sessions.lock().unwrap();
+        if sessions.get(&who.token_id).is_some_and(|s| !s.is_closed()) {
+            return Ok(());
+        }
+        if sessions.values().filter(|s| !s.is_closed()).count() >= self.config.max_sessions {
+            return Err(self.too_many());
+        }
+        self.desktop.check_viewer_slot()
+    }
+
+    fn too_many(&self) -> String {
+        format!(
+            "too many AI agents connected (max {})",
+            self.config.max_sessions
+        )
+    }
+
     /// The session of `who`, starting one if needed.
     pub(crate) fn session_for(&self, who: &Identity) -> Result<Arc<Session>, String> {
         if self.blocked.load(Ordering::SeqCst) {
-            return Err("the person at the host has disconnected AI agents; ask them to allow AI agents again".into());
+            return Err(BLOCKED.into());
         }
         let mut sessions = self.sessions.lock().unwrap();
         if let Some(s) = sessions.get(&who.token_id) {
@@ -125,7 +191,7 @@ impl Shared {
         }
         sessions.retain(|_, s| !s.is_closed());
         if sessions.len() >= self.config.max_sessions {
-            return Err(format!("too many AI agents connected (max {})", self.config.max_sessions));
+            return Err(self.too_many());
         }
         let id = self.desktop.open_viewer()?;
         let s = Arc::new(Session::new(
@@ -143,7 +209,11 @@ impl Shared {
     fn end_where(&self, why: &str, mut pred: impl FnMut(&Session) -> bool) -> usize {
         let ended: Vec<Arc<Session>> = {
             let mut sessions = self.sessions.lock().unwrap();
-            let ids: Vec<String> = sessions.iter().filter(|(_, s)| pred(s)).map(|(k, _)| k.clone()).collect();
+            let ids: Vec<String> = sessions
+                .iter()
+                .filter(|(_, s)| pred(s))
+                .map(|(k, _)| k.clone())
+                .collect();
             ids.iter().filter_map(|k| sessions.remove(k)).collect()
         };
         let mut n = 0;
@@ -156,12 +226,65 @@ impl Shared {
         n
     }
 
+    fn request_opened(&self, token_id: &str) {
+        let mut links = self.links.lock().unwrap();
+        let link = links.entry(token_id.to_owned()).or_insert(Link {
+            open: 0,
+            release_at: None,
+        });
+        link.open += 1;
+        link.release_at = None;
+    }
+
+    fn request_closed(&self, token_id: &str, how: Closed) {
+        {
+            let mut links = self.links.lock().unwrap();
+            let Some(link) = links.get_mut(token_id) else {
+                return;
+            };
+            link.open = link.open.saturating_sub(1);
+            if link.open > 0 {
+                return;
+            }
+            let (wait, why) = match how {
+                Closed::Request => (self.config.detached_timeout, "no request for a while"),
+                Closed::Stream => (self.config.reconnect_grace, "connection closed"),
+                Closed::Delete => (Duration::ZERO, "session closed by the agent"),
+            };
+            link.release_at = Some((Instant::now() + wait, why));
+        }
+        if how == Closed::Delete {
+            self.release_detached(Instant::now());
+        }
+    }
+
+    /// Ends the sessions of tokens that have had nothing open for long enough.
+    fn release_detached(&self, now: Instant) {
+        let mut due: Vec<(String, &'static str)> = Vec::new();
+        self.links
+            .lock()
+            .unwrap()
+            .retain(|token, link| match link.release_at {
+                Some((at, why)) if link.open == 0 && at <= now => {
+                    due.push((token.clone(), why));
+                    false
+                }
+                _ => true,
+            });
+        for (token, why) in due {
+            self.end_where(why, |s| s.token_id == token);
+        }
+    }
+
     fn reap(&self) {
         let now = Instant::now();
+        self.release_detached(now);
         let unix = tokens::unix_now();
         let idle = self.config.idle_timeout;
         self.end_where("idle", |s| s.idle_for(now) >= idle);
-        self.end_where("token revoked or expired", |s| !self.tokens.is_live(&s.token_id, unix));
+        self.end_where("token revoked or expired", |s| {
+            !self.tokens.is_live(&s.token_id, unix)
+        });
     }
 }
 
@@ -172,13 +295,18 @@ pub struct McpServer {
 }
 
 impl McpServer {
-    pub fn new(desktop: Arc<dyn DesktopHandle>, tokens: Arc<TokenStore>, config: McpConfig) -> Self {
+    pub fn new(
+        desktop: Arc<dyn DesktopHandle>,
+        tokens: Arc<TokenStore>,
+        config: McpConfig,
+    ) -> Self {
         Self {
             shared: Arc::new(Shared {
                 desktop,
                 tokens,
                 config,
                 sessions: Mutex::new(HashMap::new()),
+                links: Mutex::new(HashMap::new()),
                 blocked: AtomicBool::new(false),
             }),
         }
@@ -193,13 +321,20 @@ impl McpServer {
     pub fn set_tokens(&self, records: Vec<TokenRecord>) {
         let gone = self.shared.tokens.replace(records);
         if !gone.is_empty() {
-            self.shared.end_where("token revoked or changed", |s| gone.contains(&s.token_id));
+            self.shared
+                .end_where("token revoked or changed", |s| gone.contains(&s.token_id));
         }
     }
 
     /// Connected AI agents.
     pub fn session_count(&self) -> usize {
-        self.shared.sessions.lock().unwrap().values().filter(|s| !s.is_closed()).count()
+        self.shared
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|s| !s.is_closed())
+            .count()
     }
 
     /// Ends every session (held input is released). Returns how many there were.
@@ -239,7 +374,10 @@ impl McpServer {
         );
         Router::new()
             .nest_service("/mcp", mcp)
-            .layer(axum::middleware::from_fn_with_state(Arc::clone(&self.shared), authenticate))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&self.shared),
+                authenticate,
+            ))
             .layer(axum::middleware::from_fn(no_proxy_buffering))
     }
 
@@ -261,8 +399,10 @@ impl McpServer {
         }
         let _reaper = AbortOnDrop(tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                let Some(shared) = shared.upgrade() else { return };
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let Some(shared) = shared.upgrade() else {
+                    return;
+                };
                 shared.reap();
             }
         }));
@@ -282,14 +422,18 @@ impl McpServer {
 /// to (other proxies follow `Cache-Control: no-cache` / `text/event-stream`).
 async fn no_proxy_buffering(req: Request, next: Next) -> Response {
     let mut resp = next.run(req).await;
-    resp.headers_mut().insert("x-accel-buffering", HeaderValue::from_static("no"));
+    resp.headers_mut()
+        .insert("x-accel-buffering", HeaderValue::from_static("no"));
     resp
 }
 
 fn reject(status: StatusCode, msg: &str) -> Response {
     let mut r = (status, axum::Json(serde_json::json!({ "error": msg }))).into_response();
     if status == StatusCode::UNAUTHORIZED {
-        r.headers_mut().insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer realm=\"dalker\""));
+        r.headers_mut().insert(
+            header::WWW_AUTHENTICATE,
+            HeaderValue::from_static("Bearer realm=\"dalker\""),
+        );
     }
     r
 }
@@ -305,18 +449,31 @@ async fn authenticate(State(shared): State<Arc<Shared>>, mut req: Request, next:
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")))
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+        })
         .map(|t| t.trim().to_owned());
     let Some(token) = token else {
         return reject(StatusCode::UNAUTHORIZED, "missing bearer token");
     };
     let tokens = Arc::clone(&shared.tokens);
     // Argon2 the first time a token is seen: keep it off the async workers.
-    let result = tokio::task::spawn_blocking(move || tokens.verify(&token, tokens::unix_now())).await;
+    let result =
+        tokio::task::spawn_blocking(move || tokens.verify(&token, tokens::unix_now())).await;
     match result {
         Ok(Ok(who)) => {
+            let how = match *req.method() {
+                Method::GET => Closed::Stream,
+                Method::DELETE => Closed::Delete,
+                _ => Closed::Request,
+            };
+            // Counts as open until the response body is done or dropped (the client went away).
+            let open = OpenRequest::new(Arc::clone(&shared), who.token_id.clone(), how);
             req.extensions_mut().insert(who);
-            next.run(req).await
+            next.run(req)
+                .await
+                .map(|body| Body::new(TrackedBody { body, _open: open }))
         }
         Ok(Err(tokens::AuthError::Expired)) => reject(StatusCode::UNAUTHORIZED, "token expired"),
         _ => {
@@ -324,5 +481,56 @@ async fn authenticate(State(shared): State<Arc<Shared>>, mut req: Request, next:
             tokio::time::sleep(Duration::from_millis(500)).await;
             reject(StatusCode::UNAUTHORIZED, "invalid token")
         }
+    }
+}
+
+/// One open HTTP request of an agent, until dropped.
+struct OpenRequest {
+    shared: Arc<Shared>,
+    token_id: String,
+    how: Closed,
+}
+
+impl OpenRequest {
+    fn new(shared: Arc<Shared>, token_id: String, how: Closed) -> Self {
+        shared.request_opened(&token_id);
+        Self {
+            shared,
+            token_id,
+            how,
+        }
+    }
+}
+
+impl Drop for OpenRequest {
+    fn drop(&mut self) {
+        self.shared.request_closed(&self.token_id, self.how);
+    }
+}
+
+/// A response body that keeps its request open while it is being sent: an event stream ends
+/// when the client disconnects, which hyper notices on the next keep-alive at the latest.
+struct TrackedBody {
+    body: Body,
+    _open: OpenRequest,
+}
+
+impl http_body::Body for TrackedBody {
+    type Data = Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Bytes>, axum::Error>>> {
+        Pin::new(&mut self.body).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.body.size_hint()
     }
 }

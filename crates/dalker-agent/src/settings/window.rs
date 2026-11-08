@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use axum::http::HeaderMap;
 use axum::routing::get;
-use rand::RngCore;
+use rand::TryRng;
 
 use super::api::{Access, Api, Live};
 use super::store::Store;
@@ -24,7 +24,9 @@ const KEY_HEADER: &str = "x-dalker-key";
 /// or why it can't be (shown on the page).
 pub fn show(store: Result<Box<dyn Store>, String>, no_window: bool) {
     let mut raw = [0u8; 24];
-    rand::rngs::OsRng.fill_bytes(&mut raw);
+    rand::rngs::SysRng
+        .try_fill_bytes(&mut raw)
+        .expect("the OS random number generator failed");
     let key: String = raw.iter().map(|b| format!("{b:02x}")).collect();
 
     let live = Arc::new(Mutex::new(Live::default()));
@@ -33,7 +35,11 @@ pub fn show(store: Result<Box<dyn Store>, String>, no_window: bool) {
 
     let check = {
         let key = key.clone();
-        move |h: &HeaderMap| h.get(KEY_HEADER).and_then(|v| v.to_str().ok()).is_some_and(|v| constant_eq(v, &key))
+        move |h: &HeaderMap| {
+            h.get(KEY_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| constant_eq(v, &key))
+        }
     };
     let api = match store {
         Ok(store) => {
@@ -45,14 +51,28 @@ pub fn show(store: Result<Box<dyn Store>, String>, no_window: bool) {
     };
     let app = api
         .router()
-        .route("/", get(|| async { dalker_web::static_asset("settings.html") }))
-        .route("/{*path}", get(|axum::extract::Path(p): axum::extract::Path<String>| async move { dalker_web::static_asset(&p) }));
+        .route(
+            "/",
+            get(|| async { dalker_web::static_asset("settings.html") }),
+        )
+        .route(
+            "/{*path}",
+            get(
+                |axum::extract::Path(p): axum::extract::Path<String>| async move {
+                    dalker_web::static_asset(&p)
+                },
+            ),
+        );
 
     let (addr_tx, addr_rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("settings-server".into())
         .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build() {
+            let rt = match tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+            {
                 Ok(rt) => rt,
                 Err(e) => return drop(addr_tx.send(Err(e.to_string()))),
             };
@@ -100,7 +120,9 @@ fn instance_file() -> Option<PathBuf> {
     #[cfg(windows)]
     let dir = std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Dalker"));
     #[cfg(not(windows))]
-    let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|d| d.is_dir());
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|d| d.is_dir());
     dir.map(|d| d.join("settings-window"))
 }
 
@@ -118,9 +140,15 @@ fn parse_instance(text: &str) -> Option<(u16, &str)> {
 
 /// If a settings window is open, asks it to come to the front and returns true.
 pub fn focus_open_window() -> bool {
-    let Some(file) = instance_file() else { return false };
-    let Ok(text) = std::fs::read_to_string(&file) else { return false };
-    let Some((port, key)) = parse_instance(&text) else { return false };
+    let Some(file) = instance_file() else {
+        return false;
+    };
+    let Ok(text) = std::fs::read_to_string(&file) else {
+        return false;
+    };
+    let Some((port, key)) = parse_instance(&text) else {
+        return false;
+    };
     #[cfg(windows)]
     dalker_platform::windows::settings::allow_foreground();
     let token = ["XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID"]
@@ -134,7 +162,9 @@ pub fn focus_open_window() -> bool {
 
 fn send_focus(port: u16, key: &str, token: Option<&str>) -> bool {
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-    let Ok(mut s) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else { return false };
+    let Ok(mut s) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else {
+        return false;
+    };
     let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
     let sent = match token {
         Some(t) => writeln!(s, "focus {key} {t}"),
@@ -150,7 +180,11 @@ fn send_focus(port: u16, key: &str, token: Option<&str>) -> bool {
 
 /// Answers [`send_focus`] on `listener`, calling `focus` (with the activation token, if any)
 /// for each request with the right key.
-fn serve_focus(listener: TcpListener, key: String, focus: impl Fn(Option<String>) + Send + 'static) {
+fn serve_focus(
+    listener: TcpListener,
+    key: String,
+    focus: impl Fn(Option<String>) + Send + 'static,
+) {
     std::thread::Builder::new()
         .name("settings-focus".into())
         .spawn(move || {
@@ -162,9 +196,16 @@ fn serve_focus(listener: TcpListener, key: String, focus: impl Fn(Option<String>
                     continue;
                 }
                 let mut parts = line.trim().splitn(3, ' ');
-                let ok = parts.next() == Some("focus") && parts.next().is_some_and(|k| constant_eq(k, &key));
+                let ok = parts.next() == Some("focus")
+                    && parts.next().is_some_and(|k| constant_eq(k, &key));
                 if ok {
-                    focus(parts.next().map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned));
+                    focus(
+                        parts
+                            .next()
+                            .map(str::trim)
+                            .filter(|t| !t.is_empty())
+                            .map(str::to_owned),
+                    );
                 }
                 let _ = writeln!(conn, "{}", if ok { "ok" } else { "no" });
             }
@@ -178,7 +219,9 @@ fn announce(focus: impl Fn(Option<String>) + Send + 'static) -> Option<InstanceF
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).ok()?;
     let port = listener.local_addr().ok()?.port();
     let mut raw = [0u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut raw);
+    rand::rngs::SysRng
+        .try_fill_bytes(&mut raw)
+        .expect("the OS random number generator failed");
     let key: String = raw.iter().map(|b| format!("{b:02x}")).collect();
     serve_focus(listener, key.clone(), focus);
     let line = instance_line(port, &key);
@@ -212,7 +255,11 @@ fn report(msg: &str) {
 }
 
 fn constant_eq(a: &str, b: &str) -> bool {
-    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0
 }
 
 #[cfg(any(windows, target_os = "linux"))]
@@ -283,7 +330,10 @@ fn open_window(url: &str) -> Result<(), String> {
         let _keep = (&webview, &window);
         match event {
             Event::UserEvent(Focus(token)) => raise(&window, token),
-            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } => {
                 // The event loop never returns: remove the instance file now.
                 instance.take();
                 *control_flow = ControlFlow::Exit;
@@ -331,7 +381,10 @@ fn spawn_probe(live: Arc<Mutex<Live>>, targets: Arc<Mutex<Option<(SocketAddr, So
                 let web_up = probe_http(web, "/", "<title>Dalker</title>");
                 let mcp_up = probe_http(mcp, "/mcp", "realm=\"dalker\"");
                 if *targets.lock().unwrap() == now {
-                    *live.lock().unwrap() = Live { web: Some(web_up), mcp: Some(mcp_up) };
+                    *live.lock().unwrap() = Live {
+                        web: Some(web_up),
+                        mcp: Some(mcp_up),
+                    };
                 } else {
                     *live.lock().unwrap() = Live::default();
                 }
@@ -350,7 +403,9 @@ fn probe_http(addr: SocketAddr, path: &str, marker: &str) -> bool {
         ip => ip,
     };
     let target = SocketAddr::new(ip, addr.port());
-    let Ok(mut s) = TcpStream::connect_timeout(&target, Duration::from_millis(600)) else { return false };
+    let Ok(mut s) = TcpStream::connect_timeout(&target, Duration::from_millis(600)) else {
+        return false;
+    };
     let _ = s.set_read_timeout(Some(Duration::from_secs(1)));
     let _ = s.set_write_timeout(Some(Duration::from_secs(1)));
     let request = format!("GET {path} HTTP/1.1\r\nHost: {target}\r\nConnection: close\r\n\r\n");
@@ -393,15 +448,31 @@ mod tests {
                         Ok(n) => req.extend_from_slice(&buf[..n]),
                     }
                 }
-                let body = if i == 0 { "<title>Dalker</title>" } else { "<title>Jenkins</title>" };
-                let _ = write!(c, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+                let body = if i == 0 {
+                    "<title>Dalker</title>"
+                } else {
+                    "<title>Jenkins</title>"
+                };
+                let _ = write!(
+                    c,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
             }
         });
         assert!(probe_http(addr, "/", "<title>Dalker</title>"));
-        assert!(!probe_http(addr, "/", "<title>Dalker</title>"), "something else on the port");
-        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        assert!(
+            !probe_http(addr, "/", "<title>Dalker</title>"),
+            "something else on the port"
+        );
+        let free = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
         assert!(!probe_http(free, "/", "x"));
-        assert!(constant_eq("abc", "abc") && !constant_eq("abc", "abd") && !constant_eq("ab", "abc"));
+        assert!(
+            constant_eq("abc", "abc") && !constant_eq("abc", "abd") && !constant_eq("ab", "abc")
+        );
     }
 
     #[test]
@@ -427,10 +498,27 @@ mod tests {
         });
         assert!(!send_focus(port, "wrong", None), "a wrong key is refused");
         assert!(send_focus(port, "secret", None));
-        assert!(send_focus(port, "secret", Some("gnome-shell/Dalker Settings/1745-3_TIME42")));
+        assert!(send_focus(
+            port,
+            "secret",
+            Some("gnome-shell/Dalker Settings/1745-3_TIME42")
+        ));
         assert_eq!(focused.load(Ordering::SeqCst), 2);
-        assert_eq!(*tokens.lock().unwrap(), [None, Some("gnome-shell/Dalker Settings/1745-3_TIME42".to_owned())]);
-        let closed = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap().local_addr().unwrap().port();
-        assert!(!send_focus(closed, "secret", None), "no window open: a new one opens");
+        assert_eq!(
+            *tokens.lock().unwrap(),
+            [
+                None,
+                Some("gnome-shell/Dalker Settings/1745-3_TIME42".to_owned())
+            ]
+        );
+        let closed = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        assert!(
+            !send_focus(closed, "secret", None),
+            "no window open: a new one opens"
+        );
     }
 }

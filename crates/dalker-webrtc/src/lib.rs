@@ -3,8 +3,9 @@
 //! Turns a stream of [`RawFrame`]s into a WebRTC H.264 video track and turns the
 //! viewer's `"control"` DataChannel messages into [`InputEvent`]s.
 //!
-//! The same channel carries the text clipboard both ways (see [`clipboard`]) and the
-//! viewer's stream settings (see [`settings`]). File transfers use a second channel,
+//! The same channel carries the text clipboard both ways (see [`clipboard`]), the
+//! viewer's stream settings (see [`settings`]) and, when the host ends a session, the
+//! reason (see [`EndReason`]). File transfers use a second channel,
 //! `"files"` (see [`files`]).
 //!
 //! Signaling is a single non-trickle offer/answer exchange: the browser sends
@@ -30,9 +31,12 @@ use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264};
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::{APIBuilder, API};
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
+use webrtc::data_channel::data_channel_state::RTCDataChannelState;
+use webrtc::data_channel::RTCDataChannel;
+use webrtc::ice::mdns::MulticastDnsMode;
+use webrtc::ice::network_type::NetworkType;
 use webrtc::ice::udp_mux::{UDPMuxDefault, UDPMuxParams};
 use webrtc::ice::udp_network::UDPNetwork;
-use webrtc::ice::network_type::NetworkType;
 use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
@@ -72,6 +76,41 @@ pub enum ControlMessage {
     Flush(std::sync::mpsc::Sender<()>),
 }
 
+/// Why the host ends a session. [`Session::end`] tells the viewer before it closes, so the
+/// viewer can say why instead of a bare "disconnected":
+///
+/// ```text
+/// {"type":"session_end","reason":"password_changed"}     host → viewer
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndReason {
+    /// The access password was changed on the host: every viewer is signed out.
+    PasswordChanged,
+    /// Web remote access was turned off on the host.
+    WebOff,
+    /// The agent is shutting down (service stop or restart, host shutdown).
+    HostShutdown,
+}
+
+impl EndReason {
+    /// The `reason` value of the `session_end` message.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EndReason::PasswordChanged => "password_changed",
+            EndReason::WebOff => "web_off",
+            EndReason::HostShutdown => "host_shutdown",
+        }
+    }
+
+    /// The `session_end` message sent to the viewer.
+    pub fn message(self) -> String {
+        serde_json::json!({"type": "session_end", "reason": self.as_str()}).to_string()
+    }
+}
+
+/// How long [`Session::end`] waits for the `session_end` message to leave before it closes.
+const END_FLUSH: Duration = Duration::from_secs(1);
+
 /// Latest captured frame, shared by all sessions. `None` until the first capture.
 pub type FrameWatch = watch::Receiver<Option<Arc<RawFrame>>>;
 
@@ -107,12 +146,18 @@ impl WebRtcEngine {
         let registry = register_default_interceptors(Registry::new(), &mut media)?;
 
         let mut settings = SettingEngine::default();
+        // No mDNS: the agent never needs to resolve `.local` candidates (the browser reaches
+        // its host candidates and shows up as peer-reflexive), and the mDNS socket logs a
+        // warning for every LAN packet it cannot parse.
+        settings.set_ice_multicast_dns_mode(MulticastDnsMode::Disabled);
         if let Some(port) = config.udp_port {
             let socket = tokio::net::UdpSocket::bind(("0.0.0.0", port))
                 .await
                 .with_context(|| format!("bind ICE UDP port {port}"))?;
             tracing::info!("ICE UDP mux listening on 0.0.0.0:{port}");
-            settings.set_udp_network(UDPNetwork::Muxed(UDPMuxDefault::new(UDPMuxParams::new(socket))));
+            settings.set_udp_network(UDPNetwork::Muxed(UDPMuxDefault::new(UDPMuxParams::new(
+                socket,
+            ))));
             settings.set_network_types(vec![NetworkType::Udp4]);
         }
         if !config.public_ips.is_empty() {
@@ -139,7 +184,12 @@ impl WebRtcEngine {
             .with_interceptor_registry(registry)
             .with_setting_engine(settings)
             .build();
-        Ok(Self { api, config, next_id: AtomicU64::new(1), files: None })
+        Ok(Self {
+            api,
+            config,
+            next_id: AtomicU64::new(1),
+            files: None,
+        })
     }
 
     /// Offers file transfers to viewers (their `"files"` channel), run as the user `access`
@@ -164,7 +214,10 @@ impl WebRtcEngine {
             ice_servers: if self.config.ice_servers.is_empty() {
                 vec![]
             } else {
-                vec![RTCIceServer { urls: self.config.ice_servers.clone(), ..Default::default() }]
+                vec![RTCIceServer {
+                    urls: self.config.ice_servers.clone(),
+                    ..Default::default()
+                }]
             },
             ..Default::default()
         };
@@ -177,14 +230,17 @@ impl WebRtcEngine {
                 mime_type: MIME_TYPE_H264.to_owned(),
                 clock_rate: 90_000,
                 channels: 0,
-                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
-                    .to_owned(),
+                sdp_fmtp_line:
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+                        .to_owned(),
                 rtcp_feedback: vec![],
             },
             "video".to_owned(),
             "dalker".to_owned(),
         ));
-        let sender = pc.add_track(Arc::clone(&track) as Arc<dyn TrackLocal + Send + Sync>).await?;
+        let sender = pc
+            .add_track(Arc::clone(&track) as Arc<dyn TrackLocal + Send + Sync>)
+            .await?;
 
         let stop = Arc::new(AtomicBool::new(false));
         let keyframe = Arc::new(AtomicBool::new(true));
@@ -211,11 +267,14 @@ impl WebRtcEngine {
 
         // Control DataChannel → input worker; host clipboard → viewer; stream settings.
         // The "files" channel carries file transfers.
+        let control_dc: ControlSlot = Arc::default();
         {
             let control = control.clone();
             let files = self.files.clone();
+            let control_dc = Arc::clone(&control_dc);
             pc.on_data_channel(Box::new(move |dc| {
                 let control = control.clone();
+                let control_dc = Arc::clone(&control_dc);
                 let clipboard = clipboard.clone();
                 let settings_tx = Arc::clone(&settings_tx);
                 let files = files.clone();
@@ -226,15 +285,23 @@ impl WebRtcEngine {
                                 tracing::debug!(session = id, "file channel open");
                                 files::attach(id, dc, access);
                             }
-                            None => tracing::warn!(session = id, "file transfers are off; ignoring the files channel"),
+                            None => tracing::warn!(
+                                session = id,
+                                "file transfers are off; ignoring the files channel"
+                            ),
                         }
                         return;
                     }
                     if dc.label() != CONTROL_CHANNEL {
-                        tracing::warn!(session = id, label = dc.label(), "ignoring unknown DataChannel");
+                        tracing::warn!(
+                            session = id,
+                            label = dc.label(),
+                            "ignoring unknown DataChannel"
+                        );
                         return;
                     }
                     tracing::debug!(session = id, "control channel open");
+                    *control_dc.lock().unwrap() = Some(Arc::clone(&dc));
                     let mut incoming = clipboard::Assembler::default();
                     let dc_weak = Arc::downgrade(&dc);
                     dc.on_message(Box::new(move |msg: DataChannelMessage| {
@@ -262,7 +329,10 @@ impl WebRtcEngine {
                                     let _ = control.send((id, ControlMessage::Clipboard(text)));
                                 }
                                 Ok(None) => {}
-                                Err(e) => tracing::info!(session = id, "viewer clipboard not applied: {e}"),
+                                Err(e) => tracing::info!(
+                                    session = id,
+                                    "viewer clipboard not applied: {e}"
+                                ),
                             }
                             return Box::pin(async {});
                         }
@@ -284,19 +354,24 @@ impl WebRtcEngine {
             }));
         }
 
-        // Connection state → lifecycle.
+        // Connection state → lifecycle. Also when the host closed the session itself (`stop`
+        // is set then), the agent hears of it, so held keys and buttons are released.
         let (closed_tx, closed_rx) = watch::channel(false);
         {
             let stop = Arc::clone(&stop);
+            let ended = AtomicBool::new(false);
             let control = control.clone();
             let pc_weak = Arc::downgrade(&pc);
             pc.on_peer_connection_state_change(Box::new(move |state| {
                 tracing::info!(session = id, ?state, "peer connection state");
                 let terminal = matches!(
                     state,
-                    RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed | RTCPeerConnectionState::Disconnected
+                    RTCPeerConnectionState::Failed
+                        | RTCPeerConnectionState::Closed
+                        | RTCPeerConnectionState::Disconnected
                 );
-                if terminal && !stop.swap(true, Ordering::SeqCst) {
+                if terminal && !ended.swap(true, Ordering::SeqCst) {
+                    stop.store(true, Ordering::SeqCst);
                     let _ = control.send((id, ControlMessage::Closed));
                     let _ = closed_tx.send(true);
                     if let Some(pc) = pc_weak.upgrade() {
@@ -310,22 +385,31 @@ impl WebRtcEngine {
         }
 
         // SDP exchange (non-trickle).
-        pc.set_remote_description(RTCSessionDescription::offer(offer_sdp)?).await?;
+        pc.set_remote_description(RTCSessionDescription::offer(offer_sdp)?)
+            .await?;
         let answer = pc.create_answer(None).await?;
         let mut gathered = pc.gathering_complete_promise().await;
         pc.set_local_description(answer).await?;
         let _ = tokio::time::timeout(Duration::from_secs(5), gathered.recv()).await;
-        let local = pc.local_description().await.context("no local description")?;
+        let local = pc
+            .local_description()
+            .await
+            .context("no local description")?;
 
         // A peer that never connects must not keep its slot.
         {
             let weak = Arc::downgrade(&pc);
             let stop = Arc::clone(&stop);
-            let limit = self.config.connect_timeout.unwrap_or(DEFAULT_CONNECT_TIMEOUT);
+            let limit = self
+                .config
+                .connect_timeout
+                .unwrap_or(DEFAULT_CONNECT_TIMEOUT);
             tokio::spawn(async move {
                 tokio::time::sleep(limit).await;
                 if let Some(pc) = weak.upgrade() {
-                    if !stop.load(Ordering::SeqCst) && pc.connection_state() != RTCPeerConnectionState::Connected {
+                    if !stop.load(Ordering::SeqCst)
+                        && pc.connection_state() != RTCPeerConnectionState::Connected
+                    {
                         tracing::info!(session = id, ?limit, "viewer never connected; dropping it");
                         let _ = pc.close().await;
                     }
@@ -338,11 +422,30 @@ impl WebRtcEngine {
         let thread_stop = Arc::clone(&stop);
         std::thread::Builder::new()
             .name(format!("dalker-enc-{id}"))
-            .spawn(move || encode_loop(id, settings_rx, frames, track, keyframe, thread_stop, runtime))
+            .spawn(move || {
+                encode_loop(
+                    id,
+                    settings_rx,
+                    frames,
+                    track,
+                    keyframe,
+                    thread_stop,
+                    runtime,
+                )
+            })
             .context("spawn encoder thread")?;
 
         tracing::info!(session = id, "session negotiated");
-        Ok((local.sdp, Session { id, pc, stop, closed: closed_rx }))
+        Ok((
+            local.sdp,
+            Session {
+                id,
+                pc,
+                stop,
+                closed: closed_rx,
+                control_dc,
+            },
+        ))
     }
 }
 
@@ -352,7 +455,11 @@ pub struct Session {
     pc: Arc<RTCPeerConnection>,
     stop: Arc<AtomicBool>,
     closed: watch::Receiver<bool>,
+    /// The viewer's control channel, once it is open (for the `session_end` message).
+    control_dc: ControlSlot,
 }
+
+type ControlSlot = Arc<std::sync::Mutex<Option<Arc<RTCDataChannel>>>>;
 
 impl Session {
     /// Resolves when the peer connection reaches a terminal state.
@@ -363,6 +470,21 @@ impl Session {
     pub async fn close(&self) {
         self.stop.store(true, Ordering::SeqCst);
         let _ = self.pc.close().await;
+    }
+
+    /// Tells the viewer why the host ends the session, then closes it. The message gets up to
+    /// [`END_FLUSH`] to leave; a viewer that is already gone is closed at once.
+    pub async fn end(&self, reason: EndReason) {
+        let dc = self.control_dc.lock().unwrap().clone();
+        if let Some(dc) = dc.filter(|dc| dc.ready_state() == RTCDataChannelState::Open) {
+            if dc.send_text(reason.message()).await.is_ok() {
+                let deadline = Instant::now() + END_FLUSH;
+                while dc.buffered_amount().await > 0 && Instant::now() < deadline {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        }
+        self.close().await;
     }
 }
 
@@ -443,8 +565,29 @@ fn encode_loop(
         if !frames.has_changed().unwrap_or(true) {
             // A clone so `changed()` doesn't mark the frame seen for the check at the top.
             let mut next = frames.clone();
-            let _ = runtime.block_on(async { tokio::time::timeout(FRAME_POLL, next.changed()).await });
+            let _ =
+                runtime.block_on(async { tokio::time::timeout(FRAME_POLL, next.changed()).await });
         }
     }
     tracing::info!(session = id, encoded, "encoder stopped");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EndReason;
+
+    #[test]
+    fn end_reason_messages() {
+        for (reason, code) in [
+            (EndReason::PasswordChanged, "password_changed"),
+            (EndReason::WebOff, "web_off"),
+            (EndReason::HostShutdown, "host_shutdown"),
+        ] {
+            let msg: serde_json::Value = serde_json::from_str(&reason.message()).unwrap();
+            assert_eq!(
+                msg,
+                serde_json::json!({"type": "session_end", "reason": code})
+            );
+        }
+    }
 }

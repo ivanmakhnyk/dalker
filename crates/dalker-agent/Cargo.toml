@@ -30,6 +30,8 @@ serde_json.workspace = true
 clap.workspace = true
 axum.workspace = true
 rand.workspace = true
+# The host's network addresses, for the addresses the settings page shows.
+if-addrs.workspace = true
 
 # The host's settings window (`dalkerd settings`): web-ui/settings.html in a native web view
 # (WebView2 on Windows, WebKitGTK on Linux), served by the window's own process.
@@ -45,7 +47,7 @@ gtk = "0.18"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 rmcp = { version = "3.5", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
-base64 = "0.22"
+base64 = "0.23"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [build-dependencies]

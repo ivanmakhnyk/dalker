@@ -19,7 +19,7 @@
 //!
 //! Every change answers with the new state, so the page redraws from one source.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{Path, State};
@@ -31,7 +31,10 @@ use dalker_mcp::tokens::{self, Scope};
 use serde_json::{json, Value};
 
 use super::store::Store;
-use super::{date, masked, parse_port, remote_of, scopes_for, with_permissions, Remote, Saved, MIN_PASSWORD_LEN};
+use super::{
+    date, masked, parse_port, remote_of, scopes_for, with_permissions, Remote, Saved,
+    MIN_PASSWORD_LEN,
+};
 use crate::cli::OnOff;
 use crate::listeners::{KEY_BIND, KEY_MCP, KEY_MCP_BIND, KEY_WEB};
 
@@ -111,13 +114,21 @@ impl Api {
             .route("/api/settings/password", post(set_password))
             .route("/api/settings/mcp", post(set_mcp))
             .route("/api/settings/tokens", post(create_token))
-            .route("/api/settings/tokens/{id}", patch(change_token).delete(revoke_token))
+            .route(
+                "/api/settings/tokens/{id}",
+                patch(change_token).delete(revoke_token),
+            )
             .route("/api/settings/tokens/{id}/secret", get(token_secret))
             .with_state(Arc::new(self))
     }
 
     fn read(&self) -> Result<Saved, String> {
-        let saved = self.store.lock().unwrap().read().map(|t| Saved::parse(&t))?;
+        let saved = self
+            .store
+            .lock()
+            .unwrap()
+            .read()
+            .map(|t| Saved::parse(&t))?;
         if let Some(f) = &self.observe {
             f(&saved);
         }
@@ -164,7 +175,10 @@ where
         return fail(StatusCode::UNAUTHORIZED, "not signed in");
     }
     if host_only && api.access != Access::Host {
-        return fail(StatusCode::FORBIDDEN, "this setting can only be changed on the host, in Dalker Settings");
+        return fail(
+            StatusCode::FORBIDDEN,
+            "this setting can only be changed on the host, in Dalker Settings",
+        );
     }
     if let Some(why) = &api.blocked {
         return fail(StatusCode::SERVICE_UNAVAILABLE, why.clone());
@@ -181,7 +195,12 @@ fn bad(msg: impl Into<String>) -> (StatusCode, String) {
 }
 
 fn saved_or_500(r: Result<Saved, String>) -> Result<Saved, (StatusCode, String)> {
-    r.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("The settings could not be saved: {e}")))
+    r.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("The settings could not be saved: {e}"),
+        )
+    })
 }
 
 /// The whole state the page draws.
@@ -206,6 +225,10 @@ pub fn state_json(api: &Api, saved: &Saved) -> Value {
         })
         .collect();
     let host = api.access == Access::Host;
+    // The web client reaches the host by the name it opened it with (see `mcpUrl()` in
+    // settings.js), so only the host's own window lists the host's network addresses.
+    let addrs = if host { host_addresses() } else { Vec::new() };
+    let mcp = reach(saved.mcp_bind, &addrs, "/mcp");
     json!({
         "access": if host { "host" } else { "tokens" },
         "version": env!("CARGO_PKG_VERSION"),
@@ -216,11 +239,14 @@ pub fn state_json(api: &Api, saved: &Saved) -> Value {
             "port": saved.bind.port(),
             "status": status(saved.web, live.web),
             "password_set": saved.password_set,
+            "loopback": saved.bind.ip().is_loopback(),
+            "urls": reach(saved.bind, &addrs, "/"),
         },
         "mcp": {
             "enabled": saved.mcp,
             "port": saved.mcp_bind.port(),
-            "url": mcp_url(saved.mcp_bind),
+            "url": mcp[0]["url"],
+            "urls": mcp,
             "public_url": saved.mcp_public_url,
             "loopback": saved.mcp_bind.ip().is_loopback(),
             "status": status(saved.mcp, live.mcp),
@@ -241,14 +267,74 @@ fn status(enabled: bool, up: Option<bool>) -> &'static str {
     }
 }
 
-fn mcp_url(addr: SocketAddr) -> String {
-    let host = match addr.ip() {
-        std::net::IpAddr::V4(v4) if v4.is_unspecified() => "127.0.0.1".to_owned(),
-        std::net::IpAddr::V6(v6) if v6.is_unspecified() => "[::1]".to_owned(),
-        std::net::IpAddr::V6(v6) => format!("[{v6}]"),
-        ip => ip.to_string(),
+/// A network address of this computer, as the settings page offers it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostAddr {
+    ip: IpAddr,
+    /// The interface it is on, e.g. `Ethernet` or `vEthernet (Default Switch)`.
+    name: String,
+}
+
+/// This computer's addresses other computers can use: no loopback or link-local ones, LAN
+/// (private) IPv4 addresses first, then other IPv4 ones (VPNs, public), then IPv6.
+fn host_addresses() -> Vec<HostAddr> {
+    let found = match if_addrs::get_if_addrs() {
+        Ok(found) => found,
+        Err(e) => {
+            tracing::debug!("network addresses: {e}");
+            return Vec::new();
+        }
     };
-    format!("http://{host}:{}/mcp", addr.port())
+    let mut addrs: Vec<HostAddr> = found
+        .into_iter()
+        .filter(|i| {
+            i.is_oper_up() && !i.is_loopback() && !i.is_link_local() && !i.ip().is_unspecified()
+        })
+        .map(|i| HostAddr {
+            ip: i.ip(),
+            name: i.name,
+        })
+        .collect();
+    addrs.sort_by_key(|a| match a.ip {
+        IpAddr::V4(v4) if v4.is_private() => 0,
+        IpAddr::V4(_) => 1,
+        IpAddr::V6(_) => 2,
+    });
+    addrs.dedup_by(|a, b| a.ip == b.ip);
+    addrs
+}
+
+/// The addresses a server bound to `bind` answers on, best first, as `{host, name, url}`
+/// (`path` is appended to each URL). One logic for the web server and the MCP server:
+///
+/// * bound to every address (`0.0.0.0` or `[::]`): each of `addrs` of that family, then this
+///   computer's own `127.0.0.1` (or `[::1]`) for clients on the host;
+/// * bound to loopback or to one address: that address alone.
+///
+/// Never empty.
+fn reach(bind: SocketAddr, addrs: &[HostAddr], path: &str) -> Vec<Value> {
+    let url = |ip: IpAddr| match ip {
+        IpAddr::V6(v6) => format!("http://[{v6}]:{}{path}", bind.port()),
+        IpAddr::V4(v4) => format!("http://{v4}:{}{path}", bind.port()),
+    };
+    let entry =
+        |ip: IpAddr, name: &str| json!({ "host": ip.to_string(), "name": name, "url": url(ip) });
+    match bind.ip() {
+        IpAddr::V4(v4) if v4.is_unspecified() => addrs
+            .iter()
+            .filter(|a| a.ip.is_ipv4())
+            .map(|a| entry(a.ip, &a.name))
+            .chain([entry(IpAddr::V4(Ipv4Addr::LOCALHOST), "This computer only")])
+            .collect(),
+        // `[::]` also takes IPv4 connections on most systems.
+        IpAddr::V6(v6) if v6.is_unspecified() => addrs
+            .iter()
+            .map(|a| entry(a.ip, &a.name))
+            .chain([entry(IpAddr::V6(Ipv6Addr::LOCALHOST), "This computer only")])
+            .collect(),
+        ip if ip.is_loopback() => vec![entry(ip, "This computer only")],
+        ip => vec![entry(ip, "")],
+    }
 }
 
 async fn get_state(State(api): ApiState, headers: HeaderMap) -> Response {
@@ -256,23 +342,37 @@ async fn get_state(State(api): ApiState, headers: HeaderMap) -> Response {
         return fail(StatusCode::UNAUTHORIZED, "not signed in");
     }
     let result = tokio::task::spawn_blocking(move || {
-        let saved = if api.blocked.is_some() { Ok(Saved::parse("")) } else { api.read() };
+        let saved = if api.blocked.is_some() {
+            Ok(Saved::parse(""))
+        } else {
+            api.read()
+        };
         saved.map(|s| state_json(&api, &s))
     })
     .await;
     match result {
         Ok(Ok(v)) => Json(v).into_response(),
-        Ok(Err(e)) => fail(StatusCode::INTERNAL_SERVER_ERROR, format!("The settings can't be read: {e}")),
+        Ok(Err(e)) => fail(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("The settings can't be read: {e}"),
+        ),
         Err(_) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
     }
 }
 
 /// `port` checked against the other server's port.
-fn check_port(port: u64, other: SocketAddr, own_ip: std::net::IpAddr, what: &str) -> Result<u16, (StatusCode, String)> {
+fn check_port(
+    port: u64,
+    other: SocketAddr,
+    own_ip: std::net::IpAddr,
+    what: &str,
+) -> Result<u16, (StatusCode, String)> {
     let port = parse_port(&port.to_string()).map_err(|e| bad(format!("{what} port: {e}")))?;
     let clash = own_ip == other.ip() || own_ip.is_unspecified() || other.ip().is_unspecified();
     if port == other.port() && clash {
-        return Err(bad(format!("The web server and the MCP server can't both use port {port}.")));
+        return Err(bad(format!(
+            "The web server and the MCP server can't both use port {port}."
+        )));
     }
     Ok(port)
 }
@@ -328,13 +428,21 @@ async fn set_mcp(State(api): ApiState, headers: HeaderMap, Json(body): Json<Valu
     .await
 }
 
-async fn set_password(State(api): ApiState, headers: HeaderMap, Json(body): Json<Value>) -> Response {
+async fn set_password(
+    State(api): ApiState,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
     guarded(api, headers, true, move |api| {
         let new = body["password"].as_str().unwrap_or_default();
         let repeat = body["repeat"].as_str().unwrap_or_default();
         super::check_new_password(new, repeat, MIN_PASSWORD_LEN).map_err(bad)?;
-        let hash = dalker_web::hash_password(new)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("The password could not be hashed: {e:#}")))?;
+        let hash = dalker_web::hash_password(new).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("The password could not be hashed: {e:#}"),
+            )
+        })?;
         // A plain-text password line has no business in the file once there is a hash.
         let saved = saved_or_500(api.edit(
             &[("DALKER_PASSWORD_HASH".to_owned(), hash)],
@@ -346,7 +454,11 @@ async fn set_password(State(api): ApiState, headers: HeaderMap, Json(body): Json
     .await
 }
 
-async fn create_token(State(api): ApiState, headers: HeaderMap, Json(body): Json<Value>) -> Response {
+async fn create_token(
+    State(api): ApiState,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
     guarded(api, headers, false, move |api| {
         let name = body["name"].as_str().unwrap_or_default().trim().to_owned();
         tokens::validate_name(&name).map_err(|e| bad(capitalize(&e)))?;
@@ -388,10 +500,18 @@ async fn change_token(
     .await
 }
 
-async fn revoke_token(State(api): ApiState, headers: HeaderMap, Path(id): Path<String>) -> Response {
+async fn revoke_token(
+    State(api): ApiState,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
     guarded(api, headers, false, move |api| {
         let saved = api.read().map_err(bad)?;
-        let record = saved.tokens.iter().find(|t| t.id == id).ok_or_else(|| bad("No such token."))?;
+        let record = saved
+            .tokens
+            .iter()
+            .find(|t| t.id == id)
+            .ok_or_else(|| bad("No such token."))?;
         let saved = saved_or_500(api.edit(&[], &[record.config_key(), record.secret_key()]))?;
         tracing::info!(token = %record.name, id = %record.id, "MCP token revoked in the settings");
         Ok(json!({ "state": state_json(api, &saved) }))
@@ -399,7 +519,11 @@ async fn revoke_token(State(api): ApiState, headers: HeaderMap, Path(id): Path<S
     .await
 }
 
-async fn token_secret(State(api): ApiState, headers: HeaderMap, Path(id): Path<String>) -> Response {
+async fn token_secret(
+    State(api): ApiState,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
     guarded(api, headers, false, move |api| {
         let saved = api.read().map_err(bad)?;
         let token = saved.secrets.get(&id).ok_or_else(|| {
@@ -413,7 +537,9 @@ async fn token_secret(State(api): ApiState, headers: HeaderMap, Path(id): Path<S
 fn capitalize(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
-        Some(f) => f.to_uppercase().chain(c).collect::<String>() + if s.ends_with('.') { "" } else { "." },
+        Some(f) => {
+            f.to_uppercase().chain(c).collect::<String>() + if s.ends_with('.') { "" } else { "." }
+        }
         None => String::new(),
     }
 }
@@ -435,10 +561,15 @@ mod tests {
 
     fn app(path: &std::path::Path, access: Access) -> Router {
         let store = Box::new(super::super::store::FileStore::new(path));
-        Api::new(store, access, |h: &HeaderMap| h.get("x-key").is_some_and(|v| v == "k"), || Live {
-            web: Some(true),
-            mcp: Some(false),
-        })
+        Api::new(
+            store,
+            access,
+            |h: &HeaderMap| h.get("x-key").is_some_and(|v| v == "k"),
+            || Live {
+                web: Some(true),
+                mcp: Some(false),
+            },
+        )
         .router()
     }
 
@@ -453,7 +584,10 @@ mod tests {
         let r = app.clone().oneshot(req).await.unwrap();
         let status = r.status();
         let bytes = r.into_body().collect().await.unwrap().to_bytes();
-        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
     }
 
     #[tokio::test]
@@ -465,6 +599,16 @@ mod tests {
         assert_eq!(v["web"]["port"], 8742);
         assert_eq!(v["web"]["status"], "running");
         assert_eq!(v["mcp"]["status"], "stopped");
+        let web = v["web"]["urls"].as_array().unwrap();
+        assert_eq!(
+            web.last().unwrap()["url"],
+            "http://127.0.0.1:8742/",
+            "{web:?}"
+        );
+        assert_eq!(
+            v["mcp"]["url"], "http://127.0.0.1:8743/mcp",
+            "this computer only by default"
+        );
 
         let (s, v) = call(&app, "POST", "/api/settings/web", json!({"port": 9000})).await;
         assert_eq!(s, StatusCode::OK, "{v}");
@@ -472,46 +616,169 @@ mod tests {
         let (s, v) = call(&app, "POST", "/api/settings/mcp", json!({"port": 9000})).await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
         assert!(v["error"].as_str().unwrap().contains("both use port 9000"));
-        let (s, v) = call(&app, "POST", "/api/settings/mcp", json!({"enabled": true, "port": 9001})).await;
+        let (s, v) = call(
+            &app,
+            "POST",
+            "/api/settings/mcp",
+            json!({"enabled": true, "port": 9001}),
+        )
+        .await;
         assert_eq!(s, StatusCode::OK);
-        assert_eq!(v["state"]["mcp"]["loopback"], true, "this computer only by default");
+        assert_eq!(
+            v["state"]["mcp"]["loopback"], true,
+            "this computer only by default"
+        );
         let (s, v) = call(&app, "POST", "/api/settings/mcp", json!({"remote": true})).await;
         assert_eq!(s, StatusCode::OK);
-        assert_eq!((v["state"]["mcp"]["loopback"].as_bool(), v["state"]["mcp"]["port"].as_u64()), (Some(false), Some(9001)));
-        assert!(std::fs::read_to_string(&path).unwrap().contains("DALKER_MCP_BIND=0.0.0.0:9001"));
+        assert_eq!(
+            (
+                v["state"]["mcp"]["loopback"].as_bool(),
+                v["state"]["mcp"]["port"].as_u64()
+            ),
+            (Some(false), Some(9001))
+        );
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("DALKER_MCP_BIND=0.0.0.0:9001"));
         let (_, v) = call(&app, "POST", "/api/settings/mcp", json!({"remote": false})).await;
         assert_eq!(v["state"]["mcp"]["loopback"], true);
-        let (s, v) = call(&app, "POST", "/api/settings/password", json!({"password": "short", "repeat": "short"})).await;
+        let (s, v) = call(
+            &app,
+            "POST",
+            "/api/settings/password",
+            json!({"password": "short", "repeat": "short"}),
+        )
+        .await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
-        let (s, v) =
-            call(&app, "POST", "/api/settings/password", json!({"password": "long-enough", "repeat": "long-enough"})).await;
+        let (s, v) = call(
+            &app,
+            "POST",
+            "/api/settings/password",
+            json!({"password": "long-enough", "repeat": "long-enough"}),
+        )
+        .await;
         assert_eq!(s, StatusCode::OK);
         assert_eq!(v["state"]["web"]["password_set"], true);
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("DALKER_BIND=0.0.0.0:9000") && text.contains("DALKER_MCP=on"), "{text}");
+        assert!(
+            text.contains("DALKER_BIND=0.0.0.0:9000") && text.contains("DALKER_MCP=on"),
+            "{text}"
+        );
 
         // Tokens: create, copy again, change, revoke.
-        let (s, v) = call(&app, "POST", "/api/settings/tokens", json!({"name": "LM Studio", "remote": true})).await;
+        let (s, v) = call(
+            &app,
+            "POST",
+            "/api/settings/tokens",
+            json!({"name": "LM Studio", "remote": true}),
+        )
+        .await;
         assert_eq!(s, StatusCode::OK, "{v}");
         let token = v["token"].as_str().unwrap().to_owned();
         let row = &v["state"]["tokens"][0];
         assert_eq!(row["remote"], "full");
         assert_eq!(row["copyable"], true);
         let id = row["id"].as_str().unwrap().to_owned();
-        let (_, v) = call(&app, "GET", &format!("/api/settings/tokens/{id}/secret"), Value::Null).await;
+        let (_, v) = call(
+            &app,
+            "GET",
+            &format!("/api/settings/tokens/{id}/secret"),
+            Value::Null,
+        )
+        .await;
         assert_eq!(v["token"], token);
-        let (s, v) = call(&app, "PATCH", &format!("/api/settings/tokens/{id}"), json!({"clipboard": true})).await;
+        let (s, v) = call(
+            &app,
+            "PATCH",
+            &format!("/api/settings/tokens/{id}"),
+            json!({"clipboard": true}),
+        )
+        .await;
         assert_eq!(s, StatusCode::OK);
         assert_eq!(v["state"]["tokens"][0]["clipboard"], true);
-        let (s, v) = call(&app, "PATCH", &format!("/api/settings/tokens/{id}"), json!({"remote": false, "clipboard": false})).await;
+        let (s, v) = call(
+            &app,
+            "PATCH",
+            &format!("/api/settings/tokens/{id}"),
+            json!({"remote": false, "clipboard": false}),
+        )
+        .await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "no permission left: {v}");
-        let (s, v) = call(&app, "POST", "/api/settings/tokens", json!({"name": "LM Studio", "remote": true})).await;
+        let (s, v) = call(
+            &app,
+            "POST",
+            "/api/settings/tokens",
+            json!({"name": "LM Studio", "remote": true}),
+        )
+        .await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "duplicate: {v}");
-        let (s, v) = call(&app, "DELETE", &format!("/api/settings/tokens/{id}"), Value::Null).await;
+        let (s, v) = call(
+            &app,
+            "DELETE",
+            &format!("/api/settings/tokens/{id}"),
+            Value::Null,
+        )
+        .await;
         assert_eq!(s, StatusCode::OK);
         assert_eq!(v["state"]["tokens"].as_array().unwrap().len(), 0);
-        assert!(!std::fs::read_to_string(&path).unwrap().contains("DALKER_MCP_SECRET_"), "secret removed too");
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("DALKER_MCP_SECRET_"),
+            "secret removed too"
+        );
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn addresses_for_each_bind() {
+        let addrs = [
+            HostAddr {
+                ip: "192.168.1.20".parse().unwrap(),
+                name: "Ethernet".into(),
+            },
+            HostAddr {
+                ip: "100.101.102.103".parse().unwrap(),
+                name: "Tailscale".into(),
+            },
+            HostAddr {
+                ip: "2001:db8::5".parse().unwrap(),
+                name: "Ethernet".into(),
+            },
+        ];
+        let urls = |bind: &str, path| {
+            reach(bind.parse().unwrap(), &addrs, path)
+                .iter()
+                .map(|v| v["url"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            urls("0.0.0.0:8742", "/"),
+            [
+                "http://192.168.1.20:8742/",
+                "http://100.101.102.103:8742/",
+                "http://127.0.0.1:8742/"
+            ]
+        );
+        assert_eq!(
+            urls("127.0.0.1:8743", "/mcp"),
+            ["http://127.0.0.1:8743/mcp"]
+        );
+        assert_eq!(urls("10.0.0.7:8743", "/mcp"), ["http://10.0.0.7:8743/mcp"]);
+        assert_eq!(urls("[::]:8743", "/mcp").len(), 4);
+        assert_eq!(
+            urls("[::]:8743", "/mcp")[2],
+            "http://[2001:db8::5]:8743/mcp"
+        );
+        assert_eq!(
+            reach("0.0.0.0:8742".parse().unwrap(), &[], "/")[0]["url"],
+            "http://127.0.0.1:8742/",
+            "no network"
+        );
+        assert_eq!(
+            reach("0.0.0.0:8742".parse().unwrap(), &addrs, "/")[0]["name"],
+            "Ethernet"
+        );
     }
 
     #[tokio::test]
@@ -521,20 +788,38 @@ mod tests {
         let (s, v) = call(&app, "GET", "/api/settings", Value::Null).await;
         assert_eq!(s, StatusCode::OK);
         assert_eq!(v["access"], "tokens");
-        assert!(v["file"].is_null(), "the host's file path is not shown to viewers");
+        assert!(
+            v["file"].is_null(),
+            "the host's file path is not shown to viewers"
+        );
         for (uri, body) in [
             ("/api/settings/web", json!({"enabled": false})),
             ("/api/settings/mcp", json!({"enabled": true})),
-            ("/api/settings/password", json!({"password": "long-enough", "repeat": "long-enough"})),
+            (
+                "/api/settings/password",
+                json!({"password": "long-enough", "repeat": "long-enough"}),
+            ),
         ] {
             let (s, _) = call(&app, "POST", uri, body).await;
             assert_eq!(s, StatusCode::FORBIDDEN, "{uri}");
         }
-        let (s, _) = call(&app, "POST", "/api/settings/tokens", json!({"name": "web", "remote": true})).await;
+        let (s, _) = call(
+            &app,
+            "POST",
+            "/api/settings/tokens",
+            json!({"name": "web", "remote": true}),
+        )
+        .await;
         assert_eq!(s, StatusCode::OK);
         // Without the key (or session) nothing is answered.
-        let req = Request::builder().uri("/api/settings").body(Body::empty()).unwrap();
-        assert_eq!(app.clone().oneshot(req).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        let req = Request::builder()
+            .uri("/api/settings")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(req).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

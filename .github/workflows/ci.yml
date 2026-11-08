@@ -16,15 +16,40 @@ env:
   DALKER_REQUIRE_NASM: 1
 
 jobs:
+  licenses:
+    name: licenses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Dependency licenses must be allowed by deny.toml (see CONTRIBUTING.md, "Third-party code").
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
   check:
-    name: ${{ matrix.os }}
+    # Fixed names, because required checks are matched by name.
+    name: ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - name: Linux
+            os: ubuntu-latest
+          - name: Windows
+            os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy

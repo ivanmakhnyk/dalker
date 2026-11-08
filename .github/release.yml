@@ -1,0 +1,14 @@
+# Groups the release notes that the Release workflow generates (gh release create --generate-notes)
+# by pull request label. The pr-rules check labels every pull request from its branch type.
+changelog:
+  exclude:
+    labels: [skip-changelog]
+  categories:
+    - title: Features
+      labels: [enhancement]
+    - title: Fixes
+      labels: [bug]
+    - title: Dependencies
+      labels: [dependencies]
+    - title: Other changes
+      labels: ["*"]

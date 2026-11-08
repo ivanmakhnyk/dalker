@@ -36,7 +36,9 @@ pub struct FileStore {
 
 impl FileStore {
     pub fn new(path: &Path) -> Self {
-        Self { path: path.to_owned() }
+        Self {
+            path: path.to_owned(),
+        }
     }
 }
 
@@ -91,7 +93,12 @@ pub fn run_helper(path: &Path) -> anyhow::Result<()> {
 }
 
 /// Answers one request per line of `input` until it ends.
-fn serve_lines(path: &Path, allowed: Allowed, input: impl BufRead, mut out: impl Write) -> anyhow::Result<()> {
+fn serve_lines(
+    path: &Path,
+    allowed: Allowed,
+    input: impl BufRead,
+    mut out: impl Write,
+) -> anyhow::Result<()> {
     for line in input.lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -124,7 +131,12 @@ pub fn run_socket_helper(path: &Path, socket: &Path, owner: &str) -> anyhow::Res
         let path = path.to_owned();
         std::thread::spawn(move || {
             let Ok(reader) = conn.try_clone() else { return };
-            let _ = serve_lines(&path, Allowed::Tokens, std::io::BufReader::new(reader), conn);
+            let _ = serve_lines(
+                &path,
+                Allowed::Tokens,
+                std::io::BufReader::new(reader),
+                conn,
+            );
         });
     }
     Ok(())
@@ -136,7 +148,9 @@ fn user_ids(name: &str) -> Option<(u32, u32)> {
     let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
     passwd.lines().find_map(|l| {
         let f: Vec<&str> = l.split(':').collect();
-        (f.len() > 3 && f[0] == name).then(|| Some((f[2].parse().ok()?, f[3].parse().ok()?))).flatten()
+        (f.len() > 3 && f[0] == name)
+            .then(|| Some((f[2].parse().ok()?, f[3].parse().ok()?)))
+            .flatten()
     })
 }
 
@@ -145,7 +159,9 @@ fn handle(path: &Path, allowed: Allowed, req: &Value) -> Value {
         Some("read") => read_file(path).map(|text| json!({ "ok": true, "text": text })),
         Some("edit") => parse_edit(req, allowed).and_then(|(set, remove)| {
             // No logging here: the log goes to stdout, which carries the answers.
-            cli::edit_config(path, &set, &remove).map(|()| json!({ "ok": true })).map_err(|e| format!("{e:#}"))
+            cli::edit_config(path, &set, &remove)
+                .map(|()| json!({ "ok": true }))
+                .map_err(|e| format!("{e:#}"))
         }),
         _ => Err("unknown request".into()),
     };
@@ -173,7 +189,12 @@ fn parse_edit(req: &Value, allowed: Allowed) -> Result<Edit, String> {
         .iter()
         .map(|k| k.as_str().map(str::to_owned).ok_or_else(bad))
         .collect::<Result<Vec<_>, _>>()?;
-    if let Some(k) = set.iter().map(|(k, _)| k).chain(&remove).find(|k| !allowed.permits(k)) {
+    if let Some(k) = set
+        .iter()
+        .map(|(k, _)| k)
+        .chain(&remove)
+        .find(|k| !allowed.permits(k))
+    {
         return Err(match allowed {
             Allowed::All => format!("only DALKER_* keys can be changed, not `{k}`"),
             Allowed::Tokens => format!("only MCP tokens can be changed here, not `{k}`"),
@@ -216,7 +237,12 @@ impl HelperStore {
             .map_err(|e| format!("can't start pkexec ({e}). Is polkit installed?"))?;
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = std::io::BufReader::new(child.stdout.take().expect("piped stdout"));
-        let mut store = Self { path: path.to_owned(), child, stdin, stdout };
+        let mut store = Self {
+            path: path.to_owned(),
+            child,
+            stdin,
+            stdout,
+        };
         store.read()?;
         Ok(store)
     }
@@ -224,11 +250,16 @@ impl HelperStore {
     fn call(&mut self, req: Value) -> Result<Value, String> {
         let gone = |child: &mut std::process::Child| match child.wait().map(|s| s.code()) {
             // pkexec: 126 = authentication dismissed or refused, 127 = not authorized.
-            Ok(Some(126 | 127)) => "Administrator authentication was cancelled or refused.".to_owned(),
+            Ok(Some(126 | 127)) => {
+                "Administrator authentication was cancelled or refused.".to_owned()
+            }
             Ok(code) => format!("The settings helper stopped (exit code {code:?})."),
             Err(e) => format!("The settings helper stopped: {e}"),
         };
-        if writeln!(self.stdin, "{req}").and_then(|()| self.stdin.flush()).is_err() {
+        if writeln!(self.stdin, "{req}")
+            .and_then(|()| self.stdin.flush())
+            .is_err()
+        {
             return Err(gone(&mut self.child));
         }
         let mut line = String::new();
@@ -236,7 +267,8 @@ impl HelperStore {
             Ok(n) if n > 0 => {}
             _ => return Err(gone(&mut self.child)),
         }
-        let reply: Value = serde_json::from_str(&line).map_err(|e| format!("bad answer from the settings helper: {e}"))?;
+        let reply: Value = serde_json::from_str(&line)
+            .map_err(|e| format!("bad answer from the settings helper: {e}"))?;
         match reply["error"].as_str() {
             Some(e) => Err(e.to_owned()),
             None => Ok(reply),
@@ -248,11 +280,15 @@ impl HelperStore {
 impl Store for HelperStore {
     fn read(&mut self) -> Result<String, String> {
         let reply = self.call(json!({ "op": "read" }))?;
-        reply["text"].as_str().map(str::to_owned).ok_or_else(|| "bad answer from the settings helper".into())
+        reply["text"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| "bad answer from the settings helper".into())
     }
 
     fn edit(&mut self, set: &[(String, String)], remove: &[String]) -> Result<(), String> {
-        self.call(json!({ "op": "edit", "set": set, "remove": remove })).map(|_| ())
+        self.call(json!({ "op": "edit", "set": set, "remove": remove }))
+            .map(|_| ())
     }
 
     fn path(&self) -> &Path {
@@ -279,7 +315,10 @@ pub struct SocketStore {
 #[cfg(unix)]
 impl SocketStore {
     pub fn new(socket: &Path, path: &Path) -> Self {
-        Self { socket: socket.to_owned(), path: path.to_owned() }
+        Self {
+            socket: socket.to_owned(),
+            path: path.to_owned(),
+        }
     }
 
     fn call(&self, req: Value) -> Result<Value, String> {
@@ -288,8 +327,11 @@ impl SocketStore {
         let _ = conn.set_read_timeout(Some(std::time::Duration::from_secs(10)));
         writeln!(conn, "{req}").map_err(|e| e.to_string())?;
         let mut line = String::new();
-        std::io::BufReader::new(&conn).read_line(&mut line).map_err(|e| e.to_string())?;
-        let reply: Value = serde_json::from_str(&line).map_err(|e| format!("bad answer from the settings helper: {e}"))?;
+        std::io::BufReader::new(&conn)
+            .read_line(&mut line)
+            .map_err(|e| e.to_string())?;
+        let reply: Value = serde_json::from_str(&line)
+            .map_err(|e| format!("bad answer from the settings helper: {e}"))?;
         match reply["error"].as_str() {
             Some(e) => Err(e.to_owned()),
             None => Ok(reply),
@@ -301,11 +343,15 @@ impl SocketStore {
 impl Store for SocketStore {
     fn read(&mut self) -> Result<String, String> {
         let reply = self.call(json!({ "op": "read" }))?;
-        reply["text"].as_str().map(str::to_owned).ok_or_else(|| "bad answer from the settings helper".into())
+        reply["text"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| "bad answer from the settings helper".into())
     }
 
     fn edit(&mut self, set: &[(String, String)], remove: &[String]) -> Result<(), String> {
-        self.call(json!({ "op": "edit", "set": set, "remove": remove })).map(|_| ())
+        self.call(json!({ "op": "edit", "set": set, "remove": remove }))
+            .map(|_| ())
     }
 
     fn path(&self) -> &Path {
@@ -322,21 +368,48 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dalker-helper-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("dalker.conf");
-        assert_eq!(handle(&file, Allowed::All, &json!({"op": "read"})), json!({"ok": true, "text": ""}));
-        let r = handle(&file, Allowed::All, &json!({"op": "edit", "set": [["DALKER_WEB", "off"], ["DALKER_X", "1"]], "remove": []}));
+        assert_eq!(
+            handle(&file, Allowed::All, &json!({"op": "read"})),
+            json!({"ok": true, "text": ""})
+        );
+        let r = handle(
+            &file,
+            Allowed::All,
+            &json!({"op": "edit", "set": [["DALKER_WEB", "off"], ["DALKER_X", "1"]], "remove": []}),
+        );
         assert_eq!(r, json!({"ok": true}));
-        let r = handle(&file, Allowed::All, &json!({"op": "edit", "set": [], "remove": ["DALKER_X"]}));
+        let r = handle(
+            &file,
+            Allowed::All,
+            &json!({"op": "edit", "set": [], "remove": ["DALKER_X"]}),
+        );
         assert_eq!(r, json!({"ok": true}));
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "DALKER_WEB=off\n");
-        let r = handle(&file, Allowed::All, &json!({"op": "edit", "set": [["PATH", "/tmp"]]}));
+        let r = handle(
+            &file,
+            Allowed::All,
+            &json!({"op": "edit", "set": [["PATH", "/tmp"]]}),
+        );
         assert!(r["error"].as_str().unwrap().contains("DALKER_"));
-        let r = handle(&file, Allowed::All, &json!({"op": "edit", "set": [["DALKER_A", 1]]}));
+        let r = handle(
+            &file,
+            Allowed::All,
+            &json!({"op": "edit", "set": [["DALKER_A", 1]]}),
+        );
         assert!(r["error"].is_string());
         assert!(handle(&file, Allowed::All, &json!({"op": "rm -rf"}))["error"].is_string());
         // The Wayland agent's helper: MCP tokens only.
-        let r = handle(&file, Allowed::Tokens, &json!({"op": "edit", "set": [["DALKER_WEB", "on"]]}));
+        let r = handle(
+            &file,
+            Allowed::Tokens,
+            &json!({"op": "edit", "set": [["DALKER_WEB", "on"]]}),
+        );
         assert!(r["error"].as_str().unwrap().contains("only MCP tokens"));
-        let r = handle(&file, Allowed::Tokens, &json!({"op": "edit", "set": [["DALKER_MCP_SECRET_00000000", "x"]]}));
+        let r = handle(
+            &file,
+            Allowed::Tokens,
+            &json!({"op": "edit", "set": [["DALKER_MCP_SECRET_00000000", "x"]]}),
+        );
         assert_eq!(r, json!({"ok": true}));
         std::fs::remove_dir_all(&dir).unwrap();
     }

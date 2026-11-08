@@ -1,0 +1,26 @@
+# Weekly, grouped dependency updates into develop. Pull requests from Dependabot get the
+# "dependencies" label, which the release notes list separately (.github/release.yml).
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    ignore:
+      # webrtc 0.20+ is a rewrite without a single-port UDP mux yet; stay on 0.17.x (#69).
+      - dependency-name: webrtc
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+    groups:
+      cargo-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

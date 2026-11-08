@@ -1,0 +1,94 @@
+name: PR rules
+
+# Checks the branch and pull request rules in CONTRIBUTING.md and labels the pull request from its
+# branch type, so the release notes are grouped (.github/release.yml).
+#
+# pull_request_target runs this file as it is on the base branch, with a token that can label pull
+# requests from forks too. It only reads the event; never check out or run the pull request's code
+# here.
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  pr-rules:
+    name: pr-rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const head = pr.head.ref;
+            const base = pr.base.ref;
+            const title = pr.title.trim();
+            const body = pr.body || '';
+            const author = pr.user.login;
+            const isBot = pr.user.type === 'Bot';
+            const isMaintainer = author === context.repo.owner;
+            const isRelease = head === 'develop' && base === 'main';
+            const errors = [];
+
+            // Branch: {feature|bug|task|hotfix}/{issue#}-{short-description}
+            const branch = /^(feature|bug|task|hotfix)\/([0-9]+)-[a-z0-9]+(-[a-z0-9]+)*$/;
+            const m = head.match(branch);
+            if (!isRelease && !isBot) {
+              if (!m) {
+                errors.push(`Branch \`${head}\` must be named {feature|bug|task|hotfix}/{issue#}-{short-description}, for example bug/10-pointer-screen-edge.`);
+              } else if (m[1] === 'hotfix' && base !== 'main') {
+                errors.push('A hotfix branch goes into `main`.');
+              } else if (m[1] !== 'hotfix' && base !== 'develop') {
+                errors.push(`Open the pull request into \`develop\`, not \`${base}\`.`);
+              }
+            }
+
+            // Title: the change in plain English, which becomes the squash commit and the release-notes line.
+            if (!isRelease && !isBot) {
+              if (title === head || /^(feature|bug|task|hotfix)\//.test(title)) {
+                errors.push('The title should describe the change in plain English, not repeat the branch name.');
+              }
+              if (/\.$/.test(title)) {
+                errors.push('The title should not end with a period.');
+              }
+              if (title.length > 72) {
+                errors.push(`The title is ${title.length} characters; keep it to 72.`);
+              }
+            }
+
+            // The issue it addresses.
+            if (!isRelease && !isBot && !/\b(fixes|closes|resolves|refs)\s+#[0-9]+/i.test(body)) {
+              errors.push('Put `Fixes #N` (or `Closes #N`, or `Refs #N` for partial work) in the description.');
+            }
+
+            // Contributor Agreement, except for the maintainer and bots.
+            if (!isMaintainer && !isBot && !/-\s*\[[xX]\]\s*I have read the/.test(body)) {
+              errors.push('Tick the Contributor Agreement box in the description (see CONTRIBUTING.md).');
+            }
+
+            // Label from the branch type.
+            const labels = {
+              feature: { name: 'enhancement', color: 'a2eeef', description: 'New feature or request' },
+              bug:     { name: 'bug',         color: 'd73a4a', description: "Something isn't working" },
+              hotfix:  { name: 'bug',         color: 'd73a4a', description: "Something isn't working" },
+              task:    { name: 'task',        color: 'cfd3d7', description: 'Docs, build, CI, refactoring, dependencies' },
+            };
+            const label = m && labels[m[1]];
+            if (label && !pr.labels.some(l => l.name === label.name)) {
+              try {
+                await github.rest.issues.getLabel({ ...context.repo, name: label.name });
+              } catch (e) {
+                if (e.status !== 404) throw e;
+                await github.rest.issues.createLabel({ ...context.repo, ...label });
+              }
+              await github.rest.issues.addLabels({ ...context.repo, issue_number: pr.number, labels: [label.name] });
+            }
+
+            if (errors.length) {
+              core.setFailed(errors.join('\n'));
+            } else {
+              core.info('All pull request rules pass.');
+            }

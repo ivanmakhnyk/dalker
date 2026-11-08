@@ -43,7 +43,10 @@ pub const KEY_MCP_BIND: &str = "DALKER_MCP_BIND";
 
 impl Startup {
     pub fn wanted(&self) -> Wanted {
-        Wanted { web: self.web.then_some(self.bind), mcp: self.mcp.then_some(self.mcp_bind) }
+        Wanted {
+            web: self.web.then_some(self.bind),
+            mcp: self.mcp.then_some(self.mcp_bind),
+        }
     }
 
     /// What the config file asks for. Keys it doesn't have take their defaults; pinned keys and
@@ -53,7 +56,11 @@ impl Startup {
             if self.pinned.contains(&key) {
                 return Err(());
             }
-            Ok(file.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.as_str()))
+            Ok(file
+                .iter()
+                .rev()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str()))
         };
         let switch = |key: &str, started: bool| match get(key) {
             Err(()) => started,
@@ -88,7 +95,7 @@ pub struct WebParts {
     pub auth: Arc<Authenticator>,
     pub signaling: Arc<dyn SignalingHandler>,
     /// Called when the web server is turned off: ends the viewers' streams.
-    pub sign_out: Box<dyn Fn() + Send + Sync>,
+    pub sign_out: Box<dyn Fn(dalker_webrtc::EndReason) + Send + Sync>,
 }
 
 /// What the MCP listener serves.
@@ -109,7 +116,10 @@ impl Running {
         let _ = self.stop.send(());
         let mut task = self.task;
         // Graceful first; long-lived requests (MCP event streams) must not keep the port.
-        if tokio::time::timeout(Duration::from_secs(5), &mut task).await.is_err() {
+        if tokio::time::timeout(Duration::from_secs(5), &mut task)
+            .await
+            .is_err()
+        {
             task.abort();
             let _ = task.await;
         }
@@ -161,7 +171,12 @@ pub async fn supervise(
     }
 }
 
-async fn reconcile_web(slot: &mut Slot, want: Option<SocketAddr>, parts: &WebParts, status: &Status) {
+async fn reconcile_web(
+    slot: &mut Slot,
+    want: Option<SocketAddr>,
+    parts: &WebParts,
+    status: &Status,
+) {
     if slot.running.as_ref().is_some_and(|r| r.task.is_finished()) {
         slot.running = None;
         *status.web.lock().unwrap() = None;
@@ -177,7 +192,7 @@ async fn reconcile_web(slot: &mut Slot, want: Option<SocketAddr>, parts: &WebPar
     let Some(addr) = want else {
         if was_running {
             tracing::info!("web server turned off on the host; viewers disconnected");
-            (parts.sign_out)();
+            (parts.sign_out)(dalker_webrtc::EndReason::WebOff);
         }
         slot.last_error = None;
         return;
@@ -188,21 +203,36 @@ async fn reconcile_web(slot: &mut Slot, want: Option<SocketAddr>, parts: &WebPar
     };
     let local = listener.local_addr().unwrap_or(addr);
     let (stop_tx, stop_rx) = oneshot::channel::<()>();
-    let (auth, signaling, extra) = (Arc::clone(&parts.auth), Arc::clone(&parts.signaling), parts.extra.clone());
+    let (auth, signaling, extra) = (
+        Arc::clone(&parts.auth),
+        Arc::clone(&parts.signaling),
+        parts.extra.clone(),
+    );
     let task = tokio::spawn(async move {
         let shutdown = async move {
             let _ = stop_rx.await;
         };
-        if let Err(e) = dalker_web::serve_listener_with(listener, auth, signaling, extra, shutdown).await {
+        if let Err(e) =
+            dalker_web::serve_listener_with(listener, auth, signaling, extra, shutdown).await
+        {
             tracing::error!("web server failed: {e:#}");
         }
     });
-    slot.running = Some(Running { wanted: addr, stop: stop_tx, task });
+    slot.running = Some(Running {
+        wanted: addr,
+        stop: stop_tx,
+        task,
+    });
     slot.last_error = None;
     *status.web.lock().unwrap() = Some(local);
 }
 
-async fn reconcile_mcp(slot: &mut Slot, want: Option<SocketAddr>, parts: &McpParts, status: &Status) {
+async fn reconcile_mcp(
+    slot: &mut Slot,
+    want: Option<SocketAddr>,
+    parts: &McpParts,
+    status: &Status,
+) {
     if slot.running.as_ref().is_some_and(|r| r.task.is_finished()) {
         slot.running = None;
         *status.mcp.lock().unwrap() = None;
@@ -255,17 +285,27 @@ async fn reconcile_mcp(slot: &mut Slot, want: Option<SocketAddr>, parts: &McpPar
             tracing::error!("MCP server failed: {e:#}");
         }
     });
-    slot.running = Some(Running { wanted: addr, stop: stop_tx, task });
+    slot.running = Some(Running {
+        wanted: addr,
+        stop: stop_tx,
+        task,
+    });
     slot.last_error = None;
     *status.mcp.lock().unwrap() = Some(local);
 }
 
 /// Follows the listener settings in the config file and publishes them on `wanted`.
-pub async fn follow_config(path: std::path::PathBuf, startup: Startup, wanted: watch::Sender<Wanted>) {
+pub async fn follow_config(
+    path: std::path::PathBuf,
+    startup: Startup,
+    wanted: watch::Sender<Wanted>,
+) {
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
         // A file that can't be read right now changes nothing.
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         let now = startup.wanted_from(&cli::parse_config(&text));
         wanted.send_if_modified(|w| {
             if *w == now {
@@ -293,29 +333,64 @@ mod tests {
     }
 
     fn kv(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
     fn file_settings_and_defaults() {
         let s = startup(vec![]);
         // An empty file means the defaults: web on its default port, MCP off.
-        assert_eq!(s.wanted_from(&[]), Wanted { web: Some("0.0.0.0:8742".parse().unwrap()), mcp: None });
+        assert_eq!(
+            s.wanted_from(&[]),
+            Wanted {
+                web: Some("0.0.0.0:8742".parse().unwrap()),
+                mcp: None
+            }
+        );
         let w = s.wanted_from(&kv(&[
             ("DALKER_WEB", "off"),
             ("DALKER_MCP", "on"),
             ("DALKER_MCP_BIND", "127.0.0.1:7000"),
         ]));
-        assert_eq!(w, Wanted { web: None, mcp: Some("127.0.0.1:7000".parse().unwrap()) });
+        assert_eq!(
+            w,
+            Wanted {
+                web: None,
+                mcp: Some("127.0.0.1:7000".parse().unwrap())
+            }
+        );
         // Values that don't parse keep what the agent started with; the last line wins.
-        let w = s.wanted_from(&kv(&[("DALKER_BIND", "0.0.0.0:1"), ("DALKER_BIND", "nonsense"), ("DALKER_MCP", "maybe")]));
-        assert_eq!(w, Wanted { web: Some("0.0.0.0:9000".parse().unwrap()), mcp: None });
+        let w = s.wanted_from(&kv(&[
+            ("DALKER_BIND", "0.0.0.0:1"),
+            ("DALKER_BIND", "nonsense"),
+            ("DALKER_MCP", "maybe"),
+        ]));
+        assert_eq!(
+            w,
+            Wanted {
+                web: Some("0.0.0.0:9000".parse().unwrap()),
+                mcp: None
+            }
+        );
     }
 
     #[test]
     fn pinned_settings_ignore_the_file() {
         let s = startup(vec![KEY_BIND, KEY_MCP]);
-        let w = s.wanted_from(&kv(&[("DALKER_BIND", "0.0.0.0:1234"), ("DALKER_MCP", "on"), ("DALKER_WEB", "on")]));
-        assert_eq!(w, Wanted { web: Some("0.0.0.0:9000".parse().unwrap()), mcp: None });
+        let w = s.wanted_from(&kv(&[
+            ("DALKER_BIND", "0.0.0.0:1234"),
+            ("DALKER_MCP", "on"),
+            ("DALKER_WEB", "on"),
+        ]));
+        assert_eq!(
+            w,
+            Wanted {
+                web: Some("0.0.0.0:9000".parse().unwrap()),
+                mcp: None
+            }
+        );
     }
 }

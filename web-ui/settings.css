@@ -431,6 +431,24 @@ main {
   border: 1px solid var(--line-strong);
 }
 .endpoint code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12.5px var(--mono); color: var(--indigo-hi); }
+.endpoint code.green { color: var(--emerald-hi); }
+/* Which of the host's addresses the endpoint shows (when it has more than one). */
+.addr-pick {
+  flex: none;
+  width: auto;
+  max-width: 240px;
+  height: 28px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .04);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font: 11.5px var(--sans);
+  cursor: pointer;
+}
+.addr-pick:hover { color: var(--text); border-color: var(--line-strong); }
+.addr-pick option { background: var(--o850); color: var(--text); }
+.addr-pick[hidden] { display: none; }
 
 /* Token table */
 .tokens { display: flex; flex-direction: column; gap: 10px; padding-top: 2px; }

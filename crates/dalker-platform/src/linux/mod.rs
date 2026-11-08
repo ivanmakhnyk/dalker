@@ -20,5 +20,6 @@ pub use overlay::BorderOverlay;
 /// True when this process was started inside a Wayland session (the launcher sets
 /// `XDG_SESSION_TYPE=wayland` for the agent it starts as the session user).
 pub fn is_wayland_session() -> bool {
-    std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t == "wayland") || std::env::var_os("WAYLAND_DISPLAY").is_some()
+    std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t == "wayland")
+        || std::env::var_os("WAYLAND_DISPLAY").is_some()
 }

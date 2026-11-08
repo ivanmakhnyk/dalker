@@ -23,7 +23,8 @@ One place: `version` under `[workspace.package]` in `Cargo.toml`. Everything els
 ## Branches and automatic versions
 
 - `develop` is the default branch. Every fix and feature is a pull request into it, from a branch
-  named `{feature|bug|task}/{issue#}-{short-description}` (for example `bug/1-windows-set-password-input`).
+  named `{feature|bug|task}/{issue#}-{short-description}` (for example `bug/1-windows-set-password-input`),
+  merged with **Squash and merge**.
 - `main` only receives `develop` at a release (or a hotfix), and every commit on it is a released
   version.
 
@@ -59,7 +60,7 @@ MAJOR.
 ### Hotfixes
 
 For a fix that can't wait for the next release, branch `hotfix/{issue#}-{short-description}` from
-`main` and open the pull request into `main`. Merging it publishes the patch release and brings
+`main`, open the pull request into `main` and squash-merge it. Merging it publishes the patch release and brings
 the fix into `develop`.
 
 ## Trying the packaging without releasing

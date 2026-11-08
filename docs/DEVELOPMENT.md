@@ -131,11 +131,13 @@ pwsh packaging/windows/build-msi.ps1                            # -> dist/Dalker
 
 ### CI and releases
 
-Every push to `main` and every pull request is built, linted (clippy) and tested on Windows and
-Ubuntu by [`ci.yml`](.github/workflows/ci.yml). The version is set once, in `[workspace.package]`
+Every push to `main` and `develop` and every pull request is checked for formatting (rustfmt), built,
+linted (clippy) and tested on Windows and Ubuntu by [`ci.yml`](../.github/workflows/ci.yml), and
+[`pr-rules.yml`](../.github/workflows/pr-rules.yml) checks each pull request against the rules in
+[CONTRIBUTING.md](../CONTRIBUTING.md). The version is set once, in `[workspace.package]`
 of `Cargo.toml`; the crates, the `.deb`, the MSI and the web client (connection details → Version) all
 take it from there. Pushing a `vX.Y.Z` tag builds both installers and publishes a GitHub Release
-([`release.yml`](.github/workflows/release.yml)). See [RELEASING.md](RELEASING.md).
+([`release.yml`](../.github/workflows/release.yml)). See [RELEASING.md](../RELEASING.md).
 
 ## How the host runs
 
@@ -189,7 +191,8 @@ It runs as the systemd service `dalker`, starts at boot and restarts on failure.
 - The GNOME lock screen is streamed and can be unlocked from the viewer: the border extension lifts
   GNOME's "no screen cast while locked" rule only while a Dalker viewer is connected.
 - The red border is cropped out of the stream, so the outer 5 pixels of the screen are not visible
-  in the viewer.
+  in the viewer. The pointer still reaches the screen's edges: the outermost 5 pixels of the
+  picture stretch across the border.
 - **No border, no desktop.** If the extension isn't loaded the agent serves nothing and says why in
   `journalctl -u dalker`.
 - Change web access, the password and the MCP server with **Dalker Settings** in the app grid
@@ -291,7 +294,9 @@ its session at once. Requests carry
 **Stopping it at the host.** The Windows tray menu has **Disconnect AI agents**: it ends their
 sessions and keeps them out until you choose **Allow AI agents again** (the service runs without a
 tray; there, turn the MCP server off in Dalker Settings or revoke the token). Idle agents are disconnected after 10
-minutes, and each agent is rate limited. Every tool call is logged with the token name and a short
+minutes; an agent that goes away without closing its session gives its slot back within seconds of
+its connection closing, or after 2 minutes without any request open. When every slot is taken, a
+new agent's `initialize` is refused. Each agent is rate limited. Every tool call is logged with the token name and a short
 summary (coordinates, key chord, text length), never the typed text or clipboard contents.
 
 > [!WARNING]
@@ -400,20 +405,17 @@ Clipboard text is split into parts of 8192 characters (`"more": true` on every p
 The host also sends `{"type":"clipboard_status","available":true,"backend":"windows"}` when the
 channel opens and whenever that changes.
 
+When the host ends a session it first sends `{"type":"session_end","reason":"..."}`, so the viewer
+can say why: `password_changed` (the access password was changed on the host; sign in again),
+`web_off` (web remote access was turned off) or `host_shutdown` (the agent is stopping or
+restarting; the viewer reconnects when it is back). A session that closes without one lost its
+network; the viewer reconnects by itself while the host can be reached.
+
 File transfers use the `"files"` channel: JSON requests and replies (`hello`, `list`, `put`, `end`,
 `get`, `pause`, `resume`, `cancel`) plus binary messages, each a 4-byte big-endian transfer id
 followed by up to 60 KiB of data. See `crates/dalker-webrtc/src/files.rs`.
 
 ## Contributing
 
-Contributions are welcome!
-
-1. Open an issue to discuss larger changes before you start.
-2. Fork, create a feature branch, and keep commits focused.
-3. Run `cargo fmt --all`, `cargo clippy --workspace` and `cargo test --workspace` before opening a
-   pull request.
-4. Describe what changed and how you tested it (which host OS and session type).
-
-Dalker is licensed under AGPL-3.0-only, with a commercial license offered by the copyright
-holder. Every pull request must be covered by the [Contributor Agreement (copyright assignment)](../CLA.md); the
-full rules are in [CONTRIBUTING.md](../CONTRIBUTING.md).
+Branches, commit messages, pull requests, the checks they must pass and the
+[Contributor Agreement](../CLA.md) are described in [CONTRIBUTING.md](../CONTRIBUTING.md).

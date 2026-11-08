@@ -22,7 +22,10 @@ impl ScreenCapturer for MacCapturer {
         "macos-stub"
     }
     fn display(&self) -> DisplayInfo {
-        DisplayInfo { width: 0, height: 0 }
+        DisplayInfo {
+            width: 0,
+            height: 0,
+        }
     }
     fn next_frame(&mut self, _timeout: Duration) -> Result<Option<RawFrame>, CaptureError> {
         Err(CaptureError::Unsupported(NOT_YET.into()))

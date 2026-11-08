@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0-dev.18"
 edition = "2021"
 license = "AGPL-3.0-only"
 repository = "https://github.com/ivanmakhnyk/dalker"
@@ -34,7 +34,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive", "env"] }
-rand = "0.8"
+rand = "0.10"
+if-addrs = "0.15"
 
 # Web
 axum = "0.8"
@@ -47,7 +48,7 @@ webrtc = "0.17"
 openh264 = "0.9"
 
 # Platform
-x11rb = { version = "0.13", features = ["shm", "shape"] }
+x11rb = { version = "0.14", features = ["shm", "shape"] }
 libc = "0.2"
 evdev = "0.13"
 zbus = "5"

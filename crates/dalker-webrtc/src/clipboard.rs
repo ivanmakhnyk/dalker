@@ -53,7 +53,9 @@ pub(crate) fn parse_part(data: &[u8]) -> Option<Part> {
     if !data.windows(11).any(|w| w == b"\"clipboard\"") {
         return None;
     }
-    serde_json::from_slice::<Part>(data).ok().filter(|p| p.kind == "clipboard")
+    serde_json::from_slice::<Part>(data)
+        .ok()
+        .filter(|p| p.kind == "clipboard")
 }
 
 /// Joins the parts of one clipboard text.
@@ -79,7 +81,10 @@ impl Assembler {
         }
         let text = std::mem::take(&mut self.buf);
         if std::mem::take(&mut self.too_big) {
-            return Err(format!("text is larger than {} KiB", MAX_CLIPBOARD_BYTES / 1024));
+            return Err(format!(
+                "text is larger than {} KiB",
+                MAX_CLIPBOARD_BYTES / 1024
+            ));
         }
         Ok(Some(text))
     }
@@ -98,10 +103,20 @@ pub(crate) fn text_messages(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = text;
     loop {
-        let cut = rest.char_indices().nth(CHUNK_CHARS).map_or(rest.len(), |(i, _)| i);
+        let cut = rest
+            .char_indices()
+            .nth(CHUNK_CHARS)
+            .map_or(rest.len(), |(i, _)| i);
         let (part, tail) = rest.split_at(cut);
         let more = !tail.is_empty();
-        out.push(serde_json::to_string(&TextOut { kind: "clipboard", text: part, more }).unwrap());
+        out.push(
+            serde_json::to_string(&TextOut {
+                kind: "clipboard",
+                text: part,
+                more,
+            })
+            .unwrap(),
+        );
         if !more {
             return out;
         }
@@ -121,7 +136,11 @@ fn status_message(s: &ClipboardState) -> String {
 
 /// Sends the viewer the clipboard status now, then every status change and every new host
 /// clipboard text, until the channel closes.
-pub(crate) async fn forward_to_viewer(id: SessionId, dc: Arc<RTCDataChannel>, mut clipboard: ClipboardWatch) {
+pub(crate) async fn forward_to_viewer(
+    id: SessionId,
+    dc: Arc<RTCDataChannel>,
+    mut clipboard: ClipboardWatch,
+) {
     let mut last = clipboard.borrow_and_update().clone();
     if dc.send_text(status_message(&last)).await.is_err() {
         return;
@@ -177,7 +196,10 @@ mod tests {
             out = r.or(out);
         }
         assert_eq!(out.as_deref(), Some(text.as_str()));
-        assert_eq!(text_messages(""), vec![r#"{"type":"clipboard","text":"","more":false}"#.to_string()]);
+        assert_eq!(
+            text_messages(""),
+            vec![r#"{"type":"clipboard","text":"","more":false}"#.to_string()]
+        );
     }
 
     #[test]
@@ -186,9 +208,24 @@ mod tests {
         let big = "x".repeat(CHUNK_CHARS);
         let parts = MAX_CLIPBOARD_BYTES / CHUNK_CHARS + 1;
         for _ in 0..parts {
-            assert_eq!(asm.push(Part { kind: "clipboard".into(), text: big.clone(), more: true }).unwrap(), None);
+            assert_eq!(
+                asm.push(Part {
+                    kind: "clipboard".into(),
+                    text: big.clone(),
+                    more: true
+                })
+                .unwrap(),
+                None
+            );
         }
-        assert!(asm.push(part(r#"{"type":"clipboard","text":"end"}"#)).is_err());
-        assert_eq!(asm.push(part(r#"{"type":"clipboard","text":"ok"}"#)).unwrap().as_deref(), Some("ok"));
+        assert!(asm
+            .push(part(r#"{"type":"clipboard","text":"end"}"#))
+            .is_err());
+        assert_eq!(
+            asm.push(part(r#"{"type":"clipboard","text":"ok"}"#))
+                .unwrap()
+                .as_deref(),
+            Some("ok")
+        );
     }
 }

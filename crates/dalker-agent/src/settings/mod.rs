@@ -63,7 +63,10 @@ pub fn run(path: &std::path::Path, elevated: bool, no_window: bool) -> Result<()
 fn elevate(path: &std::path::Path, elevated: bool) {
     use dalker_platform::windows::settings;
     if elevated {
-        settings::error_box(&format!("Dalker can't write its settings file:\n{}\n\nIs Dalker installed?", path.display()));
+        settings::error_box(&format!(
+            "Dalker can't write its settings file:\n{}\n\nIs Dalker installed?",
+            path.display()
+        ));
         return;
     }
     let args = format!(
@@ -94,9 +97,17 @@ pub struct Saved {
 impl Saved {
     pub fn parse(text: &str) -> Self {
         let pairs = cli::parse_config(text);
-        let get = |key: &str| pairs.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+        let get = |key: &str| {
+            pairs
+                .iter()
+                .rev()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+        };
         let addr = |key: &str, default: &str| {
-            get(key).and_then(|v| v.parse().ok()).unwrap_or_else(|| default.parse().expect("default address"))
+            get(key)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| default.parse().expect("default address"))
         };
         let mut tokens: Vec<TokenRecord> = pairs
             .iter()
@@ -109,7 +120,10 @@ impl Saved {
             bind: addr(KEY_BIND, cli::DEFAULT_BIND),
             mcp: get(KEY_MCP).and_then(OnOff::parse).unwrap_or(false),
             mcp_bind: addr(KEY_MCP_BIND, cli::DEFAULT_MCP_BIND),
-            mcp_public_url: get("DALKER_MCP_PUBLIC_URL").map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned),
+            mcp_public_url: get("DALKER_MCP_PUBLIC_URL")
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned),
             password_set: get(KEY_PASSWORD_HASH).is_some_and(|v| !v.is_empty())
                 || get(KEY_PASSWORD).is_some_and(|v| !v.is_empty()),
             secrets: pairs
@@ -126,7 +140,10 @@ impl Saved {
 }
 
 pub fn parse_port(s: &str) -> Result<u16, String> {
-    let port: u32 = s.trim().parse().map_err(|_| "enter a number from 1024 to 65535.".to_owned())?;
+    let port: u32 = s
+        .trim()
+        .parse()
+        .map_err(|_| "enter a number from 1024 to 65535.".to_owned())?;
     if !(MIN_PORT as u32..=65535).contains(&port) {
         return Err("choose a port from 1024 to 65535.".into());
     }
@@ -139,7 +156,9 @@ pub fn check_new_password(new: &str, repeat: &str, min_len: usize) -> Result<(),
         return Err("Enter the new password.".into());
     }
     if new.chars().count() < min_len {
-        return Err(format!("The password must have at least {min_len} characters."));
+        return Err(format!(
+            "The password must have at least {min_len} characters."
+        ));
     }
     if new != repeat {
         return Err("The two passwords do not match.".into());
@@ -158,7 +177,10 @@ pub fn scopes_for(remote_control: bool, clipboard: bool) -> Result<BTreeSet<Scop
         scopes.insert(Scope::Clipboard);
     }
     if scopes.is_empty() {
-        return Err("A token needs at least one permission. Revoke it instead if it should not be used.".into());
+        return Err(
+            "A token needs at least one permission. Revoke it instead if it should not be used."
+                .into(),
+        );
     }
     Ok(scopes)
 }
@@ -173,7 +195,10 @@ pub enum Remote {
 }
 
 pub fn remote_of(record: &TokenRecord) -> Remote {
-    match (record.scopes.contains(&Scope::View), record.scopes.contains(&Scope::Input)) {
+    match (
+        record.scopes.contains(&Scope::View),
+        record.scopes.contains(&Scope::Input),
+    ) {
         (true, true) => Remote::Full,
         (true, false) => Remote::ViewOnly,
         // Input without view is not something the window makes; count it as on.
@@ -183,7 +208,11 @@ pub fn remote_of(record: &TokenRecord) -> Remote {
 }
 
 /// The token with its remote control and clipboard permissions set as given (same secret).
-pub fn with_permissions(record: &TokenRecord, remote_control: bool, clipboard: bool) -> Result<TokenRecord, String> {
+pub fn with_permissions(
+    record: &TokenRecord,
+    remote_control: bool,
+    clipboard: bool,
+) -> Result<TokenRecord, String> {
     // A view-only token stays view-only while only its clipboard permission changes.
     let scopes = if !remote_control && remote_of(record) == Remote::ViewOnly {
         let mut s = BTreeSet::from([Scope::View]);
@@ -194,7 +223,10 @@ pub fn with_permissions(record: &TokenRecord, remote_control: bool, clipboard: b
     } else {
         scopes_for(remote_control, clipboard)?
     };
-    Ok(TokenRecord { scopes, ..record.clone() })
+    Ok(TokenRecord {
+        scopes,
+        ..record.clone()
+    })
 }
 
 /// How a token is shown: its id and a mask in place of the secret.
@@ -220,9 +252,14 @@ mod tests {
         assert_eq!(s.bind.to_string(), "0.0.0.0:8742");
         assert_eq!(s.mcp_bind.to_string(), "127.0.0.1:8743");
         assert_eq!(s.mcp_public_url, None);
-        let s = Saved::parse("DALKER_MCP_PUBLIC_URL=https://desk.example.com/mcp
-");
-        assert_eq!(s.mcp_public_url.as_deref(), Some("https://desk.example.com/mcp"));
+        let s = Saved::parse(
+            "DALKER_MCP_PUBLIC_URL=https://desk.example.com/mcp
+",
+        );
+        assert_eq!(
+            s.mcp_public_url.as_deref(),
+            Some("https://desk.example.com/mcp")
+        );
         let s = Saved::parse(&format!(
             "DALKER_BIND=0.0.0.0:8080\nDALKER_WEB=off\nDALKER_MCP=on\nDALKER_PASSWORD_HASH={HASH}\n"
         ));
@@ -232,27 +269,49 @@ mod tests {
 
     #[test]
     fn permissions_map_to_scopes() {
-        assert_eq!(tokens::format_scopes(&scopes_for(true, false).unwrap()), "view,input");
-        assert_eq!(tokens::format_scopes(&scopes_for(true, true).unwrap()), "view,input,clipboard");
-        assert_eq!(tokens::format_scopes(&scopes_for(false, true).unwrap()), "clipboard");
+        assert_eq!(
+            tokens::format_scopes(&scopes_for(true, false).unwrap()),
+            "view,input"
+        );
+        assert_eq!(
+            tokens::format_scopes(&scopes_for(true, true).unwrap()),
+            "view,input,clipboard"
+        );
+        assert_eq!(
+            tokens::format_scopes(&scopes_for(false, true).unwrap()),
+            "clipboard"
+        );
         assert!(scopes_for(false, false).is_err());
 
-        let (_, rec) = tokens::generate("old", tokens::parse_scopes("view").unwrap(), None).unwrap();
+        let (_, rec) =
+            tokens::generate("old", tokens::parse_scopes("view").unwrap(), None).unwrap();
         assert_eq!(remote_of(&rec), Remote::ViewOnly);
         let with_clip = with_permissions(&rec, false, true).unwrap();
-        assert_eq!(tokens::format_scopes(&with_clip.scopes), "view,clipboard", "stays view-only");
+        assert_eq!(
+            tokens::format_scopes(&with_clip.scopes),
+            "view,clipboard",
+            "stays view-only"
+        );
         assert_eq!(with_clip.hash, rec.hash, "same token, other permissions");
         let back = with_permissions(&with_clip, false, false).unwrap();
-        assert_eq!(tokens::format_scopes(&back.scopes), "view", "clipboard off again: still view-only");
+        assert_eq!(
+            tokens::format_scopes(&back.scopes),
+            "view",
+            "clipboard off again: still view-only"
+        );
         let full = with_permissions(&rec, true, false).unwrap();
         assert_eq!(remote_of(&full), Remote::Full);
-        assert!(with_permissions(&full, false, false).is_err(), "no permission left");
+        assert!(
+            with_permissions(&full, false, false).is_err(),
+            "no permission left"
+        );
         assert!(masked(&rec).starts_with(&format!("dkmcp_{}_", rec.id)));
     }
 
     #[test]
     fn keeps_tokens() {
-        let (token, rec) = tokens::generate("lm", tokens::parse_scopes("view").unwrap(), None).unwrap();
+        let (token, rec) =
+            tokens::generate("lm", tokens::parse_scopes("view").unwrap(), None).unwrap();
         let text = format!(
             "{}={}\n{}={token}\nDALKER_MCP_SECRET_00000000={token}\n",
             rec.config_key(),
@@ -261,14 +320,22 @@ mod tests {
         );
         let saved = Saved::parse(&text);
         assert_eq!(saved.secrets.get(&rec.id), Some(&token));
-        assert_eq!(saved.secrets.len(), 1, "a secret under another id is ignored");
+        assert_eq!(
+            saved.secrets.len(),
+            1,
+            "a secret under another id is ignored"
+        );
     }
 
     #[test]
     fn passwords() {
         assert!(check_new_password("", "", 8).is_err());
-        assert!(check_new_password("short", "short", 8).unwrap_err().contains("at least 8"));
-        assert!(check_new_password("long-enough", "long-enougH", 8).unwrap_err().contains("match"));
+        assert!(check_new_password("short", "short", 8)
+            .unwrap_err()
+            .contains("at least 8"));
+        assert!(check_new_password("long-enough", "long-enougH", 8)
+            .unwrap_err()
+            .contains("match"));
         assert!(check_new_password("long-enough", "long-enough", 8).is_ok());
     }
 }

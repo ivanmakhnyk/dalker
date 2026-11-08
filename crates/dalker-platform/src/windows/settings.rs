@@ -6,7 +6,8 @@
 use windows::core::{w, PCWSTR};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    AllowSetForegroundWindow, MessageBoxW, ASFW_ANY, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, SW_SHOWNORMAL,
+    AllowSetForegroundWindow, MessageBoxW, ASFW_ANY, MB_ICONERROR, MB_OK, MB_SETFOREGROUND,
+    SW_SHOWNORMAL,
 };
 
 fn wide(s: &str) -> Vec<u16> {
@@ -17,7 +18,12 @@ fn wide(s: &str) -> Vec<u16> {
 pub fn error_box(text: &str) {
     let text = wide(text);
     unsafe {
-        MessageBoxW(None, PCWSTR(text.as_ptr()), w!("Dalker Settings"), MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+        MessageBoxW(
+            None,
+            PCWSTR(text.as_ptr()),
+            w!("Dalker Settings"),
+            MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
+        );
     }
 }
 
@@ -36,7 +42,14 @@ pub fn relaunch_elevated(args: &str) -> Result<(), String> {
     let exe = wide(&exe.display().to_string());
     let args = wide(args);
     let r = unsafe {
-        ShellExecuteW(None, w!("runas"), PCWSTR(exe.as_ptr()), PCWSTR(args.as_ptr()), PCWSTR::null(), SW_SHOWNORMAL)
+        ShellExecuteW(
+            None,
+            w!("runas"),
+            PCWSTR(exe.as_ptr()),
+            PCWSTR(args.as_ptr()),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
     };
     // Values above 32 mean success.
     if r.0 as isize > 32 {

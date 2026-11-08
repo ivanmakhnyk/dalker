@@ -25,7 +25,11 @@ fn main() {
         match cap.next_frame(Duration::from_millis(500)) {
             Ok(Some(f)) => {
                 got += 1;
-                let lit = f.data.chunks_exact(4).filter(|p| p[0] | p[1] | p[2] != 0).count();
+                let lit = f
+                    .data
+                    .chunks_exact(4)
+                    .filter(|p| p[0] | p[1] | p[2] != 0)
+                    .count();
                 let total = (f.width * f.height) as usize;
                 println!(
                     "frame {got}: {}x{} stride {} t={:?} consistent={} non-black={:.1}%",

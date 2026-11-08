@@ -23,8 +23,18 @@ fn temp_config(tag: &str) -> PathBuf {
 }
 
 fn dalkerd(config: &Path, args: &[&str]) -> std::process::Output {
-    let out = Command::new(EXE).args(args).arg("--config").arg(config).env("DALKER_CONFIG", config).output().unwrap();
-    assert!(out.status.success(), "dalkerd {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(EXE)
+        .args(args)
+        .arg("--config")
+        .arg(config)
+        .env("DALKER_CONFIG", config)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "dalkerd {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     out
 }
 
@@ -56,13 +66,19 @@ fn start_agent(config: &Path) -> (Agent, String) {
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             if let Some(i) = line.find("MCP server on http://") {
-                let url = line[i + "MCP server on ".len()..].split_whitespace().next().unwrap().to_owned();
+                let url = line[i + "MCP server on ".len()..]
+                    .split_whitespace()
+                    .next()
+                    .unwrap()
+                    .to_owned();
                 let _ = tx.send(url);
             }
         }
     });
     let agent = Agent(child);
-    let url = rx.recv_timeout(Duration::from_secs(30)).expect("agent logged its MCP address");
+    let url = rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("agent logged its MCP address");
     (agent, url)
 }
 
@@ -73,9 +89,18 @@ async fn connect(url: &str, token: &str) -> RunningService<RoleClient, ()> {
     ().serve(transport).await.expect("MCP handshake")
 }
 
-async fn call(client: &RunningService<RoleClient, ()>, tool: &'static str, args: serde_json::Value) -> CallToolResult {
-    let serde_json::Value::Object(map) = args else { panic!("args must be an object") };
-    let r = client.call_tool(CallToolRequestParams::new(tool).with_arguments(map)).await.unwrap();
+async fn call(
+    client: &RunningService<RoleClient, ()>,
+    tool: &'static str,
+    args: serde_json::Value,
+) -> CallToolResult {
+    let serde_json::Value::Object(map) = args else {
+        panic!("args must be an object")
+    };
+    let r = client
+        .call_tool(CallToolRequestParams::new(tool).with_arguments(map))
+        .await
+        .unwrap();
     assert_ne!(r.is_error, Some(true), "{tool} failed: {r:?}");
     r
 }
@@ -89,7 +114,9 @@ fn image(r: &CallToolResult) -> image::RgbImage {
             _ => None,
         })
         .expect("an image");
-    let bytes = base64::engine::general_purpose::STANDARD.decode(data).unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .unwrap();
     image::load_from_memory(&bytes).unwrap().to_rgb8()
 }
 
@@ -107,7 +134,17 @@ fn text(r: &CallToolResult) -> String {
 #[tokio::test(flavor = "multi_thread")]
 async fn mock_agent_click_then_screenshot() {
     let config = temp_config("e2e");
-    let out = dalkerd(&config, &["mcp-token", "create", "--name", "e2e", "--scopes", "view,input,clipboard"]);
+    let out = dalkerd(
+        &config,
+        &[
+            "mcp-token",
+            "create",
+            "--name",
+            "e2e",
+            "--scopes",
+            "view,input,clipboard",
+        ],
+    );
     let token = String::from_utf8(out.stdout).unwrap().trim().to_owned();
     assert!(token.starts_with("dkmcp_"), "{token}");
     let stored = std::fs::read_to_string(&config).unwrap();
@@ -119,13 +156,18 @@ async fn mock_agent_click_then_screenshot() {
         "the token is kept on its secret line only: {with_token:?}"
     );
     let list = String::from_utf8(dalkerd(&config, &["mcp-token", "list"]).stdout).unwrap();
-    assert!(list.contains("e2e") && list.contains("view,input,clipboard") && list.contains("active"), "{list}");
+    assert!(
+        list.contains("e2e") && list.contains("view,input,clipboard") && list.contains("active"),
+        "{list}"
+    );
 
     let (_agent, url) = start_agent(&config);
     let client = connect(&url, &token).await;
 
-    let info: serde_json::Value =
-        serde_json::from_str(&text(&call(&client, "get_host_info", serde_json::json!({})).await)).unwrap();
+    let info: serde_json::Value = serde_json::from_str(&text(
+        &call(&client, "get_host_info", serde_json::json!({})).await,
+    ))
+    .unwrap();
     assert_eq!(info["capture"], "mock");
     assert_eq!(info["screen_available"], true);
 
@@ -148,13 +190,27 @@ async fn mock_agent_click_then_screenshot() {
     while zoom.get_pixel(10, 10).0 != [255, 0, 255] && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(250)).await;
         zoom = image(
-            &call(&client, "screenshot", serde_json::json!({"region": {"x": 190, "y": 90, "w": 20, "h": 20}})).await,
+            &call(
+                &client,
+                "screenshot",
+                serde_json::json!({"region": {"x": 190, "y": 90, "w": 20, "h": 20}}),
+            )
+            .await,
         );
     }
-    assert_eq!(zoom.get_pixel(10, 10).0, [255, 0, 255], "pointer drawn at the click");
+    assert_eq!(
+        zoom.get_pixel(10, 10).0,
+        [255, 0, 255],
+        "pointer drawn at the click"
+    );
 
     // Clipboard through the agent's clipboard thread (the on-demand read).
-    call(&client, "clipboard_set", serde_json::json!({"text": "from the agent"})).await;
+    call(
+        &client,
+        "clipboard_set",
+        serde_json::json!({"text": "from the agent"}),
+    )
+    .await;
     let r = call(&client, "clipboard_get", serde_json::json!({})).await;
     let v: serde_json::Value = serde_json::from_str(&text(&r)).unwrap();
     assert_eq!(v["text"], "from the agent");
@@ -179,7 +235,15 @@ async fn mock_agent_click_then_screenshot() {
 fn refuses_a_plaintext_lan_bind_and_bad_token_requests() {
     let config = temp_config("cli");
     let out = Command::new(EXE)
-        .args(["mcp-token", "create", "--name", "x", "--scopes", "view,files", "--config"])
+        .args([
+            "mcp-token",
+            "create",
+            "--name",
+            "x",
+            "--scopes",
+            "view,files",
+            "--config",
+        ])
         .arg(&config)
         .output()
         .unwrap();
@@ -190,9 +254,15 @@ fn refuses_a_plaintext_lan_bind_and_bad_token_requests() {
         .output()
         .unwrap();
     assert!(!out.status.success(), "bad name rejected");
-    dalkerd(&config, &["mcp-token", "create", "--name", "dup", "--expires", "1d"]);
-    let out =
-        Command::new(EXE).args(["mcp-token", "create", "--name", "dup", "--config"]).arg(&config).output().unwrap();
+    dalkerd(
+        &config,
+        &["mcp-token", "create", "--name", "dup", "--expires", "1d"],
+    );
+    let out = Command::new(EXE)
+        .args(["mcp-token", "create", "--name", "dup", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
     assert!(!out.status.success(), "duplicate names rejected");
 
     // A LAN address with DALKER_MCP_ALLOW_PLAINTEXT=0: the MCP server stays off.
@@ -218,7 +288,10 @@ fn refuses_a_plaintext_lan_bind_and_bad_token_requests() {
     let deadline = Instant::now() + Duration::from_secs(30);
     let (mut refused, mut web) = (false, false);
     while let Ok(line) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-        assert!(!line.contains("MCP server on"), "must not serve MCP: {line}");
+        assert!(
+            !line.contains("MCP server on"),
+            "must not serve MCP: {line}"
+        );
         refused |= line.contains("MCP server not started");
         web |= line.contains("web UI on");
         if web && refused {

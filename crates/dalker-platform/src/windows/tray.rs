@@ -22,13 +22,14 @@ use windows::Win32::UI::Shell::{
     NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateIconIndirect, CreateWindowExW, DefWindowProcW, DestroyIcon,
-    DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, KillTimer, MessageBoxW,
-    PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SetForegroundWindow,
-    SetTimer, TrackPopupMenu, TranslateMessage, HICON, ICONINFO, MB_ICONQUESTION, MB_SETFOREGROUND,
-    MB_TOPMOST, MB_YESNO, MF_DISABLED, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, SW_SHOWNORMAL,
-    TPM_BOTTOMALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY,
-    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_POPUP,
+    AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
+    DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, KillTimer,
+    MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW,
+    SetForegroundWindow, SetTimer, TrackPopupMenu, TranslateMessage, HICON, ICONINFO,
+    MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MF_DISABLED, MF_GRAYED, MF_SEPARATOR,
+    MF_STRING, MSG, SW_SHOWNORMAL, TPM_BOTTOMALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP,
+    WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER,
+    WNDCLASSEXW, WS_POPUP,
 };
 
 const WM_TRAY: u32 = WM_APP + 1;
@@ -108,7 +109,10 @@ impl Tray {
             .spawn(move || unsafe { run(cfg, tx) })
             .map_err(|e| format!("spawn tray thread: {e}"))?;
         match rx.recv_timeout(Duration::from_secs(10)) {
-            Ok(Ok(hwnd)) => Ok(Self { hwnd, thread: Some(thread) }),
+            Ok(Ok(hwnd)) => Ok(Self {
+                hwnd,
+                thread: Some(thread),
+            }),
             Ok(Err(e)) => Err(e),
             Err(_) => Err("tray thread did not start".into()),
         }
@@ -118,7 +122,12 @@ impl Tray {
 impl Drop for Tray {
     fn drop(&mut self) {
         unsafe {
-            let _ = PostMessageW(Some(HWND(self.hwnd as *mut _)), WM_CLOSE, WPARAM(0), LPARAM(0));
+            let _ = PostMessageW(
+                Some(HWND(self.hwnd as *mut _)),
+                WM_CLOSE,
+                WPARAM(0),
+                LPARAM(0),
+            );
         }
         if let Some(t) = self.thread.take() {
             let _ = t.join();
@@ -146,7 +155,13 @@ unsafe fn make_icon(look: crate::icon::Look) -> Result<HICON, String> {
     let color = CreateBitmap(32, 32, 1, 32, Some(px.as_ptr() as *const _));
     let mask_bits = vec![0u8; 32 * 4]; // 1 bpp, 32 rows of 4 bytes; alpha channel does the work
     let mask = CreateBitmap(32, 32, 1, 1, Some(mask_bits.as_ptr() as *const _));
-    let info = ICONINFO { fIcon: true.into(), xHotspot: 0, yHotspot: 0, hbmMask: mask, hbmColor: color };
+    let info = ICONINFO {
+        fIcon: true.into(),
+        xHotspot: 0,
+        yHotspot: 0,
+        hbmMask: mask,
+        hbmColor: color,
+    };
     let icon = CreateIconIndirect(&info).map_err(|e| format!("CreateIconIndirect: {e}"));
     let _ = DeleteObject(HGDIOBJ(color.0));
     let _ = DeleteObject(HGDIOBJ(mask.0));
@@ -167,17 +182,29 @@ fn tip_for(viewers: usize) -> String {
     }
 }
 
-unsafe fn notify(hwnd: HWND, message: windows::Win32::UI::Shell::NOTIFY_ICON_MESSAGE, st: &State) -> bool {
+unsafe fn notify(
+    hwnd: HWND,
+    message: windows::Win32::UI::Shell::NOTIFY_ICON_MESSAGE,
+    st: &State,
+) -> bool {
     let mut data = NOTIFYICONDATAW {
         cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
         hWnd: hwnd,
         uID: TRAY_ID,
         uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP,
         uCallbackMessage: WM_TRAY,
-        hIcon: if st.shown_viewers > 0 { st.icon_busy } else { st.icon_idle },
+        hIcon: if st.shown_viewers > 0 {
+            st.icon_busy
+        } else {
+            st.icon_idle
+        },
         ..Default::default()
     };
-    for (i, c) in tip_for(st.shown_viewers).encode_utf16().take(127).enumerate() {
+    for (i, c) in tip_for(st.shown_viewers)
+        .encode_utf16()
+        .take(127)
+        .enumerate()
+    {
         data.szTip[i] = c;
     }
     Shell_NotifyIconW(message, &data).as_bool()
@@ -185,7 +212,14 @@ unsafe fn notify(hwnd: HWND, message: windows::Win32::UI::Shell::NOTIFY_ICON_MES
 
 unsafe fn open(url: &str) {
     let url = wide(url);
-    ShellExecuteW(None, w!("open"), PCWSTR(url.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
+    ShellExecuteW(
+        None,
+        w!("open"),
+        PCWSTR(url.as_ptr()),
+        PCWSTR::null(),
+        PCWSTR::null(),
+        SW_SHOWNORMAL,
+    );
 }
 
 unsafe fn show_menu(hwnd: HWND) {
@@ -197,7 +231,12 @@ unsafe fn show_menu(hwnd: HWND) {
             .as_ref()
             .filter(|a| (a.running)())
             .map(|a| ai_agents_label((a.connected)(), (a.blocked)()));
-        (st.cfg.viewers.load(Ordering::SeqCst), st.cfg.log_dir.is_some(), ai, (st.cfg.open_url)().is_some())
+        (
+            st.cfg.viewers.load(Ordering::SeqCst),
+            st.cfg.log_dir.is_some(),
+            ai,
+            (st.cfg.open_url)().is_some(),
+        )
     };
     let Ok(menu) = CreatePopupMenu() else { return };
     let item = |id: usize, text: &str| {
@@ -208,7 +247,12 @@ unsafe fn show_menu(hwnd: HWND) {
         item(CMD_OPEN, "Open Dalker in the browser");
     } else {
         let t = wide("Open Dalker in the browser (web access is off)");
-        let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED | MF_DISABLED, 0, PCWSTR(t.as_ptr()));
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING | MF_GRAYED | MF_DISABLED,
+            0,
+            PCWSTR(t.as_ptr()),
+        );
     }
     item(CMD_SETTINGS, "Settings...");
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
@@ -217,7 +261,12 @@ unsafe fn show_menu(hwnd: HWND) {
         1 => "1 viewer connected".to_owned(),
         n => format!("{n} viewers connected"),
     });
-    let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED | MF_DISABLED, 0, PCWSTR(status.as_ptr()));
+    let _ = AppendMenuW(
+        menu,
+        MF_STRING | MF_GRAYED | MF_DISABLED,
+        0,
+        PCWSTR(status.as_ptr()),
+    );
     if let Some(label) = &ai_agents {
         item(CMD_AI_AGENTS, label);
     }
@@ -231,7 +280,15 @@ unsafe fn show_menu(hwnd: HWND) {
     let _ = GetCursorPos(&mut pt);
     // Required so the menu closes when the user clicks elsewhere.
     let _ = SetForegroundWindow(hwnd);
-    let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, pt.x, pt.y, None, hwnd, None);
+    let cmd = TrackPopupMenu(
+        menu,
+        TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,
+        pt.x,
+        pt.y,
+        None,
+        hwnd,
+        None,
+    );
     let _ = DestroyMenu(menu);
     handle_command(hwnd, cmd.0 as usize);
 }
@@ -352,7 +409,11 @@ unsafe fn run(cfg: TrayConfig, ready: mpsc::Sender<Result<isize, String>>) {
             }))
             .map_err(|_| "tray already running".to_owned())?;
 
-        let hinst = HINSTANCE(GetModuleHandleW(PCWSTR::null()).map_err(|e| e.to_string())?.0);
+        let hinst = HINSTANCE(
+            GetModuleHandleW(PCWSTR::null())
+                .map_err(|e| e.to_string())?
+                .0,
+        );
         let class = w!("DalkerTray");
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -418,7 +479,11 @@ mod tests {
             let stem = (14 * 32 + 7) * 4;
             let (b, g, r, a) = (px[stem], px[stem + 1], px[stem + 2], px[stem + 3]);
             match look {
-                crate::icon::Look::Normal => assert!(r > 200 && g > 70 && g < 150 && b < 80 && a == 255, "{:?}", (b, g, r, a)),
+                crate::icon::Look::Normal => assert!(
+                    r > 200 && g > 70 && g < 150 && b < 80 && a == 255,
+                    "{:?}",
+                    (b, g, r, a)
+                ),
                 crate::icon::Look::Connected => {
                     let red = crate::icon::RED;
                     assert_eq!((b, g, r, a), (red.2, red.1, red.0, 255))
@@ -432,8 +497,14 @@ mod tests {
         assert!(tip_for(0).contains("ready"));
         assert!(tip_for(1).contains("1 viewer"));
         assert!(tip_for(3).contains("3 viewers"));
-        assert_eq!(ai_agents_label(0, false), "Disconnect AI agents (none connected)");
-        assert_eq!(ai_agents_label(2, false), "Disconnect AI agents (2 connected)");
+        assert_eq!(
+            ai_agents_label(0, false),
+            "Disconnect AI agents (none connected)"
+        );
+        assert_eq!(
+            ai_agents_label(2, false),
+            "Disconnect AI agents (2 connected)"
+        );
         assert_eq!(ai_agents_label(1, true), "Allow AI agents again");
         assert!(tip_for(1).encode_utf16().count() < 127);
     }

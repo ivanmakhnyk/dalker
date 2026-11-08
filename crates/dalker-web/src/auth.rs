@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
-use rand::RngCore;
+use rand::TryRng;
 
 pub const COOKIE_NAME: &str = "dalker_session";
 
@@ -64,7 +64,12 @@ impl Authenticator {
             PasswordHash::new(&creds.password_hash)
                 .map_err(|e| anyhow::anyhow!("invalid password hash: {e}"))?;
         }
-        Ok(Self { creds: Mutex::new(creds), sessions: Mutex::new(HashMap::new()), ttl, cookie_secure: CookieSecure::default() })
+        Ok(Self {
+            creds: Mutex::new(creds),
+            sessions: Mutex::new(HashMap::new()),
+            ttl,
+            cookie_secure: CookieSecure::default(),
+        })
     }
 
     pub fn with_cookie_secure(mut self, mode: CookieSecure) -> Self {
@@ -84,7 +89,8 @@ impl Authenticator {
     /// Replaces the login password hash, e.g. after it was changed on the host. There is no
     /// way to change it over HTTP. Every session is signed out.
     pub fn set_password_hash(&self, password_hash: &str) -> anyhow::Result<()> {
-        PasswordHash::new(password_hash).map_err(|e| anyhow::anyhow!("invalid password hash: {e}"))?;
+        PasswordHash::new(password_hash)
+            .map_err(|e| anyhow::anyhow!("invalid password hash: {e}"))?;
         self.creds.lock().unwrap().password_hash = password_hash.to_owned();
         self.sessions.lock().unwrap().clear();
         Ok(())
@@ -103,9 +109,13 @@ impl Authenticator {
     pub fn login(&self, password: &str) -> Option<String> {
         let stored_hash = self.creds.lock().unwrap().password_hash.clone();
         let hash = PasswordHash::new(&stored_hash).ok()?;
-        Argon2::default().verify_password(password.as_bytes(), &hash).ok()?;
+        Argon2::default()
+            .verify_password(password.as_bytes(), &hash)
+            .ok()?;
         let mut raw = [0u8; 32];
-        rand::rngs::OsRng.fill_bytes(&mut raw);
+        rand::rngs::SysRng
+            .try_fill_bytes(&mut raw)
+            .expect("the OS random number generator failed");
         let token: String = raw.iter().map(|b| format!("{b:02x}")).collect();
         let mut sessions = self.sessions.lock().unwrap();
         let now = Instant::now();
@@ -146,7 +156,9 @@ mod tests {
 
     fn auth() -> Authenticator {
         Authenticator::new(
-            Credentials { password_hash: hash_password("s3cret").unwrap() },
+            Credentials {
+                password_hash: hash_password("s3cret").unwrap(),
+            },
             Duration::from_secs(60),
         )
         .unwrap()
@@ -167,7 +179,9 @@ mod tests {
     #[test]
     fn expired_sessions_are_rejected() {
         let a = Authenticator::new(
-            Credentials { password_hash: hash_password("p").unwrap() },
+            Credentials {
+                password_hash: hash_password("p").unwrap(),
+            },
             Duration::ZERO,
         )
         .unwrap();
@@ -178,7 +192,9 @@ mod tests {
     #[test]
     fn rejects_garbage_hash() {
         assert!(Authenticator::new(
-            Credentials { password_hash: "plaintext".into() },
+            Credentials {
+                password_hash: "plaintext".into()
+            },
             Duration::from_secs(1)
         )
         .is_err());
@@ -189,13 +205,24 @@ mod tests {
         let a = auth();
         let old_session = a.login("s3cret").unwrap();
         assert!(a.set_password_hash("plaintext").is_err());
-        let none = Authenticator::new(Credentials { password_hash: String::new() }, Duration::from_secs(60)).unwrap();
-        assert!(!none.has_password() && none.login("").is_none() && none.login("x").is_none(), "no password: no sign-in");
-        none.set_password_hash(&hash_password("chosen-later").unwrap()).unwrap();
+        let none = Authenticator::new(
+            Credentials {
+                password_hash: String::new(),
+            },
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        assert!(
+            !none.has_password() && none.login("").is_none() && none.login("x").is_none(),
+            "no password: no sign-in"
+        );
+        none.set_password_hash(&hash_password("chosen-later").unwrap())
+            .unwrap();
         assert!(none.has_password() && none.login("chosen-later").is_some());
         assert!(a.is_valid(&old_session), "a bad hash changes nothing");
 
-        a.set_password_hash(&hash_password("brand-new-pw1").unwrap()).unwrap();
+        a.set_password_hash(&hash_password("brand-new-pw1").unwrap())
+            .unwrap();
         assert!(!a.is_valid(&old_session), "sessions are signed out");
         assert!(a.login("s3cret").is_none());
         assert!(a.login("brand-new-pw1").is_some());
@@ -203,7 +230,10 @@ mod tests {
 
     #[test]
     fn cookie_parsing() {
-        assert_eq!(token_from_cookie_header("a=1; dalker_session=abc; b=2"), Some("abc"));
+        assert_eq!(
+            token_from_cookie_header("a=1; dalker_session=abc; b=2"),
+            Some("abc")
+        );
         assert_eq!(token_from_cookie_header("a=1"), None);
     }
 }

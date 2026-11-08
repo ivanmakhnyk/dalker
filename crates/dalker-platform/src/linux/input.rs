@@ -44,7 +44,9 @@ pub struct UinputInjector {
 }
 
 fn uinput_err(ctx: &str, e: std::io::Error) -> InputError {
-    let hint = if e.kind() == std::io::ErrorKind::PermissionDenied || e.kind() == std::io::ErrorKind::NotFound {
+    let hint = if e.kind() == std::io::ErrorKind::PermissionDenied
+        || e.kind() == std::io::ErrorKind::NotFound
+    {
         " (need write access to /dev/uinput: load the `uinput` module and add the udev rule from the README)"
     } else {
         ""
@@ -73,7 +75,10 @@ impl UinputInjector {
             keyboard,
             pointer: None,
             // Replaced by set_display() as soon as the capturer reports its size.
-            display: DisplayInfo { width: 1920, height: 1080 },
+            display: DisplayInfo {
+                width: 1920,
+                height: 1080,
+            },
             layout: None,
             gnome: None,
             wayland: super::is_wayland_session(),
@@ -95,7 +100,13 @@ impl UinputInjector {
     /// map 1:1 onto screen positions.
     fn build_pointer(&self) -> Result<VirtualDevice, InputError> {
         let mut buttons = AttributeSet::<KeyCode>::new();
-        for b in [KeyCode::BTN_LEFT, KeyCode::BTN_RIGHT, KeyCode::BTN_MIDDLE, KeyCode::BTN_SIDE, KeyCode::BTN_EXTRA] {
+        for b in [
+            KeyCode::BTN_LEFT,
+            KeyCode::BTN_RIGHT,
+            KeyCode::BTN_MIDDLE,
+            KeyCode::BTN_SIDE,
+            KeyCode::BTN_EXTRA,
+        ] {
             buttons.insert(b);
         }
         let mut rel = AttributeSet::<RelativeAxisCode>::new();
@@ -113,8 +124,10 @@ impl UinputInjector {
         };
         let max_x = w.saturating_sub(1).max(1) as i32;
         let max_y = h.saturating_sub(1).max(1) as i32;
-        let abs_x = UinputAbsSetup::new(AbsoluteAxisCode::ABS_X, AbsInfo::new(0, 0, max_x, 0, 0, 1));
-        let abs_y = UinputAbsSetup::new(AbsoluteAxisCode::ABS_Y, AbsInfo::new(0, 0, max_y, 0, 0, 1));
+        let abs_x =
+            UinputAbsSetup::new(AbsoluteAxisCode::ABS_X, AbsInfo::new(0, 0, max_x, 0, 0, 1));
+        let abs_y =
+            UinputAbsSetup::new(AbsoluteAxisCode::ABS_Y, AbsInfo::new(0, 0, max_y, 0, 0, 1));
 
         VirtualDevice::builder()
             .map_err(|e| uinput_err("open /dev/uinput", e))?
@@ -164,7 +177,8 @@ impl UinputInjector {
     }
 
     fn abs_events(&mut self, x: f32, y: f32) -> [evdev::InputEvent; 2] {
-        if (self.gnome.is_some() || self.wayland) && self.layout_checked.elapsed() >= LAYOUT_RECHECK {
+        if (self.gnome.is_some() || self.wayland) && self.layout_checked.elapsed() >= LAYOUT_RECHECK
+        {
             self.refresh_layout();
         }
         let (px, py) = map_point(NormPoint::new(x, y), self.display, self.layout);
@@ -175,7 +189,9 @@ impl UinputInjector {
     }
 
     fn wheel_events(&mut self, dx: f32, dy: f32) -> Vec<evdev::InputEvent> {
-        let rel = |code: RelativeAxisCode, v: i32| evdev::InputEvent::new(EventType::RELATIVE.0, code.0, v);
+        let rel = |code: RelativeAxisCode, v: i32| {
+            evdev::InputEvent::new(EventType::RELATIVE.0, code.0, v)
+        };
         let mut out = Vec::with_capacity(4);
         // Browser: +dy = down, +dx = right. evdev: +REL_WHEEL = up, +REL_HWHEEL = right.
         let v = -dy;
@@ -234,11 +250,13 @@ impl UinputInjector {
 
     fn type_ascii(&mut self, text: &str) -> Result<(), InputError> {
         let io = |e: std::io::Error| InputError::Backend(format!("uinput write: {e}"));
-        let key = |code: u16, down: bool| evdev::InputEvent::new(EventType::KEY.0, code, down as i32);
+        let key =
+            |code: u16, down: bool| evdev::InputEvent::new(EventType::KEY.0, code, down as i32);
         let shift = KeyCode::KEY_LEFTSHIFT.0;
         let mut missing = String::new();
         for c in text.chars() {
-            let Some((code, shifted)) = us_key(c).and_then(|(code, shifted)| Some((keymap::lookup(code)?.evdev, shifted)))
+            let Some((code, shifted)) =
+                us_key(c).and_then(|(code, shifted)| Some((keymap::lookup(code)?.evdev, shifted)))
             else {
                 missing.push(c);
                 continue;
@@ -266,11 +284,14 @@ impl UinputInjector {
 /// The key (DOM code) and Shift state that type an ASCII character on a US layout.
 fn us_key(c: char) -> Option<(&'static str, bool)> {
     const LETTERS: [&str; 26] = [
-        "KeyA", "KeyB", "KeyC", "KeyD", "KeyE", "KeyF", "KeyG", "KeyH", "KeyI", "KeyJ", "KeyK", "KeyL", "KeyM",
-        "KeyN", "KeyO", "KeyP", "KeyQ", "KeyR", "KeyS", "KeyT", "KeyU", "KeyV", "KeyW", "KeyX", "KeyY", "KeyZ",
+        "KeyA", "KeyB", "KeyC", "KeyD", "KeyE", "KeyF", "KeyG", "KeyH", "KeyI", "KeyJ", "KeyK",
+        "KeyL", "KeyM", "KeyN", "KeyO", "KeyP", "KeyQ", "KeyR", "KeyS", "KeyT", "KeyU", "KeyV",
+        "KeyW", "KeyX", "KeyY", "KeyZ",
     ];
-    const DIGITS: [&str; 10] =
-        ["Digit0", "Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8", "Digit9"];
+    const DIGITS: [&str; 10] = [
+        "Digit0", "Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8",
+        "Digit9",
+    ];
     Some(match c {
         'a'..='z' => (LETTERS[c as usize - 'a' as usize], false),
         'A'..='Z' => (LETTERS[c as usize - 'A' as usize], true),
@@ -313,15 +334,38 @@ fn us_key(c: char) -> Option<(&'static str, bool)> {
 }
 
 /// Device position for a normalized point on the streamed screen. On GNOME the stream
-/// is the primary monitor minus the red border, so the border strip is skipped too.
+/// is the primary monitor minus the red border, so the picture maps onto the area inside
+/// the border, and the outermost pixels of the picture reach out to the screen edge.
 fn map_point(p: NormPoint, display: DisplayInfo, layout: Option<MonitorLayout>) -> (i32, i32) {
     match layout {
         Some(l) => {
             let inset = gnome::BORDER_INSET.min(l.width / 2).min(l.height / 2);
             let (x, y) = p.to_pixels(l.width - 2 * inset, l.height - 2 * inset);
-            ((l.x + inset) as i32 + x, (l.y + inset) as i32 + y)
+            (
+                l.x as i32 + across_border(x, l.width, inset),
+                l.y as i32 + across_border(y, l.height, inset),
+            )
         }
         None => p.to_pixels(display.width, display.height),
+    }
+}
+
+/// Offset on a monitor `size` pixels long for pixel `s` of a picture cropped by `inset` on
+/// both sides. Inside, a picture pixel is the screen pixel under it. In the outermost `inset`
+/// pixels at each end the mapping stretches across the border, so the edge of the picture is
+/// the edge of the screen (GNOME's hot corner, edge-docked panels) and every step still moves.
+fn across_border(s: i32, size: u32, inset: u32) -> i32 {
+    let (size, inset) = (size as i32, inset as i32);
+    let last = size - 2 * inset - 1; // last pixel of the picture
+    if inset == 0 || last < 2 * inset {
+        return s + inset;
+    }
+    if s < inset {
+        2 * s
+    } else if s > last - inset {
+        size - 1 - 2 * (last - s)
+    } else {
+        s + inset
     }
 }
 
@@ -366,7 +410,8 @@ impl InputInjector for UinputInjector {
             }
             InputEvent::MouseButton { button, down, x, y } => {
                 let [ax, ay] = self.abs_events(*x, *y);
-                let btn = evdev::InputEvent::new(EventType::KEY.0, button_code(*button).0, *down as i32);
+                let btn =
+                    evdev::InputEvent::new(EventType::KEY.0, button_code(*button).0, *down as i32);
                 // Move first (own SYN_REPORT) so the click lands at the right spot.
                 let p = self.pointer()?;
                 p.emit(&[ax, ay]).map_err(io)?;
@@ -380,7 +425,8 @@ impl InputInjector for UinputInjector {
                 self.pointer()?.emit(&evs).map_err(io)
             }
             InputEvent::Key { code, down } => {
-                let kc = keymap::lookup(code).ok_or_else(|| InputError::UnknownKey(code.clone()))?;
+                let kc =
+                    keymap::lookup(code).ok_or_else(|| InputError::UnknownKey(code.clone()))?;
                 let ev = evdev::InputEvent::new(EventType::KEY.0, kc.evdev, *down as i32);
                 self.last_key = Instant::now();
                 self.keyboard.emit(&[ev]).map_err(io)
@@ -391,9 +437,22 @@ impl InputInjector for UinputInjector {
             // Linux has no secure attention sequence; the keys themselves are what a
             // desktop reacts to (GNOME: the log-out dialog). The browser can't send them.
             InputEvent::SecureAttention => {
-                let key = |code: u16, down: bool| evdev::InputEvent::new(EventType::KEY.0, code, down as i32);
-                let (ctrl, alt, del) = (KeyCode::KEY_LEFTCTRL.0, KeyCode::KEY_LEFTALT.0, KeyCode::KEY_DELETE.0);
-                for (code, down) in [(ctrl, true), (alt, true), (del, true), (del, false), (alt, false), (ctrl, false)] {
+                let key = |code: u16, down: bool| {
+                    evdev::InputEvent::new(EventType::KEY.0, code, down as i32)
+                };
+                let (ctrl, alt, del) = (
+                    KeyCode::KEY_LEFTCTRL.0,
+                    KeyCode::KEY_LEFTALT.0,
+                    KeyCode::KEY_DELETE.0,
+                );
+                for (code, down) in [
+                    (ctrl, true),
+                    (alt, true),
+                    (del, true),
+                    (del, false),
+                    (alt, false),
+                    (ctrl, false),
+                ] {
                     self.keyboard.emit(&[key(code, down)]).map_err(io)?;
                 }
                 Ok(())
@@ -410,7 +469,10 @@ mod tests {
     fn us_keys_cover_printable_ascii() {
         for c in ' '..='~' {
             let (code, _) = us_key(c).unwrap_or_else(|| panic!("no key for {c:?}"));
-            assert!(keymap::lookup(code).is_some(), "{code} is not in the keymap");
+            assert!(
+                keymap::lookup(code).is_some(),
+                "{code} is not in the keymap"
+            );
         }
         assert_eq!(us_key('A'), Some(("KeyA", true)));
         assert_eq!(us_key('?'), Some(("Slash", true)));
@@ -418,23 +480,92 @@ mod tests {
     }
 
     #[test]
+    fn picture_edges_stretch_across_the_border() {
+        // 1280 px monitor, 5 px border: the picture is 1270 px wide (pixels 0..=1269).
+        let m: Vec<i32> = (0..1270).map(|s| across_border(s, 1280, 5)).collect();
+        assert_eq!(&m[..7], &[0, 2, 4, 6, 8, 10, 11]);
+        assert_eq!(&m[1263..], &[1268, 1269, 1271, 1273, 1275, 1277, 1279]);
+        assert!(
+            m.windows(2).all(|w| w[1] > w[0]),
+            "every picture pixel moves the pointer"
+        );
+        // No border: unchanged.
+        assert_eq!(across_border(0, 1280, 0), 0);
+        assert_eq!(across_border(1279, 1280, 0), 1279);
+    }
+
+    #[test]
     fn points_map_onto_the_primary_monitor_of_the_desktop() {
-        let display = DisplayInfo { width: 1280, height: 800 };
+        let display = DisplayInfo {
+            width: 1280,
+            height: 800,
+        };
         // Two monitors side by side, the streamed (primary) one on the left.
-        let left = MonitorLayout { x: 0, y: 0, width: 1280, height: 800, desktop_width: 2560, desktop_height: 800 };
-        assert_eq!(map_point(NormPoint::new(0.5, 0.5), display, Some(left)), (640, 400));
-        // The stream's edges are just inside the 5 px red border, which is not streamed.
-        assert_eq!(map_point(NormPoint::new(0.0, 0.0), display, Some(left)), (5, 5));
-        assert_eq!(map_point(NormPoint::new(1.0, 1.0), display, Some(left)), (1274, 794));
+        let left = MonitorLayout {
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 800,
+            desktop_width: 2560,
+            desktop_height: 800,
+        };
+        assert_eq!(
+            map_point(NormPoint::new(0.5, 0.5), display, Some(left)),
+            (640, 400)
+        );
+        // The 5 px red border is not streamed, but the picture's edges still reach the
+        // screen's edges (GNOME's hot corner).
+        assert_eq!(
+            map_point(NormPoint::new(0.0, 0.0), display, Some(left)),
+            (0, 0)
+        );
+        assert_eq!(
+            map_point(NormPoint::new(1.0, 1.0), display, Some(left)),
+            (1279, 799)
+        );
+        // Away from the edges a picture pixel is the screen pixel under it.
+        assert_eq!(
+            map_point(NormPoint::new(20.0 / 1269.0, 0.0), display, Some(left)).0,
+            25
+        );
         // ...and on the right, lower than a taller neighbour.
-        let right = MonitorLayout { x: 1920, y: 100, width: 1280, height: 800, desktop_width: 3200, desktop_height: 1200 };
-        assert_eq!(map_point(NormPoint::new(0.0, 0.0), display, Some(right)), (1925, 105));
-        assert_eq!(map_point(NormPoint::new(1.0, 1.0), display, Some(right)), (3194, 894));
+        let right = MonitorLayout {
+            x: 1920,
+            y: 100,
+            width: 1280,
+            height: 800,
+            desktop_width: 3200,
+            desktop_height: 1200,
+        };
+        assert_eq!(
+            map_point(NormPoint::new(0.0, 0.0), display, Some(right)),
+            (1920, 100)
+        );
+        assert_eq!(
+            map_point(NormPoint::new(1.0, 1.0), display, Some(right)),
+            (3199, 899)
+        );
         // Scaled monitor: the stream is in physical pixels, the layout in logical ones.
-        let hidpi = MonitorLayout { x: 0, y: 0, width: 1280, height: 720, desktop_width: 1280, desktop_height: 720 };
-        let big = DisplayInfo { width: 2560, height: 1440 };
-        assert_eq!(map_point(NormPoint::new(0.5, 0.5), big, Some(hidpi)), (640, 360));
+        let hidpi = MonitorLayout {
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 720,
+            desktop_width: 1280,
+            desktop_height: 720,
+        };
+        let big = DisplayInfo {
+            width: 2560,
+            height: 1440,
+        };
+        assert_eq!(
+            map_point(NormPoint::new(0.5, 0.5), big, Some(hidpi)),
+            (640, 360)
+        );
         // X11: the display itself.
-        assert_eq!(map_point(NormPoint::new(1.0, 0.0), display, None), (1279, 0));
+        assert_eq!(
+            map_point(NormPoint::new(1.0, 0.0), display, None),
+            (1279, 0)
+        );
     }
 }

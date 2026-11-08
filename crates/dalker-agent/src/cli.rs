@@ -272,7 +272,9 @@ pub fn read_password_from_stdin(command: &str) -> anyhow::Result<String> {
 pub fn default_config_path() -> std::path::PathBuf {
     if cfg!(windows) {
         let base = std::env::var_os("ProgramData").unwrap_or_else(|| r"C:\ProgramData".into());
-        std::path::PathBuf::from(base).join("Dalker").join("dalker.conf")
+        std::path::PathBuf::from(base)
+            .join("Dalker")
+            .join("dalker.conf")
     } else {
         std::path::PathBuf::from("/etc/dalker/dalker.conf")
     }
@@ -280,7 +282,9 @@ pub fn default_config_path() -> std::path::PathBuf {
 
 /// The config file in use: `$DALKER_CONFIG` or the system-wide default.
 pub fn config_path() -> std::path::PathBuf {
-    std::env::var_os("DALKER_CONFIG").map(std::path::PathBuf::from).unwrap_or_else(default_config_path)
+    std::env::var_os("DALKER_CONFIG")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(default_config_path)
 }
 
 /// Loads `KEY=VALUE` lines (`#` comments allowed) into the environment so clap's
@@ -308,7 +312,12 @@ pub fn parse_config(text: &str) -> Vec<(String, String)> {
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .filter_map(|l| l.split_once('='))
-        .map(|(k, v)| (k.trim().to_owned(), v.trim().trim_matches(['"', '\'']).to_owned()))
+        .map(|(k, v)| {
+            (
+                k.trim().to_owned(),
+                v.trim().trim_matches(['"', '\'']).to_owned(),
+            )
+        })
         .filter(|(k, _)| k.starts_with("DALKER_"))
         .collect()
 }
@@ -317,7 +326,11 @@ pub fn parse_config(text: &str) -> Vec<(String, String)> {
 /// can't be read).
 pub fn read_config_value(path: &std::path::Path, key: &str) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
-    parse_config(&text).into_iter().rev().find(|(k, _)| k == key).map(|(_, v)| v)
+    parse_config(&text)
+        .into_iter()
+        .rev()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v)
 }
 
 /// Whether `path` can hold settings: a regular file (or a new one), not e.g. `/dev/null`,
@@ -347,7 +360,11 @@ pub fn write_config_value(path: &std::path::Path, key: &str, value: &str) -> any
 
 /// Sets `key` to `value` unless the config file already has it. The check and the write happen
 /// under one lock, so a concurrent writer can't slip in between. Returns whether it was set.
-pub fn write_config_value_if_missing(path: &std::path::Path, key: &str, value: &str) -> anyhow::Result<bool> {
+pub fn write_config_value_if_missing(
+    path: &std::path::Path,
+    key: &str,
+    value: &str,
+) -> anyhow::Result<bool> {
     let _lock = lock_config(path)?;
     if read_config_value(path, key).is_some() {
         return Ok(false);
@@ -363,7 +380,11 @@ pub fn write_config_value_if_missing(path: &std::path::Path, key: &str, value: &
 /// The read-modify-write runs under an exclusive lock on a file next to the config (see
 /// [`lock_config`]), so writers in other processes (e.g. several `dalkerd set-config` that a
 /// shell started at once) wait for each other instead of dropping each other's changes.
-pub fn edit_config(path: &std::path::Path, set: &[(String, String)], remove: &[String]) -> anyhow::Result<()> {
+pub fn edit_config(
+    path: &std::path::Path,
+    set: &[(String, String)],
+    remove: &[String],
+) -> anyhow::Result<()> {
     let _lock = lock_config(path)?;
     edit_config_unlocked(path, set, remove)
 }
@@ -378,8 +399,14 @@ fn config_lock_path(path: &std::path::Path) -> std::path::PathBuf {
 }
 
 fn config_dir_and_name(path: &std::path::Path) -> (std::path::PathBuf, String) {
-    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "dalker.conf".into());
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(std::path::Path::new("."));
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "dalker.conf".into());
     (dir.to_owned(), name)
 }
 
@@ -404,15 +431,26 @@ fn lock_config(path: &std::path::Path) -> anyhow::Result<std::fs::File> {
         // still be locked.
         .or_else(|_| std::fs::File::open(&lock_path))
         .map_err(|e| anyhow::anyhow!("open {}: {e}", lock_path.display()))?;
-    file.lock().map_err(|e| anyhow::anyhow!("lock {}: {e}", lock_path.display()))?;
+    file.lock()
+        .map_err(|e| anyhow::anyhow!("lock {}: {e}", lock_path.display()))?;
     Ok(file)
 }
 
 /// [`edit_config`] for a caller that already holds the lock.
-fn edit_config_unlocked(path: &std::path::Path, set: &[(String, String)], remove: &[String]) -> anyhow::Result<()> {
+fn edit_config_unlocked(
+    path: &std::path::Path,
+    set: &[(String, String)],
+    remove: &[String],
+) -> anyhow::Result<()> {
     for (k, v) in set {
-        anyhow::ensure!(k.starts_with("DALKER_") && !k.contains(['=', '\n', '\r', ' ']), "bad config key `{k}`");
-        anyhow::ensure!(!v.contains(['\n', '\r']), "the value of {k} must be one line");
+        anyhow::ensure!(
+            k.starts_with("DALKER_") && !k.contains(['=', '\n', '\r', ' ']),
+            "bad config key `{k}`"
+        );
+        anyhow::ensure!(
+            !v.contains(['\n', '\r']),
+            "the value of {k} must be one line"
+        );
     }
     let existing = match std::fs::read_to_string(path) {
         Ok(t) => t,
@@ -421,7 +459,9 @@ fn edit_config_unlocked(path: &std::path::Path, set: &[(String, String)], remove
     };
     let key_of = |line: &str| {
         let line = line.trim_start();
-        (!line.starts_with('#')).then(|| line.split_once('=').map(|(k, _)| k.trim().to_owned())).flatten()
+        (!line.starts_with('#'))
+            .then(|| line.split_once('=').map(|(k, _)| k.trim().to_owned()))
+            .flatten()
     };
     let mut done = vec![false; set.len()];
     let mut out = Vec::new();
@@ -481,12 +521,21 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dalker-cli-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("dalker.conf");
-        assert!(is_writable_config(&file), "a file that doesn't exist yet can be created");
+        assert!(
+            is_writable_config(&file),
+            "a file that doesn't exist yet can be created"
+        );
         write_config_value(&file, "DALKER_PASSWORD_HASH", "x").unwrap();
         assert!(is_writable_config(&file));
-        assert!(!is_writable_config(&dir), "a directory is not a config file");
+        assert!(
+            !is_writable_config(&dir),
+            "a directory is not a config file"
+        );
         #[cfg(unix)]
-        assert!(!is_writable_config(std::path::Path::new("/dev/null")), "writes to /dev/null are lost");
+        assert!(
+            !is_writable_config(std::path::Path::new("/dev/null")),
+            "writes to /dev/null are lost"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -499,8 +548,14 @@ mod tests {
         std::fs::write(&file, "# comment\nDALKER_BIND=0.0.0.0:8080\n").unwrap();
         assert_eq!(read_config_value(&file, "DALKER_PASSWORD_HASH"), None);
         write_config_value(&file, "DALKER_PASSWORD_HASH", "$argon2id$v=19$abc").unwrap();
-        assert_eq!(read_config_value(&file, "DALKER_PASSWORD_HASH").as_deref(), Some("$argon2id$v=19$abc"));
-        assert_eq!(read_config_value(&file, "DALKER_BIND").as_deref(), Some("0.0.0.0:8080"));
+        assert_eq!(
+            read_config_value(&file, "DALKER_PASSWORD_HASH").as_deref(),
+            Some("$argon2id$v=19$abc")
+        );
+        assert_eq!(
+            read_config_value(&file, "DALKER_BIND").as_deref(),
+            Some("0.0.0.0:8080")
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -512,13 +567,17 @@ mod tests {
         std::fs::write(&file, "# keep me\nDALKER_A=1\nDALKER_AB=2\nDALKER_B=3\n").unwrap();
         assert!(remove_config_value(&file, "DALKER_A").unwrap());
         assert!(!remove_config_value(&file, "DALKER_A").unwrap());
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "# keep me\nDALKER_AB=2\nDALKER_B=3\n");
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "# keep me\nDALKER_AB=2\nDALKER_B=3\n"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn concurrent_writers_keep_every_key() {
-        let dir = std::env::temp_dir().join(format!("dalker-cli-concurrent-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("dalker-cli-concurrent-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("dalker.conf");
         std::fs::write(&file, "# keep me\nDALKER_UDP_PORT=9000\n").unwrap();
@@ -534,9 +593,16 @@ mod tests {
             }
         });
         let set = parse_config(&std::fs::read_to_string(&file).unwrap());
-        assert_eq!(read_config_value(&file, "DALKER_UDP_PORT").as_deref(), Some("9000"));
+        assert_eq!(
+            read_config_value(&file, "DALKER_UDP_PORT").as_deref(),
+            Some("9000")
+        );
         for (i, key) in keys.iter().enumerate() {
-            assert_eq!(read_config_value(&file, key), Some(format!("{i}-4")), "{key} lost: {set:?}");
+            assert_eq!(
+                read_config_value(&file, key),
+                Some(format!("{i}-4")),
+                "{key} lost: {set:?}"
+            );
         }
         assert_eq!(set.len(), keys.len() + 1);
         std::fs::remove_dir_all(&dir).unwrap();
@@ -544,7 +610,8 @@ mod tests {
 
     #[test]
     fn writes_if_missing_only_once() {
-        let dir = std::env::temp_dir().join(format!("dalker-cli-if-missing-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("dalker-cli-if-missing-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("dalker.conf");
         assert!(write_config_value_if_missing(&file, "DALKER_A", "1").unwrap());
@@ -558,10 +625,20 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dalker-cli-edit-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("dalker.conf");
-        std::fs::write(&file, "# DALKER_A=comment\nDALKER_A=1\nDALKER_B=2\nDALKER_A=old\n").unwrap();
-        let set = [("DALKER_A".to_owned(), "x".to_owned()), ("DALKER_C".to_owned(), "3".to_owned())];
+        std::fs::write(
+            &file,
+            "# DALKER_A=comment\nDALKER_A=1\nDALKER_B=2\nDALKER_A=old\n",
+        )
+        .unwrap();
+        let set = [
+            ("DALKER_A".to_owned(), "x".to_owned()),
+            ("DALKER_C".to_owned(), "3".to_owned()),
+        ];
         edit_config(&file, &set, &["DALKER_B".to_owned()]).unwrap();
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "# DALKER_A=comment\nDALKER_A=x\nDALKER_C=3\n");
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "# DALKER_A=comment\nDALKER_A=x\nDALKER_C=3\n"
+        );
         assert!(edit_config(&file, &[("DALKER_X".into(), "a\nDALKER_Y=b".into())], &[]).is_err());
         assert!(edit_config(&file, &[("PATH".into(), "x".into())], &[]).is_err());
         let left: Vec<_> = std::fs::read_dir(&dir)
@@ -575,7 +652,10 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
             write_config_value(&file, "DALKER_D", "4").unwrap();
-            assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(
+                std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -584,7 +664,10 @@ mod tests {
     fn mcp_options() {
         let cli = Cli::try_parse_from(["dalkerd"]).unwrap();
         assert_eq!(cli.mcp, OnOff::Off, "off by default");
-        assert_eq!(cli.mcp_bind, "127.0.0.1:8743".parse::<SocketAddr>().unwrap());
+        assert_eq!(
+            cli.mcp_bind,
+            "127.0.0.1:8743".parse::<SocketAddr>().unwrap()
+        );
         assert_eq!(cli.bind, "0.0.0.0:8742".parse::<SocketAddr>().unwrap());
         assert_eq!(cli.web, OnOff::On);
         assert!(cli.mcp_allow_plaintext);
@@ -594,10 +677,25 @@ mod tests {
         let cli = Cli::try_parse_from(["dalkerd", "--cookie-secure", "on"]).unwrap();
         assert_eq!(cli.cookie_secure, dalker_web::CookieSecure::Always);
         assert!(Cli::try_parse_from(["dalkerd", "--cookie-secure", "maybe"]).is_err());
-        let cli = Cli::try_parse_from(["dalkerd", "--mcp", "on", "--mcp-allow-plaintext", "false"]).unwrap();
+        let cli = Cli::try_parse_from(["dalkerd", "--mcp", "on", "--mcp-allow-plaintext", "false"])
+            .unwrap();
         assert_eq!(cli.mcp, OnOff::On);
         assert!(!cli.mcp_allow_plaintext);
-        let cli = Cli::try_parse_from(["dalkerd", "mcp-token", "create", "--name", "x", "--scopes", "view,input"]).unwrap();
-        assert!(matches!(cli.command, Some(Command::McpToken { action: McpTokenCommand::Create { .. } })));
+        let cli = Cli::try_parse_from([
+            "dalkerd",
+            "mcp-token",
+            "create",
+            "--name",
+            "x",
+            "--scopes",
+            "view,input",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::McpToken {
+                action: McpTokenCommand::Create { .. }
+            })
+        ));
     }
 }
