@@ -22,7 +22,7 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: v
         name: Check tag against Cargo.toml
         run: |
@@ -39,7 +39,7 @@ jobs:
     # Oldest supported runner, so the binary links against an older glibc (control: libc6 >= 2.34).
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -52,7 +52,7 @@ jobs:
           mkdir -p dist
           sh packaging/linux/build-deb.sh target/release/dalkerd dist
           tar -C target/release -czf dist/dalker-agent-linux-x86_64.tar.gz dalkerd
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
           path: |
@@ -64,7 +64,7 @@ jobs:
     needs: version
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -86,7 +86,7 @@ jobs:
           packaging\windows\build-msi.ps1 -Exe target\static\release\dalkerd.exe -Wix "$env:RUNNER_TEMP\wix"
           Copy-Item target\static\release\dalkerd-console.exe target\static\release\dalkerd.com
           Compress-Archive target\static\release\dalkerd.exe, target\static\release\dalkerd.com dist\dalker-agent-windows-x86_64.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: |
@@ -101,7 +101,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
