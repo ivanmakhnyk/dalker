@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
-use rand::RngCore;
+use rand::TryRng;
 
 pub const COOKIE_NAME: &str = "dalker_session";
 
@@ -113,7 +113,9 @@ impl Authenticator {
             .verify_password(password.as_bytes(), &hash)
             .ok()?;
         let mut raw = [0u8; 32];
-        rand::rngs::OsRng.fill_bytes(&mut raw);
+        rand::rngs::SysRng
+            .try_fill_bytes(&mut raw)
+            .expect("the OS random number generator failed");
         let token: String = raw.iter().map(|b| format!("{b:02x}")).collect();
         let mut sessions = self.sessions.lock().unwrap();
         let now = Instant::now();
