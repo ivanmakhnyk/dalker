@@ -989,7 +989,7 @@ dependencies = [
 
 [[package]]
 name = "dalker-agent"
-version = "0.1.0"
+version = "0.2.0-dev.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1017,7 +1017,7 @@ dependencies = [
 
 [[package]]
 name = "dalker-core"
-version = "0.1.0"
+version = "0.2.0-dev.1"
 dependencies = [
  "bytes",
  "serde",
@@ -1027,7 +1027,7 @@ dependencies = [
 
 [[package]]
 name = "dalker-mcp"
-version = "0.1.0"
+version = "0.2.0-dev.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1047,7 +1047,7 @@ dependencies = [
 
 [[package]]
 name = "dalker-platform"
-version = "0.1.0"
+version = "0.2.0-dev.1"
 dependencies = [
  "bytes",
  "dalker-core",
@@ -1062,7 +1062,7 @@ dependencies = [
 
 [[package]]
 name = "dalker-web"
-version = "0.1.0"
+version = "0.2.0-dev.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1080,7 +1080,7 @@ dependencies = [
 
 [[package]]
 name = "dalker-webrtc"
-version = "0.1.0"
+version = "0.2.0-dev.1"
 dependencies = [
  "anyhow",
  "bytes",
