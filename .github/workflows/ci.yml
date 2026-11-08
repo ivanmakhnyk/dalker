@@ -16,6 +16,16 @@ env:
   DALKER_REQUIRE_NASM: 1
 
 jobs:
+  licenses:
+    name: licenses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Dependency licenses must be allowed by deny.toml (see CONTRIBUTING.md, "Third-party code").
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+
   fmt:
     name: fmt
     runs-on: ubuntu-latest

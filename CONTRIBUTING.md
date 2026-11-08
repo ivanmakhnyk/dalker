@@ -50,6 +50,7 @@ on your branch don't need to be polished; the pull request title is what lands o
   | Check | What it runs |
   |---|---|
   | `fmt` | `cargo fmt --all --check` |
+  | `licenses` | `cargo deny check licenses`: every dependency's license must be allowed in `deny.toml` |
   | `Linux`, `Windows` | the version check, `cargo build`, `cargo clippy` and `cargo test` for the workspace |
   | `pr-rules` | the branch name, title, `Fixes #N` line and Contributor Agreement box; it also adds the label |
 

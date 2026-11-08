@@ -1,0 +1,30 @@
+# cargo deny check licenses (run by CI): every dependency must use a license that is compatible
+# with both the AGPL-3.0 and proprietary redistribution (see CONTRIBUTING.md, "Third-party code").
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+]
+
+exceptions = [
+    # Dalker's own crates.
+    { crate = "dalker-agent", allow = ["AGPL-3.0-only"] },
+    { crate = "dalker-core", allow = ["AGPL-3.0-only"] },
+    { crate = "dalker-mcp", allow = ["AGPL-3.0-only"] },
+    { crate = "dalker-platform", allow = ["AGPL-3.0-only"] },
+    { crate = "dalker-web", allow = ["AGPL-3.0-only"] },
+    { crate = "dalker-webrtc", allow = ["AGPL-3.0-only"] },
+    # MPL-2.0 needs the maintainer's approval. All five come in through wry (the settings window's
+    # web view); MPL-2.0 applies per file, so using them unmodified is fine.
+    { crate = "cssparser", allow = ["MPL-2.0"] },
+    { crate = "cssparser-macros", allow = ["MPL-2.0"] },
+    { crate = "dtoa-short", allow = ["MPL-2.0"] },
+    { crate = "option-ext", allow = ["MPL-2.0"] },
+    { crate = "selectors", allow = ["MPL-2.0"] },
+]
