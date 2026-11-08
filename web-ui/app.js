@@ -567,6 +567,7 @@ stage.addEventListener("keydown", (e) => {
   if (!forHost(e) || e.isComposing) return;
   copyPendingHostText();
   if (prefs.keyboard === "text" && textKeyDown(e)) return;
+  if (!e.code) { typeKeyWithoutCode(e); return; }
   if (e.repeat && e.code.startsWith("Shift")) { e.preventDefault(); return; }
   heldKeys.add(e.code);
   // A paste shortcut: let the browser fire its paste event (that is how a page gets the
@@ -575,6 +576,13 @@ stage.addEventListener("keydown", (e) => {
   e.preventDefault();
   send({ type: "key", code: e.code, down: true });
 });
+// Some keyboards (IME, dead keys, some mobile keyboards) send no physical code. There is no
+// key to press on the host, so type the character itself when there is one.
+function typeKeyWithoutCode(e) {
+  if ([...e.key].length !== 1 || e.ctrlKey || e.metaKey) return;
+  e.preventDefault();
+  send({ type: "text", text: e.key });
+}
 stage.addEventListener("keyup", (e) => {
   if (!forHost(e)) return;
   if (textKeyUp(e)) { e.preventDefault(); return; }

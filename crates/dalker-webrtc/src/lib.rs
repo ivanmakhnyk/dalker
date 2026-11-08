@@ -28,6 +28,7 @@ use tokio::sync::{mpsc, watch};
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264};
 use webrtc::api::setting_engine::SettingEngine;
+use webrtc::ice::mdns::MulticastDnsMode;
 use webrtc::api::{APIBuilder, API};
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::ice::udp_mux::{UDPMuxDefault, UDPMuxParams};
@@ -107,6 +108,10 @@ impl WebRtcEngine {
         let registry = register_default_interceptors(Registry::new(), &mut media)?;
 
         let mut settings = SettingEngine::default();
+        // No mDNS: the agent never needs to resolve `.local` candidates (the browser reaches
+        // its host candidates and shows up as peer-reflexive), and the mDNS socket logs a
+        // warning for every LAN packet it cannot parse.
+        settings.set_ice_multicast_dns_mode(MulticastDnsMode::Disabled);
         if let Some(port) = config.udp_port {
             let socket = tokio::net::UdpSocket::bind(("0.0.0.0", port))
                 .await
