@@ -82,7 +82,7 @@
           </div>
           <p class="field-error" id="web-port-error"></p>
           <div class="row-end">
-            <span class="hint" id="web-url"></span>
+            <span></span>
             <button class="btn-primary" id="web-port-apply" disabled>
               <svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span>Apply</span>
             </button>
@@ -127,6 +127,19 @@
             </button>
           </div>
         </div>
+      </div>
+
+      <div class="col" id="web-address">
+        <div class="field-head"><span class="label">Address for browsers</span></div>
+        <div class="endpoint">
+          <span class="dot" id="web-dot"></span>
+          <code class="green" id="web-url"></code>
+          <select class="addr-pick" id="web-addr" title="Which of this computer's addresses to use" aria-label="Network address" hidden></select>
+          <button class="icon-btn" id="web-url-copy" title="Copy the address" aria-label="Copy the address">
+            <svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+          </button>
+        </div>
+        <p class="hint" id="web-reach"></p>
       </div>
     </section>
 
@@ -173,6 +186,7 @@
           <div class="endpoint">
             <span class="dot" id="mcp-dot"></span>
             <code id="mcp-url"></code>
+            <select class="addr-pick" id="mcp-addr" title="Which of this computer's addresses to use" aria-label="Network address" hidden></select>
             <button class="icon-btn" id="mcp-url-copy" title="Copy the address" aria-label="Copy the address">
               <svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
             </button>

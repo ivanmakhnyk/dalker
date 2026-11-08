@@ -81,7 +81,16 @@ function render(s) {
   if (host) {
     setSwitch("web-enabled", s.web.enabled);
     setPort("web-port", s.web.port, !s.web.enabled);
-    $("web-url").textContent = `Browsers open http://<this computer>:${portValue("web-port") || s.web.port}`;
+    const web = renderAddress("web", s.web.urls);
+    $("web-url").textContent = web.url;
+    $("web-dot").className = "dot " + statusClass(s.web.status);
+    $("web-reach").textContent = !s.web.enabled
+      ? "The web server is off."
+      : s.web.loopback
+        ? "Only browsers on this computer can open it."
+        : isLocal(web.host)
+          ? "This address works only on this computer. Choose a network address for other computers."
+          : "Open it in a browser on another computer on the same network.";
     const pw = $("pw-badge");
     pw.className = "badge " + (s.web.password_set ? "ok" : "bad");
     pw.innerHTML = s.web.password_set
@@ -103,6 +112,7 @@ function render(s) {
   $("mcp-port").readOnly = !host;
   $("mcp-port-apply").hidden = !host;
   $("mcp-port-default").hidden = !host;
+  if (host) renderAddress("mcp", s.mcp.urls);
   $("mcp-url").textContent = mcpUrl();
   $("mcp-dot").className = "dot " + statusClass(s.mcp.status);
   $("mcp-reach").textContent = !s.mcp.enabled
@@ -181,8 +191,41 @@ function setSwitch(id, on) {
 function mcpUrl() {
   // Set in the config file (DALKER_MCP_PUBLIC_URL) when a reverse proxy fronts the MCP server.
   if (state.mcp.public_url) return state.mcp.public_url;
-  if (state.access === "host") return state.mcp.url;
+  if (state.access === "host") return pickAddress(state.mcp.urls).url;
   return `${location.protocol}//${location.hostname}:${state.mcp.port}/mcp`;
+}
+
+// Which of the host's addresses the web and MCP endpoints show, when it has more than one (LAN,
+// VPN, virtual switch). The server lists them best first; the choice is kept for both tabs.
+let pickedHost = (() => { try { return localStorage.getItem("dalker.settings.host") || ""; } catch { return ""; } })();
+
+function pickAddress(urls) {
+  return urls.find((u) => u.host === pickedHost) || urls[0];
+}
+
+function isLocal(host) {
+  return host === "127.0.0.1" || host === "::1";
+}
+
+function renderAddress(kind, urls) {
+  const chosen = pickAddress(urls);
+  const select = $(`${kind}-addr`);
+  const options = urls.map((u) => `<option value="${esc(u.host)}">${esc(u.name ? `${u.name} · ${u.host}` : u.host)}</option>`).join("");
+  if (select.dataset.options !== options) {
+    select.innerHTML = options;
+    select.dataset.options = options;
+  }
+  select.value = chosen.host;
+  select.hidden = urls.length < 2;
+  return chosen;
+}
+
+for (const kind of ["web", "mcp"]) {
+  $(`${kind}-addr`).addEventListener("change", (e) => {
+    pickedHost = e.target.value;
+    try { localStorage.setItem("dalker.settings.host", pickedHost); } catch {}
+    if (state) render(state);
+  });
 }
 
 function setPort(id, port, disabled) {
@@ -343,7 +386,6 @@ for (const [id, path, what] of [["web-port", "/api/settings/web", "Web server"],
   input.addEventListener("input", () => {
     dirty[id] = true;
     validatePort(id);
-    if (id === "web-port" && state) $("web-url").textContent = `Browsers open http://<this computer>:${portValue(id) || state.web.port}`;
   });
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") $(id + "-apply").click(); });
   $(id + "-apply").addEventListener("click", async () => {
@@ -402,6 +444,11 @@ for (const eye of document.querySelectorAll(".eye")) {
     input.focus();
   });
 }
+
+$("web-url-copy").addEventListener("click", async () => {
+  await copyText($("web-url").textContent);
+  toast("The address is on the clipboard.");
+});
 
 $("mcp-url-copy").addEventListener("click", async () => {
   await copyText(mcpUrl());

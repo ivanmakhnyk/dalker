@@ -19,7 +19,7 @@
 //!
 //! Every change answers with the new state, so the page redraws from one source.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{Path, State};
@@ -206,6 +206,10 @@ pub fn state_json(api: &Api, saved: &Saved) -> Value {
         })
         .collect();
     let host = api.access == Access::Host;
+    // The web client reaches the host by the name it opened it with (see `mcpUrl()` in
+    // settings.js), so only the host's own window lists the host's network addresses.
+    let addrs = if host { host_addresses() } else { Vec::new() };
+    let mcp = reach(saved.mcp_bind, &addrs, "/mcp");
     json!({
         "access": if host { "host" } else { "tokens" },
         "version": env!("CARGO_PKG_VERSION"),
@@ -216,11 +220,14 @@ pub fn state_json(api: &Api, saved: &Saved) -> Value {
             "port": saved.bind.port(),
             "status": status(saved.web, live.web),
             "password_set": saved.password_set,
+            "loopback": saved.bind.ip().is_loopback(),
+            "urls": reach(saved.bind, &addrs, "/"),
         },
         "mcp": {
             "enabled": saved.mcp,
             "port": saved.mcp_bind.port(),
-            "url": mcp_url(saved.mcp_bind),
+            "url": mcp[0]["url"],
+            "urls": mcp,
             "public_url": saved.mcp_public_url,
             "loopback": saved.mcp_bind.ip().is_loopback(),
             "status": status(saved.mcp, live.mcp),
@@ -241,14 +248,68 @@ fn status(enabled: bool, up: Option<bool>) -> &'static str {
     }
 }
 
-fn mcp_url(addr: SocketAddr) -> String {
-    let host = match addr.ip() {
-        std::net::IpAddr::V4(v4) if v4.is_unspecified() => "127.0.0.1".to_owned(),
-        std::net::IpAddr::V6(v6) if v6.is_unspecified() => "[::1]".to_owned(),
-        std::net::IpAddr::V6(v6) => format!("[{v6}]"),
-        ip => ip.to_string(),
+/// A network address of this computer, as the settings page offers it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostAddr {
+    ip: IpAddr,
+    /// The interface it is on, e.g. `Ethernet` or `vEthernet (Default Switch)`.
+    name: String,
+}
+
+/// This computer's addresses other computers can use: no loopback or link-local ones, LAN
+/// (private) IPv4 addresses first, then other IPv4 ones (VPNs, public), then IPv6.
+fn host_addresses() -> Vec<HostAddr> {
+    let found = match if_addrs::get_if_addrs() {
+        Ok(found) => found,
+        Err(e) => {
+            tracing::debug!("network addresses: {e}");
+            return Vec::new();
+        }
     };
-    format!("http://{host}:{}/mcp", addr.port())
+    let mut addrs: Vec<HostAddr> = found
+        .into_iter()
+        .filter(|i| i.is_oper_up() && !i.is_loopback() && !i.is_link_local() && !i.ip().is_unspecified())
+        .map(|i| HostAddr { ip: i.ip(), name: i.name })
+        .collect();
+    addrs.sort_by_key(|a| match a.ip {
+        IpAddr::V4(v4) if v4.is_private() => 0,
+        IpAddr::V4(_) => 1,
+        IpAddr::V6(_) => 2,
+    });
+    addrs.dedup_by(|a, b| a.ip == b.ip);
+    addrs
+}
+
+/// The addresses a server bound to `bind` answers on, best first, as `{host, name, url}`
+/// (`path` is appended to each URL). One logic for the web server and the MCP server:
+///
+/// * bound to every address (`0.0.0.0` or `[::]`): each of `addrs` of that family, then this
+///   computer's own `127.0.0.1` (or `[::1]`) for clients on the host;
+/// * bound to loopback or to one address: that address alone.
+///
+/// Never empty.
+fn reach(bind: SocketAddr, addrs: &[HostAddr], path: &str) -> Vec<Value> {
+    let url = |ip: IpAddr| match ip {
+        IpAddr::V6(v6) => format!("http://[{v6}]:{}{path}", bind.port()),
+        IpAddr::V4(v4) => format!("http://{v4}:{}{path}", bind.port()),
+    };
+    let entry = |ip: IpAddr, name: &str| json!({ "host": ip.to_string(), "name": name, "url": url(ip) });
+    match bind.ip() {
+        IpAddr::V4(v4) if v4.is_unspecified() => addrs
+            .iter()
+            .filter(|a| a.ip.is_ipv4())
+            .map(|a| entry(a.ip, &a.name))
+            .chain([entry(IpAddr::V4(Ipv4Addr::LOCALHOST), "This computer only")])
+            .collect(),
+        // `[::]` also takes IPv4 connections on most systems.
+        IpAddr::V6(v6) if v6.is_unspecified() => addrs
+            .iter()
+            .map(|a| entry(a.ip, &a.name))
+            .chain([entry(IpAddr::V6(Ipv6Addr::LOCALHOST), "This computer only")])
+            .collect(),
+        ip if ip.is_loopback() => vec![entry(ip, "This computer only")],
+        ip => vec![entry(ip, "")],
+    }
 }
 
 async fn get_state(State(api): ApiState, headers: HeaderMap) -> Response {
@@ -465,6 +526,9 @@ mod tests {
         assert_eq!(v["web"]["port"], 8742);
         assert_eq!(v["web"]["status"], "running");
         assert_eq!(v["mcp"]["status"], "stopped");
+        let web = v["web"]["urls"].as_array().unwrap();
+        assert_eq!(web.last().unwrap()["url"], "http://127.0.0.1:8742/", "{web:?}");
+        assert_eq!(v["mcp"]["url"], "http://127.0.0.1:8743/mcp", "this computer only by default");
 
         let (s, v) = call(&app, "POST", "/api/settings/web", json!({"port": 9000})).await;
         assert_eq!(s, StatusCode::OK, "{v}");
@@ -512,6 +576,28 @@ mod tests {
         assert_eq!(v["state"]["tokens"].as_array().unwrap().len(), 0);
         assert!(!std::fs::read_to_string(&path).unwrap().contains("DALKER_MCP_SECRET_"), "secret removed too");
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn addresses_for_each_bind() {
+        let addrs = [
+            HostAddr { ip: "192.168.1.20".parse().unwrap(), name: "Ethernet".into() },
+            HostAddr { ip: "100.101.102.103".parse().unwrap(), name: "Tailscale".into() },
+            HostAddr { ip: "2001:db8::5".parse().unwrap(), name: "Ethernet".into() },
+        ];
+        let urls = |bind: &str, path| {
+            reach(bind.parse().unwrap(), &addrs, path).iter().map(|v| v["url"].as_str().unwrap().to_owned()).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            urls("0.0.0.0:8742", "/"),
+            ["http://192.168.1.20:8742/", "http://100.101.102.103:8742/", "http://127.0.0.1:8742/"]
+        );
+        assert_eq!(urls("127.0.0.1:8743", "/mcp"), ["http://127.0.0.1:8743/mcp"]);
+        assert_eq!(urls("10.0.0.7:8743", "/mcp"), ["http://10.0.0.7:8743/mcp"]);
+        assert_eq!(urls("[::]:8743", "/mcp").len(), 4);
+        assert_eq!(urls("[::]:8743", "/mcp")[2], "http://[2001:db8::5]:8743/mcp");
+        assert_eq!(reach("0.0.0.0:8742".parse().unwrap(), &[], "/")[0]["url"], "http://127.0.0.1:8742/", "no network");
+        assert_eq!(reach("0.0.0.0:8742".parse().unwrap(), &addrs, "/")[0]["name"], "Ethernet");
     }
 
     #[tokio::test]
