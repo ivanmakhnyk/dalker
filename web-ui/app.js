@@ -23,6 +23,13 @@ let statusText = "disconnected";
 let lastRtt = null;
 let hintTimer = null;
 let hintFadeTimer = null;
+// Why the host ended the session: the reason of its "session_end" message, until the
+// channel closes.
+let endReason = null;
+let recoverTimer = null;
+let recoverTries = 0;
+let connectedAt = 0;
+let quickDrops = 0;
 
 // ---------------------------------------------------------------- UI helpers
 
@@ -309,6 +316,7 @@ function waitIceComplete(peer, timeoutMs = 3000) {
 async function connect() {
   clearTimeout(slotRetryTimer);
   disconnect();
+  connectedAt = 0;
   setStatus("connecting…", "connecting");
   pc = new RTCPeerConnection({ iceServers: (info.ice_servers || []).map((u) => ({ urls: u })) });
   const transceiver = pc.addTransceiver("video", { direction: "recvonly" });
@@ -317,10 +325,10 @@ async function connect() {
   try { transceiver.receiver.playoutDelayHint = 0; } catch (_) {}
 
   dc = pc.createDataChannel("control", { ordered: true });
-  dc.onopen = () => { setStatus("connected", "connected"); sendStreamSettings(); };
+  dc.onopen = () => { connectedAt = Date.now(); setStatus("connected", "connected"); sendStreamSettings(); };
   dc.onmessage = (ev) => onHostMessage(ev.data);
-  // The host ended the session (or the channel died): close everything, see above.
-  dc.onclose = () => { disconnect(); };
+  // The host ended the session (or the channel died): close everything, see above, and say why.
+  dc.onclose = () => { const reason = endReason; disconnect(); sessionEnded(reason); };
   openFilesChannel();
 
   pc.ontrack = (ev) => {
@@ -331,8 +339,17 @@ async function connect() {
     const s = pc && pc.connectionState;
     // Close a dead connection for good: left open, the browser keeps sending to the host's
     // media port, which breaks the next viewer behind a single-peer forward (QEMU user net).
-    if (s === "failed") { disconnect(); setStatus("connection failed", "error"); }
-    else if (s === "disconnected" || s === "closed") setStatus("disconnected", "idle");
+    if (s === "failed") {
+      const reason = endReason;
+      const wasConnected = connectedAt > 0;
+      disconnect();
+      if (wasConnected) sessionEnded(reason);
+      else setStatus("connection failed", "error");
+    }
+    // The network dropped out; WebRTC recovers by itself if it comes back soon.
+    else if (s === "disconnected") setStatus("network lost: reconnecting…", "connecting");
+    else if (s === "connected" && dc && dc.readyState === "open") setStatus("connected", "connected");
+    else if (s === "closed") setStatus("disconnected", "idle");
   };
 
   try {
@@ -344,7 +361,7 @@ async function connect() {
     statsTimer = setInterval(updateStats, 1000);
     lockTimer = setInterval(pollLocked, 1000);
   } catch (err) {
-    if (err.status === 401) { disconnect(); showLogin("Session expired"); return; }
+    if (err.status === 401) { disconnect(); showLogin("Your session expired. Sign in again."); return; }
     // Viewer slots can still be held by a connection that is closing; they free up within
     // about 20 s, so wait and try again instead of showing a dead end.
     if (err.status === 400 && /too many viewers/i.test(err.message) && slotRetries < 6) {
@@ -359,6 +376,9 @@ async function connect() {
 }
 
 function disconnect() {
+  clearTimeout(recoverTimer);
+  recoverTimer = null;
+  endReason = null;
   releaseAll();
   clearInterval(statsTimer);
   statsTimer = null;
@@ -373,6 +393,58 @@ function disconnect() {
   video.srcObject = null;
   resetStats();
   setStatus("disconnected", "idle");
+}
+
+// ---------------------------------------------------------------- why the session ended
+
+// After the session ended (`reason` is what the host said, if anything): tell the viewer why,
+// and reconnect by itself when the host or the network comes back.
+function sessionEnded(reason) {
+  if (reason === "password_changed") {
+    setStatus("signed out: the password was changed", "idle");
+    showLogin("The password was changed on the host. Sign in again.");
+    return;
+  }
+  if (reason === "web_off") {
+    setStatus("remote access was turned off on the host", "error");
+    return;
+  }
+  // Without a reason the stream or the network broke. Don't keep reconnecting to a host that
+  // drops every new stream at once.
+  quickDrops = Date.now() - connectedAt < 30000 ? quickDrops + 1 : 0;
+  connectedAt = 0;
+  if (quickDrops >= 3) {
+    quickDrops = 0;
+    setStatus("the connection to the host keeps dropping", "error");
+    return;
+  }
+  recoverTries = 0;
+  recover(reason === "host_shutdown" ? "the host is restarting: reconnecting…" : "connection lost: reconnecting…", reason);
+}
+
+// Waits for the host to answer again (about two minutes at most), then connects. A host that
+// answers but no longer knows this browser (it restarted, or the login expired) asks to sign in.
+const RECOVER_TRIES = 40;
+function recover(text, reason) {
+  clearTimeout(recoverTimer);
+  setStatus(text, "connecting");
+  recoverTimer = setTimeout(async () => {
+    recoverTimer = null;
+    try {
+      info = await api("/api/info");
+    } catch (err) {
+      if (state !== "connecting") return; // the viewer pressed Disconnect meanwhile
+      if (err.status === 401) {
+        setStatus("signed out", "idle");
+        showLogin(reason === "host_shutdown" ? "The host restarted. Sign in again." : "Your session ended on the host. Sign in again.");
+        return;
+      }
+      if (++recoverTries < RECOVER_TRIES) { recover(text, reason); return; }
+      setStatus("the host can't be reached", "error");
+      return;
+    }
+    if (state === "connecting") connect();
+  }, recoverTries ? 3000 : 500);
 }
 
 // ---------------------------------------------------------------- stats
@@ -445,7 +517,7 @@ async function updateStats() {
 // ---------------------------------------------------------------- session controls
 
 $("btn-connect").addEventListener("click", () => { slotRetries = 0; connect(); });
-$("btn-disconnect").addEventListener("click", () => { clearTimeout(slotRetryTimer); slotRetries = 0; disconnect(); });
+$("btn-disconnect").addEventListener("click", () => { clearTimeout(slotRetryTimer); slotRetries = 0; quickDrops = 0; disconnect(); });
 // Ctrl+Alt+Del cannot be sent as keys (the browser's OS would act on it first).
 $("btn-cad").addEventListener("click", () => {
   closePopovers();
@@ -703,6 +775,9 @@ function onHostMessage(data) {
   } else if (msg.type === "settings_applied") {
     applied = msg;
     renderSettings();
+  } else if (msg.type === "session_end") {
+    // The host is about to close the session; the channel closes next (see sessionEnded).
+    endReason = msg.reason || "";
   } else if (msg.type === "clipboard") {
     clip.incoming += msg.text || "";
     if (msg.more) return;

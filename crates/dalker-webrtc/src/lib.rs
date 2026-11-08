@@ -3,8 +3,9 @@
 //! Turns a stream of [`RawFrame`]s into a WebRTC H.264 video track and turns the
 //! viewer's `"control"` DataChannel messages into [`InputEvent`]s.
 //!
-//! The same channel carries the text clipboard both ways (see [`clipboard`]) and the
-//! viewer's stream settings (see [`settings`]). File transfers use a second channel,
+//! The same channel carries the text clipboard both ways (see [`clipboard`]), the
+//! viewer's stream settings (see [`settings`]) and, when the host ends a session, the
+//! reason (see [`EndReason`]). File transfers use a second channel,
 //! `"files"` (see [`files`]).
 //!
 //! Signaling is a single non-trickle offer/answer exchange: the browser sends
@@ -31,6 +32,8 @@ use webrtc::api::setting_engine::SettingEngine;
 use webrtc::ice::mdns::MulticastDnsMode;
 use webrtc::api::{APIBuilder, API};
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
+use webrtc::data_channel::data_channel_state::RTCDataChannelState;
+use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice::udp_mux::{UDPMuxDefault, UDPMuxParams};
 use webrtc::ice::udp_network::UDPNetwork;
 use webrtc::ice::network_type::NetworkType;
@@ -72,6 +75,41 @@ pub enum ControlMessage {
     /// input to land before it looks at the screen).
     Flush(std::sync::mpsc::Sender<()>),
 }
+
+/// Why the host ends a session. [`Session::end`] tells the viewer before it closes, so the
+/// viewer can say why instead of a bare "disconnected":
+///
+/// ```text
+/// {"type":"session_end","reason":"password_changed"}     host → viewer
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndReason {
+    /// The access password was changed on the host: every viewer is signed out.
+    PasswordChanged,
+    /// Web remote access was turned off on the host.
+    WebOff,
+    /// The agent is shutting down (service stop or restart, host shutdown).
+    HostShutdown,
+}
+
+impl EndReason {
+    /// The `reason` value of the `session_end` message.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EndReason::PasswordChanged => "password_changed",
+            EndReason::WebOff => "web_off",
+            EndReason::HostShutdown => "host_shutdown",
+        }
+    }
+
+    /// The `session_end` message sent to the viewer.
+    pub fn message(self) -> String {
+        serde_json::json!({"type": "session_end", "reason": self.as_str()}).to_string()
+    }
+}
+
+/// How long [`Session::end`] waits for the `session_end` message to leave before it closes.
+const END_FLUSH: Duration = Duration::from_secs(1);
 
 /// Latest captured frame, shared by all sessions. `None` until the first capture.
 pub type FrameWatch = watch::Receiver<Option<Arc<RawFrame>>>;
@@ -216,11 +254,14 @@ impl WebRtcEngine {
 
         // Control DataChannel → input worker; host clipboard → viewer; stream settings.
         // The "files" channel carries file transfers.
+        let control_dc: ControlSlot = Arc::default();
         {
             let control = control.clone();
             let files = self.files.clone();
+            let control_dc = Arc::clone(&control_dc);
             pc.on_data_channel(Box::new(move |dc| {
                 let control = control.clone();
+                let control_dc = Arc::clone(&control_dc);
                 let clipboard = clipboard.clone();
                 let settings_tx = Arc::clone(&settings_tx);
                 let files = files.clone();
@@ -240,6 +281,7 @@ impl WebRtcEngine {
                         return;
                     }
                     tracing::debug!(session = id, "control channel open");
+                    *control_dc.lock().unwrap() = Some(Arc::clone(&dc));
                     let mut incoming = clipboard::Assembler::default();
                     let dc_weak = Arc::downgrade(&dc);
                     dc.on_message(Box::new(move |msg: DataChannelMessage| {
@@ -289,10 +331,12 @@ impl WebRtcEngine {
             }));
         }
 
-        // Connection state → lifecycle.
+        // Connection state → lifecycle. Also when the host closed the session itself (`stop`
+        // is set then), the agent hears of it, so held keys and buttons are released.
         let (closed_tx, closed_rx) = watch::channel(false);
         {
             let stop = Arc::clone(&stop);
+            let ended = AtomicBool::new(false);
             let control = control.clone();
             let pc_weak = Arc::downgrade(&pc);
             pc.on_peer_connection_state_change(Box::new(move |state| {
@@ -301,7 +345,8 @@ impl WebRtcEngine {
                     state,
                     RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed | RTCPeerConnectionState::Disconnected
                 );
-                if terminal && !stop.swap(true, Ordering::SeqCst) {
+                if terminal && !ended.swap(true, Ordering::SeqCst) {
+                    stop.store(true, Ordering::SeqCst);
                     let _ = control.send((id, ControlMessage::Closed));
                     let _ = closed_tx.send(true);
                     if let Some(pc) = pc_weak.upgrade() {
@@ -347,7 +392,7 @@ impl WebRtcEngine {
             .context("spawn encoder thread")?;
 
         tracing::info!(session = id, "session negotiated");
-        Ok((local.sdp, Session { id, pc, stop, closed: closed_rx }))
+        Ok((local.sdp, Session { id, pc, stop, closed: closed_rx, control_dc }))
     }
 }
 
@@ -357,7 +402,11 @@ pub struct Session {
     pc: Arc<RTCPeerConnection>,
     stop: Arc<AtomicBool>,
     closed: watch::Receiver<bool>,
+    /// The viewer's control channel, once it is open (for the `session_end` message).
+    control_dc: ControlSlot,
 }
+
+type ControlSlot = Arc<std::sync::Mutex<Option<Arc<RTCDataChannel>>>>;
 
 impl Session {
     /// Resolves when the peer connection reaches a terminal state.
@@ -368,6 +417,21 @@ impl Session {
     pub async fn close(&self) {
         self.stop.store(true, Ordering::SeqCst);
         let _ = self.pc.close().await;
+    }
+
+    /// Tells the viewer why the host ends the session, then closes it. The message gets up to
+    /// [`END_FLUSH`] to leave; a viewer that is already gone is closed at once.
+    pub async fn end(&self, reason: EndReason) {
+        let dc = self.control_dc.lock().unwrap().clone();
+        if let Some(dc) = dc.filter(|dc| dc.ready_state() == RTCDataChannelState::Open) {
+            if dc.send_text(reason.message()).await.is_ok() {
+                let deadline = Instant::now() + END_FLUSH;
+                while dc.buffered_amount().await > 0 && Instant::now() < deadline {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        }
+        self.close().await;
     }
 }
 
@@ -452,4 +516,21 @@ fn encode_loop(
         }
     }
     tracing::info!(session = id, encoded, "encoder stopped");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EndReason;
+
+    #[test]
+    fn end_reason_messages() {
+        for (reason, code) in [
+            (EndReason::PasswordChanged, "password_changed"),
+            (EndReason::WebOff, "web_off"),
+            (EndReason::HostShutdown, "host_shutdown"),
+        ] {
+            let msg: serde_json::Value = serde_json::from_str(&reason.message()).unwrap();
+            assert_eq!(msg, serde_json::json!({"type": "session_end", "reason": code}));
+        }
+    }
 }

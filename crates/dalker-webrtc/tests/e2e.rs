@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dalker_core::{InputEvent, MockCapturer, MouseButton, RawFrame, ScreenCapturer};
-use dalker_webrtc::{ClipboardState, ControlMessage, WebRtcConfig, WebRtcEngine};
+use dalker_webrtc::{ClipboardState, ControlMessage, EndReason, WebRtcConfig, WebRtcEngine};
 use tokio::sync::{mpsc, watch};
 use tokio::time::timeout;
 use webrtc::api::interceptor_registry::register_default_interceptors;
@@ -21,22 +21,25 @@ use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_stream_roundtrip() {
-    roundtrip(WebRtcConfig::default()).await;
+    roundtrip(WebRtcConfig::default(), false).await;
 }
 
 /// The VM/port-forward setup: one muxed UDP port advertised as 127.0.0.1.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_stream_roundtrip_udp_mux_nat1to1() {
     let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-    roundtrip(WebRtcConfig {
-        udp_port: Some(port),
-        public_ips: vec!["127.0.0.1".into()],
-        ..Default::default()
-    })
-    .await;
+    let config = WebRtcConfig { udp_port: Some(port), public_ips: vec!["127.0.0.1".into()], ..Default::default() };
+    roundtrip(config, false).await;
 }
 
-async fn roundtrip(config: WebRtcConfig) {
+/// The host ends the session (password changed): the viewer is told why before it closes,
+/// and the agent still hears that the session closed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn host_ends_session_with_reason() {
+    roundtrip(WebRtcConfig::default(), true).await;
+}
+
+async fn roundtrip(config: WebRtcConfig, host_ends: bool) {
     // Frame source: mock capturer on its own thread, like the agent.
     let (frame_tx, _) = watch::channel::<Option<Arc<RawFrame>>>(None);
     let frames = frame_tx.subscribe();
@@ -171,7 +174,13 @@ async fn roundtrip(config: WebRtcConfig) {
     assert_eq!(applied["downscale"], 2);
 
     // Teardown reaches the agent so it can release held keys.
-    client.close().await.unwrap();
+    if host_ends {
+        session.end(EndReason::PasswordChanged).await;
+        let bye = timeout(Duration::from_secs(5), msg_rx.recv()).await.unwrap().unwrap();
+        assert_eq!(bye, serde_json::json!({"type": "session_end", "reason": "password_changed"}));
+    } else {
+        client.close().await.unwrap();
+    }
     timeout(Duration::from_secs(30), session.wait_closed()).await.expect("session close detected");
     let closed = timeout(Duration::from_secs(5), async {
         loop {

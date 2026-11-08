@@ -400,6 +400,12 @@ Clipboard text is split into parts of 8192 characters (`"more": true` on every p
 The host also sends `{"type":"clipboard_status","available":true,"backend":"windows"}` when the
 channel opens and whenever that changes.
 
+When the host ends a session it first sends `{"type":"session_end","reason":"..."}`, so the viewer
+can say why: `password_changed` (the access password was changed on the host; sign in again),
+`web_off` (web remote access was turned off) or `host_shutdown` (the agent is stopping or
+restarting; the viewer reconnects when it is back). A session that closes without one lost its
+network; the viewer reconnects by itself while the host can be reached.
+
 File transfers use the `"files"` channel: JSON requests and replies (`hello`, `list`, `put`, `end`,
 `get`, `pause`, `resume`, `cancel`) plus binary messages, each a 4-byte big-endian transfer id
 followed by up to 60 KiB of data. See `crates/dalker-webrtc/src/files.rs`.
