@@ -601,17 +601,25 @@ pub(crate) fn resolve(home: &Path, rel: &str) -> Result<PathBuf, String> {
     Ok(real)
 }
 
-fn is_hidden(name: &str, meta: &fs::Metadata) -> bool {
+/// Whether the file browser hides `name` while "Show hidden files" is off.
+///
+/// `own` is the entry itself (not followed) and `target` is what it points to. On
+/// Windows both count: the legacy junctions in the home folder (`Application Data`,
+/// `Cookies`, `NetHood`, ...) are hidden and system themselves while their targets
+/// are not, so looking only at the target listed them.
+fn is_hidden(name: &str, own: Option<&fs::Metadata>, target: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
         const HIDDEN_OR_SYSTEM: u32 = 0x2 | 0x4;
         let _ = name;
-        meta.file_attributes() & HIDDEN_OR_SYSTEM != 0
+        own.into_iter()
+            .chain([target])
+            .any(|m| m.file_attributes() & HIDDEN_OR_SYSTEM != 0)
     }
     #[cfg(not(windows))]
     {
-        let _ = meta;
+        let _ = (own, target);
         name.starts_with('.')
     }
 }
@@ -624,7 +632,8 @@ pub(crate) fn list(home: &Path, rel: &str) -> Result<Vec<serde_json::Value>, Str
         let Ok(entry) = entry else { continue };
         let name = entry.file_name().to_string_lossy().into_owned();
         // Follows links, so a link to a folder lists as one.
-        let Ok(meta) = fs::metadata(entry.path()).or_else(|_| entry.metadata()) else {
+        let own = entry.metadata().ok();
+        let Ok(meta) = fs::metadata(entry.path()).or_else(|e| own.clone().ok_or(e)) else {
             continue;
         };
         let mtime = meta
@@ -640,7 +649,7 @@ pub(crate) fn list(home: &Path, rel: &str) -> Result<Vec<serde_json::Value>, Str
                 "dir": meta.is_dir(),
                 "size": if meta.is_dir() { 0 } else { meta.len() },
                 "mtime": mtime,
-                "hidden": is_hidden(&name, &meta),
+                "hidden": is_hidden(&name, own.as_ref(), &meta),
             }),
         ));
         if entries.len() >= MAX_ENTRIES {
@@ -838,6 +847,43 @@ mod tests {
         t.join().unwrap();
         assert!(!home.join("Downloads/big.bin").exists());
         assert!(!home.join("Downloads/left.bin").exists());
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// A hidden, system junction (like `Application Data`) lists as hidden even
+    /// though the folder it points to is not.
+    #[cfg(windows)]
+    #[test]
+    fn windows_hidden_junction_lists_as_hidden() {
+        use std::process::Command;
+        let home = temp_dir("junction");
+        fs::create_dir_all(home.join("Target")).unwrap();
+        let ok = Command::new("cmd")
+            .args(["/C", "mklink", "/J", "Link", "Target"])
+            .current_dir(&home)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "mklink /J failed");
+        let ok = Command::new("attrib")
+            .args(["+H", "+S", "/L", "Link"])
+            .current_dir(&home)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "attrib failed");
+
+        let entries = list(&home, "").unwrap();
+        let hidden = |n: &str| {
+            entries
+                .iter()
+                .find(|e| e["name"] == n)
+                .unwrap_or_else(|| panic!("{n} not listed"))["hidden"]
+                .clone()
+        };
+        assert_eq!(hidden("Link"), true);
+        assert_eq!(hidden("Target"), false);
+        fs::remove_dir(home.join("Link")).unwrap();
         fs::remove_dir_all(&home).unwrap();
     }
 
