@@ -18,7 +18,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
-use rand::RngCore;
+use rand::TryRng;
 
 /// Prefix of the config keys that hold token records.
 pub const CONFIG_KEY_PREFIX: &str = "DALKER_MCP_TOKEN_";
@@ -227,8 +227,8 @@ pub fn generate(
     anyhow::ensure!(!scopes.is_empty(), "at least one scope is needed");
     let mut id = [0u8; 4];
     let mut secret = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut id);
-    rand::rngs::OsRng.fill_bytes(&mut secret);
+    rand::rngs::SysRng.try_fill_bytes(&mut id)?;
+    rand::rngs::SysRng.try_fill_bytes(&mut secret)?;
     let id = hex(&id);
     let token = format!("{TOKEN_PREFIX}{id}_{}", hex(&secret));
     let salt = SaltString::generate(&mut OsRng);

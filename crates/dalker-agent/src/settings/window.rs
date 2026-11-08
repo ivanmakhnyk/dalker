@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use axum::http::HeaderMap;
 use axum::routing::get;
-use rand::RngCore;
+use rand::TryRng;
 
 use super::api::{Access, Api, Live};
 use super::store::Store;
@@ -24,7 +24,9 @@ const KEY_HEADER: &str = "x-dalker-key";
 /// or why it can't be (shown on the page).
 pub fn show(store: Result<Box<dyn Store>, String>, no_window: bool) {
     let mut raw = [0u8; 24];
-    rand::rngs::OsRng.fill_bytes(&mut raw);
+    rand::rngs::SysRng
+        .try_fill_bytes(&mut raw)
+        .expect("the OS random number generator failed");
     let key: String = raw.iter().map(|b| format!("{b:02x}")).collect();
 
     let live = Arc::new(Mutex::new(Live::default()));
@@ -217,7 +219,9 @@ fn announce(focus: impl Fn(Option<String>) + Send + 'static) -> Option<InstanceF
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).ok()?;
     let port = listener.local_addr().ok()?.port();
     let mut raw = [0u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut raw);
+    rand::rngs::SysRng
+        .try_fill_bytes(&mut raw)
+        .expect("the OS random number generator failed");
     let key: String = raw.iter().map(|b| format!("{b:02x}")).collect();
     serve_focus(listener, key.clone(), focus);
     let line = instance_line(port, &key);
