@@ -68,7 +68,10 @@ fn in_balls(p: Pt, grow: f32) -> bool {
     }
     // Along the axis between the centres (t) and away from it (s).
     let len = dist(BALL_IN, BALL_OUT);
-    let u = ((BALL_OUT.0 - BALL_IN.0) / len, (BALL_OUT.1 - BALL_IN.1) / len);
+    let u = (
+        (BALL_OUT.0 - BALL_IN.0) / len,
+        (BALL_OUT.1 - BALL_IN.1) / len,
+    );
     let (dx, dy) = (p.0 - BALL_IN.0, p.1 - BALL_IN.1);
     let t = dx * u.0 + dy * u.1;
     let s = (dy * u.0 - dx * u.1).abs();
@@ -82,7 +85,11 @@ fn in_balls(p: Pt, grow: f32) -> bool {
         return false;
     }
     let (half, arc) = (NECK / 2.0 + grow, FILLET - grow);
-    let edge = if t >= t_fillet { half } else { half + arc - (arc * arc - (t - t_fillet).powi(2)).max(0.0).sqrt() };
+    let edge = if t >= t_fillet {
+        half
+    } else {
+        half + arc - (arc * arc - (t - t_fillet).powi(2)).max(0.0).sqrt()
+    };
     s <= edge
 }
 
@@ -132,14 +139,22 @@ pub fn rgba(look: Look) -> Vec<u8> {
 fn placement(size: usize) -> (f32, f32, f32) {
     let n = size as f32;
     let scale = n / ICON_BOX.2;
-    let (x, y) = ((n - ICON_BOX.2 * scale) / 2.0, (n - ICON_BOX.3 * scale) / 2.0);
-    (scale, x + (MARK_BOX.0 - ICON_BOX.0) * scale, y + (MARK_BOX.1 - ICON_BOX.1) * scale)
+    let (x, y) = (
+        (n - ICON_BOX.2 * scale) / 2.0,
+        (n - ICON_BOX.3 * scale) / 2.0,
+    );
+    (
+        scale,
+        x + (MARK_BOX.0 - ICON_BOX.0) * scale,
+        y + (MARK_BOX.1 - ICON_BOX.1) * scale,
+    )
 }
 
 /// [`rgba`] at `size` x `size` pixels.
 pub fn rgba_sized(look: Look, size: usize) -> Vec<u8> {
     let (scale, ox, oy) = placement(size);
-    let to_mark = |x: f32, y: f32| -> Pt { (MARK_BOX.0 + (x - ox) / scale, MARK_BOX.1 + (y - oy) / scale) };
+    let to_mark =
+        |x: f32, y: f32| -> Pt { (MARK_BOX.0 + (x - ox) / scale, MARK_BOX.1 + (y - oy) / scale) };
     let mut px = vec![0u8; size * size * 4];
     for y in 0..size {
         for x in 0..size {
@@ -147,7 +162,10 @@ pub fn rgba_sized(look: Look, size: usize) -> Vec<u8> {
             let (mut hits, mut sum) = (0u32, (0.0f32, 0.0f32, 0.0f32));
             for sy in 0..4 {
                 for sx in 0..4 {
-                    let (fx, fy) = (x as f32 + (sx as f32 + 0.5) / 4.0, y as f32 + (sy as f32 + 0.5) / 4.0);
+                    let (fx, fy) = (
+                        x as f32 + (sx as f32 + 0.5) / 4.0,
+                        y as f32 + (sy as f32 + 0.5) / 4.0,
+                    );
                     let p = to_mark(fx, fy);
                     if !in_outline(p) {
                         continue;
@@ -191,19 +209,44 @@ mod tests {
             let i = (y as usize * size + x as usize) * 4;
             (px[i], px[i + 1], px[i + 2], px[i + 3])
         };
-        let is_orange = |c: (u8, u8, u8, u8)| c.0 > 200 && c.1 > 70 && c.1 < 150 && c.2 < 80 && c.3 == 255;
+        let is_orange =
+            |c: (u8, u8, u8, u8)| c.0 > 200 && c.1 > 70 && c.1 < 150 && c.2 < 80 && c.3 == 255;
         let dark = (DARK.0, DARK.1, DARK.2, 255);
-        assert!(is_orange(at(BALL_IN)), "ball inside the D: {:?}", at(BALL_IN));
-        assert!(is_orange(at(BALL_OUT)), "ball outside the D: {:?}", at(BALL_OUT));
+        assert!(
+            is_orange(at(BALL_IN)),
+            "ball inside the D: {:?}",
+            at(BALL_IN)
+        );
+        assert!(
+            is_orange(at(BALL_OUT)),
+            "ball outside the D: {:?}",
+            at(BALL_OUT)
+        );
         assert!(is_orange(at((84.0, 152.0))), "the neck between the balls");
         assert!(is_orange(at((D_STEM_X, 80.0))), "D stem");
         assert!(is_orange(at((BOWL.0 + BOWL_R, BOWL.1))), "D bowl");
         assert_eq!(at((152.0, 120.0)), dark, "D counter, beside the inner ball");
-        assert_eq!(at((D_STEM_X, BALL_OUT.1 - BALL_R - 5.0)), dark, "gap between the outer ball and the stem");
-        assert_eq!(at((D_STEM_X - STROKE / 2.0 - OUTLINE / 2.0, 120.0)), dark, "outline left of the stem");
+        assert_eq!(
+            at((D_STEM_X, BALL_OUT.1 - BALL_R - 5.0)),
+            dark,
+            "gap between the outer ball and the stem"
+        );
+        assert_eq!(
+            at((D_STEM_X - STROKE / 2.0 - OUTLINE / 2.0, 120.0)),
+            dark,
+            "outline left of the stem"
+        );
         assert_eq!(px[3], 0, "corners are transparent");
-        assert_eq!(at((185.0, 57.0)).3, 0, "outside the outline, above the bowl, is transparent");
-        assert_eq!(at((30.0, 100.0)).3, 0, "outside the outline, left of the stem, is transparent");
+        assert_eq!(
+            at((185.0, 57.0)).3,
+            0,
+            "outside the outline, above the bowl, is transparent"
+        );
+        assert_eq!(
+            at((30.0, 100.0)).3,
+            0,
+            "outside the outline, left of the stem, is transparent"
+        );
     }
 
     #[test]
@@ -218,7 +261,11 @@ mod tests {
             [px[i], px[i + 1], px[i + 2], px[i + 3]]
         };
         assert_eq!(at(BALL_IN), [RED.0, RED.1, RED.2, 255]);
-        assert_eq!(at((152.0, 120.0)), [DARK.0, DARK.1, DARK.2, 255], "D counter");
+        assert_eq!(
+            at((152.0, 120.0)),
+            [DARK.0, DARK.1, DARK.2, 255],
+            "D counter"
+        );
         assert_eq!(px[3], 0, "corners are transparent");
     }
 }

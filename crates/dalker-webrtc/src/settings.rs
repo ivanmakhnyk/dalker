@@ -36,13 +36,16 @@ pub(crate) fn parse(data: &[u8]) -> Option<Request> {
     if !data.windows(10).any(|w| w == b"\"settings\"") {
         return None;
     }
-    serde_json::from_slice::<Request>(data).ok().filter(|r| r.kind == "settings")
+    serde_json::from_slice::<Request>(data)
+        .ok()
+        .filter(|r| r.kind == "settings")
 }
 
 /// The host's `base` settings with the request applied, never above the host's limits.
 pub(crate) fn apply(base: &EncoderSettings, req: &Request) -> EncoderSettings {
     let clamp = |v: Option<f64>, lo: u32, hi: u32| -> Option<u32> {
-        v.filter(|v| v.is_finite()).map(|v| (v.round().max(0.0) as u32).clamp(lo, hi.max(lo)))
+        v.filter(|v| v.is_finite())
+            .map(|v| (v.round().max(0.0) as u32).clamp(lo, hi.max(lo)))
     };
     let max_fps = base.max_fps.max(1.0).round() as u32;
     let max_kbps = (base.bitrate_bps / 1000).max(MIN_BITRATE_KBPS);
@@ -78,7 +81,14 @@ mod tests {
     use super::*;
 
     fn base() -> EncoderSettings {
-        EncoderSettings { bitrate_bps: 6_000_000, max_fps: 30.0, max_width: 1920, keyframe_interval: 300, downscale: 1, strict_bitrate: false }
+        EncoderSettings {
+            bitrate_bps: 6_000_000,
+            max_fps: 30.0,
+            max_width: 1920,
+            keyframe_interval: 300,
+            downscale: 1,
+            strict_bitrate: false,
+        }
     }
 
     #[test]
@@ -86,28 +96,54 @@ mod tests {
         assert!(parse(br#"{"type":"key","code":"KeyA","down":true}"#).is_none());
         assert!(parse(br#"{"type":"clipboard","text":"\"settings\""}"#).is_none());
         assert!(parse(br#"{"type":"settings_applied","fps":5}"#).is_none());
-        assert_eq!(parse(br#"{"type":"settings"}"#), Some(Request { kind: "settings".into(), ..Default::default() }));
+        assert_eq!(
+            parse(br#"{"type":"settings"}"#),
+            Some(Request {
+                kind: "settings".into(),
+                ..Default::default()
+            })
+        );
     }
 
     #[test]
     fn requests_are_clamped_to_the_host_limits() {
-        let req = parse(br#"{"type":"settings","fps":144,"bitrate_kbps":50000,"downscale":9}"#).unwrap();
+        let req =
+            parse(br#"{"type":"settings","fps":144,"bitrate_kbps":50000,"downscale":9}"#).unwrap();
         let s = apply(&base(), &req);
-        assert_eq!((s.max_fps, s.bitrate_bps, s.downscale), (30.0, 6_000_000, MAX_DOWNSCALE));
+        assert_eq!(
+            (s.max_fps, s.bitrate_bps, s.downscale),
+            (30.0, 6_000_000, MAX_DOWNSCALE)
+        );
         let req = parse(br#"{"type":"settings","fps":0,"bitrate_kbps":1,"downscale":0}"#).unwrap();
         let s = apply(&base(), &req);
-        assert_eq!((s.max_fps, s.bitrate_bps, s.downscale), (1.0, MIN_BITRATE_KBPS * 1000, 1));
-        let req = parse(br#"{"type":"settings","fps":15,"bitrate_kbps":1500,"downscale":2}"#).unwrap();
+        assert_eq!(
+            (s.max_fps, s.bitrate_bps, s.downscale),
+            (1.0, MIN_BITRATE_KBPS * 1000, 1)
+        );
+        let req =
+            parse(br#"{"type":"settings","fps":15,"bitrate_kbps":1500,"downscale":2}"#).unwrap();
         let s = apply(&base(), &req);
-        assert_eq!((s.max_fps, s.bitrate_bps, s.downscale, s.max_width), (15.0, 1_500_000, 2, 1920));
+        assert_eq!(
+            (s.max_fps, s.bitrate_bps, s.downscale, s.max_width),
+            (15.0, 1_500_000, 2, 1920)
+        );
         assert!(s.strict_bitrate, "a lower bitrate is enforced");
-        assert!(!apply(&base(), &parse(br#"{"type":"settings","bitrate_kbps":6000}"#).unwrap()).strict_bitrate);
+        assert!(
+            !apply(
+                &base(),
+                &parse(br#"{"type":"settings","bitrate_kbps":6000}"#).unwrap()
+            )
+            .strict_bitrate
+        );
     }
 
     #[test]
     fn missing_fields_mean_the_host_default() {
         let s = apply(&base(), &parse(br#"{"type":"settings","fps":10}"#).unwrap());
-        assert_eq!((s.max_fps, s.bitrate_bps, s.downscale), (10.0, 6_000_000, 1));
+        assert_eq!(
+            (s.max_fps, s.bitrate_bps, s.downscale),
+            (10.0, 6_000_000, 1)
+        );
         let msg: serde_json::Value = serde_json::from_str(&applied_message(&base(), &s)).unwrap();
         assert_eq!(
             msg,

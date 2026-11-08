@@ -27,8 +27,16 @@ async fn mock_stream_roundtrip() {
 /// The VM/port-forward setup: one muxed UDP port advertised as 127.0.0.1.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_stream_roundtrip_udp_mux_nat1to1() {
-    let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-    let config = WebRtcConfig { udp_port: Some(port), public_ips: vec!["127.0.0.1".into()], ..Default::default() };
+    let port = std::net::UdpSocket::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let config = WebRtcConfig {
+        udp_port: Some(port),
+        public_ips: vec!["127.0.0.1".into()],
+        ..Default::default()
+    };
     roundtrip(config, false).await;
 }
 
@@ -65,12 +73,22 @@ async fn roundtrip(config: WebRtcConfig, host_ends: bool) {
     let mut media = MediaEngine::default();
     media.register_default_codecs().unwrap();
     let registry = register_default_interceptors(Registry::new(), &mut media).unwrap();
-    let api = APIBuilder::new().with_media_engine(media).with_interceptor_registry(registry).build();
-    let client = Arc::new(api.new_peer_connection(RTCConfiguration::default()).await.unwrap());
+    let api = APIBuilder::new()
+        .with_media_engine(media)
+        .with_interceptor_registry(registry)
+        .build();
+    let client = Arc::new(
+        api.new_peer_connection(RTCConfiguration::default())
+            .await
+            .unwrap(),
+    );
     client
         .add_transceiver_from_kind(
             RTPCodecType::Video,
-            Some(RTCRtpTransceiverInit { direction: RTCRtpTransceiverDirection::Recvonly, send_encodings: vec![] }),
+            Some(RTCRtpTransceiverInit {
+                direction: RTCRtpTransceiverDirection::Recvonly,
+                send_encodings: vec![],
+            }),
         )
         .await
         .unwrap();
@@ -108,9 +126,18 @@ async fn roundtrip(config: WebRtcConfig, host_ends: bool) {
     let _ = gathered.recv().await;
     let offer_sdp = client.local_description().await.unwrap().sdp;
 
-    let (answer_sdp, mut session) = engine.accept_offer(offer_sdp, frames, clip_rx, control_tx).await.unwrap();
-    assert!(answer_sdp.contains("H264"), "answer must negotiate H.264:\n{answer_sdp}");
-    client.set_remote_description(RTCSessionDescription::answer(answer_sdp).unwrap()).await.unwrap();
+    let (answer_sdp, mut session) = engine
+        .accept_offer(offer_sdp, frames, clip_rx, control_tx)
+        .await
+        .unwrap();
+    assert!(
+        answer_sdp.contains("H264"),
+        "answer must negotiate H.264:\n{answer_sdp}"
+    );
+    client
+        .set_remote_description(RTCSessionDescription::answer(answer_sdp).unwrap())
+        .await
+        .unwrap();
 
     // Media flows.
     let mut packets = 0;
@@ -124,50 +151,103 @@ async fn roundtrip(config: WebRtcConfig, host_ends: bool) {
         packets += 1;
         bytes += len;
     }
-    assert!(bytes > 10_000, "suspiciously little video data: {bytes} bytes");
+    assert!(
+        bytes > 10_000,
+        "suspiciously little video data: {bytes} bytes"
+    );
 
     // Input flows.
-    timeout(Duration::from_secs(10), open_rx.recv()).await.expect("control channel open");
-    dc.send_text(r#"{"type":"mouse_button","button":"left","down":true,"x":0.25,"y":2.0}"#.to_string())
+    timeout(Duration::from_secs(10), open_rx.recv())
+        .await
+        .expect("control channel open");
+    dc.send_text(
+        r#"{"type":"mouse_button","button":"left","down":true,"x":0.25,"y":2.0}"#.to_string(),
+    )
+    .await
+    .unwrap();
+    dc.send_text("not json".to_string()).await.unwrap();
+    dc.send_text(r#"{"type":"key","code":"KeyA","down":true}"#.to_string())
         .await
         .unwrap();
-    dc.send_text("not json".to_string()).await.unwrap();
-    dc.send_text(r#"{"type":"key","code":"KeyA","down":true}"#.to_string()).await.unwrap();
 
-    let (_, first) = timeout(Duration::from_secs(5), control_rx.recv()).await.unwrap().unwrap();
+    let (_, first) = timeout(Duration::from_secs(5), control_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
     match first {
         // y=2.0 must arrive clamped to 1.0; the garbage message is dropped.
         ControlMessage::Input(ev) => assert_eq!(
             ev,
-            InputEvent::MouseButton { button: MouseButton::Left, down: true, x: 0.25, y: 1.0 }
+            InputEvent::MouseButton {
+                button: MouseButton::Left,
+                down: true,
+                x: 0.25,
+                y: 1.0
+            }
         ),
         other => panic!("unexpected {other:?}"),
     }
-    let (_, second) = timeout(Duration::from_secs(5), control_rx.recv()).await.unwrap().unwrap();
-    assert!(matches!(second, ControlMessage::Input(InputEvent::Key { ref code, down: true }) if code == "KeyA"));
+    let (_, second) = timeout(Duration::from_secs(5), control_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(second, ControlMessage::Input(InputEvent::Key { ref code, down: true }) if code == "KeyA")
+    );
 
     // Clipboard: the status comes first, then host changes; viewer text reaches the agent
     // in order with the input.
-    let status = timeout(Duration::from_secs(5), msg_rx.recv()).await.unwrap().unwrap();
+    let status = timeout(Duration::from_secs(5), msg_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(status["type"], "clipboard_status");
     assert_eq!(status["available"], true);
-    dc.send_text(r#"{"type":"clipboard","text":"from ","more":true}"#.to_string()).await.unwrap();
-    dc.send_text(r#"{"type":"clipboard","text":"viewer"}"#.to_string()).await.unwrap();
-    dc.send_text(r#"{"type":"key","code":"KeyV","down":true}"#.to_string()).await.unwrap();
-    let (_, clip) = timeout(Duration::from_secs(5), control_rx.recv()).await.unwrap().unwrap();
-    assert!(matches!(clip, ControlMessage::Clipboard(ref t) if t == "from viewer"), "{clip:?}");
-    let (_, key) = timeout(Duration::from_secs(5), control_rx.recv()).await.unwrap().unwrap();
-    assert!(matches!(key, ControlMessage::Input(InputEvent::Key { ref code, .. }) if code == "KeyV"));
+    dc.send_text(r#"{"type":"clipboard","text":"from ","more":true}"#.to_string())
+        .await
+        .unwrap();
+    dc.send_text(r#"{"type":"clipboard","text":"viewer"}"#.to_string())
+        .await
+        .unwrap();
+    dc.send_text(r#"{"type":"key","code":"KeyV","down":true}"#.to_string())
+        .await
+        .unwrap();
+    let (_, clip) = timeout(Duration::from_secs(5), control_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(clip, ControlMessage::Clipboard(ref t) if t == "from viewer"),
+        "{clip:?}"
+    );
+    let (_, key) = timeout(Duration::from_secs(5), control_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(key, ControlMessage::Input(InputEvent::Key { ref code, .. }) if code == "KeyV")
+    );
     clip_tx.send_modify(|s| {
         s.serial += 1;
         s.text = Some("from host".into());
     });
-    let text = timeout(Duration::from_secs(5), msg_rx.recv()).await.unwrap().unwrap();
-    assert_eq!(text, serde_json::json!({"type": "clipboard", "text": "from host", "more": false}));
+    let text = timeout(Duration::from_secs(5), msg_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        text,
+        serde_json::json!({"type": "clipboard", "text": "from host", "more": false})
+    );
 
     // Stream settings: clamped to the host's limits and confirmed; nothing reaches the agent.
-    dc.send_text(r#"{"type":"settings","fps":144,"bitrate_kbps":1000,"downscale":2}"#.to_string()).await.unwrap();
-    let applied = timeout(Duration::from_secs(5), msg_rx.recv()).await.unwrap().unwrap();
+    dc.send_text(r#"{"type":"settings","fps":144,"bitrate_kbps":1000,"downscale":2}"#.to_string())
+        .await
+        .unwrap();
+    let applied = timeout(Duration::from_secs(5), msg_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(applied["type"], "settings_applied");
     assert_eq!(applied["fps"], 30, "the default host maximum");
     assert_eq!(applied["bitrate_kbps"], 1000);
@@ -176,12 +256,20 @@ async fn roundtrip(config: WebRtcConfig, host_ends: bool) {
     // Teardown reaches the agent so it can release held keys.
     if host_ends {
         session.end(EndReason::PasswordChanged).await;
-        let bye = timeout(Duration::from_secs(5), msg_rx.recv()).await.unwrap().unwrap();
-        assert_eq!(bye, serde_json::json!({"type": "session_end", "reason": "password_changed"}));
+        let bye = timeout(Duration::from_secs(5), msg_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            bye,
+            serde_json::json!({"type": "session_end", "reason": "password_changed"})
+        );
     } else {
         client.close().await.unwrap();
     }
-    timeout(Duration::from_secs(30), session.wait_closed()).await.expect("session close detected");
+    timeout(Duration::from_secs(30), session.wait_closed())
+        .await
+        .expect("session close detected");
     let closed = timeout(Duration::from_secs(5), async {
         loop {
             match control_rx.recv().await {
@@ -196,7 +284,6 @@ async fn roundtrip(config: WebRtcConfig, host_ends: bool) {
     assert!(closed);
     drop(frame_tx);
 }
-
 
 /// A viewer that gets the answer but never applies it (like a browser that cannot complete
 /// ICE) must be dropped after `connect_timeout`, releasing its slot.
@@ -214,12 +301,22 @@ async fn viewer_that_never_connects_is_dropped() {
     let mut media = MediaEngine::default();
     media.register_default_codecs().unwrap();
     let registry = register_default_interceptors(Registry::new(), &mut media).unwrap();
-    let api = APIBuilder::new().with_media_engine(media).with_interceptor_registry(registry).build();
-    let client = Arc::new(api.new_peer_connection(RTCConfiguration::default()).await.unwrap());
+    let api = APIBuilder::new()
+        .with_media_engine(media)
+        .with_interceptor_registry(registry)
+        .build();
+    let client = Arc::new(
+        api.new_peer_connection(RTCConfiguration::default())
+            .await
+            .unwrap(),
+    );
     client
         .add_transceiver_from_kind(
             RTPCodecType::Video,
-            Some(RTCRtpTransceiverInit { direction: RTCRtpTransceiverDirection::Recvonly, send_encodings: vec![] }),
+            Some(RTCRtpTransceiverInit {
+                direction: RTCRtpTransceiverDirection::Recvonly,
+                send_encodings: vec![],
+            }),
         )
         .await
         .unwrap();
@@ -231,12 +328,30 @@ async fn viewer_that_never_connects_is_dropped() {
     let offer_sdp = client.local_description().await.unwrap().sdp;
 
     let started = std::time::Instant::now();
-    let (_answer, mut session) = engine.accept_offer(offer_sdp, frame_tx.subscribe(), watch::channel(ClipboardState::default()).1, control_tx).await.unwrap();
+    let (_answer, mut session) = engine
+        .accept_offer(
+            offer_sdp,
+            frame_tx.subscribe(),
+            watch::channel(ClipboardState::default()).1,
+            control_tx,
+        )
+        .await
+        .unwrap();
     // The answer is deliberately never applied: the browser "cannot connect".
 
-    timeout(Duration::from_secs(15), session.wait_closed()).await.expect("session was never dropped");
-    assert!(started.elapsed() >= Duration::from_secs(2), "dropped too early: {:?}", started.elapsed());
-    assert!(started.elapsed() < Duration::from_secs(8), "dropped too late: {:?}", started.elapsed());
+    timeout(Duration::from_secs(15), session.wait_closed())
+        .await
+        .expect("session was never dropped");
+    assert!(
+        started.elapsed() >= Duration::from_secs(2),
+        "dropped too early: {:?}",
+        started.elapsed()
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "dropped too late: {:?}",
+        started.elapsed()
+    );
 
     let closed = timeout(Duration::from_secs(5), async {
         loop {
@@ -249,7 +364,10 @@ async fn viewer_that_never_connects_is_dropped() {
     })
     .await
     .unwrap();
-    assert!(closed, "agent must be told the viewer is gone (releases keys, hides the border)");
+    assert!(
+        closed,
+        "agent must be told the viewer is gone (releases keys, hides the border)"
+    );
 }
 
 /// A captured frame goes out as soon as it is encoded, not at the encoder's next fixed tick
@@ -258,7 +376,11 @@ async fn viewer_that_never_connects_is_dropped() {
 async fn new_frame_is_sent_without_waiting_for_a_tick() {
     let (frame_tx, _) = watch::channel::<Option<Arc<RawFrame>>>(None);
     let mut cap = MockCapturer::new(320, 180, 30);
-    let mut publish = || frame_tx.send_replace(Some(Arc::new(cap.next_frame(Duration::from_secs(1)).unwrap().unwrap())));
+    let mut publish = || {
+        frame_tx.send_replace(Some(Arc::new(
+            cap.next_frame(Duration::from_secs(1)).unwrap().unwrap(),
+        )))
+    };
     publish();
     let mut config = WebRtcConfig::default();
     config.encoder.max_fps = 5.0;
@@ -268,12 +390,22 @@ async fn new_frame_is_sent_without_waiting_for_a_tick() {
     let mut media = MediaEngine::default();
     media.register_default_codecs().unwrap();
     let registry = register_default_interceptors(Registry::new(), &mut media).unwrap();
-    let api = APIBuilder::new().with_media_engine(media).with_interceptor_registry(registry).build();
-    let client = Arc::new(api.new_peer_connection(RTCConfiguration::default()).await.unwrap());
+    let api = APIBuilder::new()
+        .with_media_engine(media)
+        .with_interceptor_registry(registry)
+        .build();
+    let client = Arc::new(
+        api.new_peer_connection(RTCConfiguration::default())
+            .await
+            .unwrap(),
+    );
     client
         .add_transceiver_from_kind(
             RTPCodecType::Video,
-            Some(RTCRtpTransceiverInit { direction: RTCRtpTransceiverDirection::Recvonly, send_encodings: vec![] }),
+            Some(RTCRtpTransceiverInit {
+                direction: RTCRtpTransceiverDirection::Recvonly,
+                send_encodings: vec![],
+            }),
         )
         .await
         .unwrap();
@@ -296,11 +428,22 @@ async fn new_frame_is_sent_without_waiting_for_a_tick() {
     let _ = gathered.recv().await;
     let offer_sdp = client.local_description().await.unwrap().sdp;
     let (answer, _session) = engine
-        .accept_offer(offer_sdp, frame_tx.subscribe(), watch::channel(ClipboardState::default()).1, control_tx)
+        .accept_offer(
+            offer_sdp,
+            frame_tx.subscribe(),
+            watch::channel(ClipboardState::default()).1,
+            control_tx,
+        )
         .await
         .unwrap();
-    client.set_remote_description(RTCSessionDescription::answer(answer).unwrap()).await.unwrap();
-    let mut last_ts = timeout(Duration::from_secs(15), rtp_rx.recv()).await.expect("first frame").unwrap();
+    client
+        .set_remote_description(RTCSessionDescription::answer(answer).unwrap())
+        .await
+        .unwrap();
+    let mut last_ts = timeout(Duration::from_secs(15), rtp_rx.recv())
+        .await
+        .expect("first frame")
+        .unwrap();
 
     let mut delays = Vec::new();
     for _ in 0..8 {
@@ -312,7 +455,10 @@ async fn new_frame_is_sent_without_waiting_for_a_tick() {
         let sent = std::time::Instant::now();
         publish();
         loop {
-            let ts = timeout(Duration::from_secs(5), rtp_rx.recv()).await.expect("frame sent").unwrap();
+            let ts = timeout(Duration::from_secs(5), rtp_rx.recv())
+                .await
+                .expect("frame sent")
+                .unwrap();
             if ts != last_ts {
                 last_ts = ts;
                 break;
@@ -323,6 +469,9 @@ async fn new_frame_is_sent_without_waiting_for_a_tick() {
     delays.sort();
     let median = delays[delays.len() / 2];
     println!("new frame -> first RTP packet: {delays:?}");
-    assert!(median < Duration::from_millis(60), "frames wait for the encoder: {delays:?}");
+    assert!(
+        median < Duration::from_millis(60),
+        "frames wait for the encoder: {delays:?}"
+    );
     drop(client);
 }

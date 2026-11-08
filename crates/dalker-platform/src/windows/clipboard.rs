@@ -12,13 +12,15 @@ use dalker_core::{Clipboard, ClipboardError};
 use windows::core::w;
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber, IsClipboardFormatAvailable,
-    OpenClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber,
+    IsClipboardFormatAvailable, OpenClipboard, SetClipboardData,
 };
-use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::Memory::{
+    GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, DispatchMessageW, PeekMessageW, TranslateMessage, HWND_MESSAGE, MSG, PM_REMOVE,
-    WINDOW_EX_STYLE, WINDOW_STYLE,
+    CreateWindowExW, DestroyWindow, DispatchMessageW, PeekMessageW, TranslateMessage, HWND_MESSAGE,
+    MSG, PM_REMOVE, WINDOW_EX_STYLE, WINDOW_STYLE,
 };
 
 const CF_UNICODETEXT: u32 = 13;
@@ -74,7 +76,9 @@ impl WinClipboard {
             }
             sleep(Duration::from_millis(15));
         }
-        Err(ClipboardError::Busy(format!("another app has the clipboard open: {last}")))
+        Err(ClipboardError::Busy(format!(
+            "another app has the clipboard open: {last}"
+        )))
     }
 }
 
@@ -113,7 +117,9 @@ impl Clipboard for WinClipboard {
         }
         let _open = self.open()?;
         unsafe {
-            let Ok(handle) = GetClipboardData(CF_UNICODETEXT) else { return Ok(None) };
+            let Ok(handle) = GetClipboardData(CF_UNICODETEXT) else {
+                return Ok(None);
+            };
             let mem = HGLOBAL(handle.0);
             let ptr = GlobalLock(mem) as *const u16;
             if ptr.is_null() {

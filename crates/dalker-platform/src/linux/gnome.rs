@@ -21,7 +21,10 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use dalker_core::{CaptureError, Clipboard, ClipboardError, DisplayInfo, PixelFormat, RawFrame, ScreenCapturer, ViewerIndicator};
+use dalker_core::{
+    CaptureError, Clipboard, ClipboardError, DisplayInfo, PixelFormat, RawFrame, ScreenCapturer,
+    ViewerIndicator,
+};
 use zbus::blocking::fdo::DBusProxy;
 use zbus::blocking::{Connection, Proxy};
 use zbus::names::BusName;
@@ -37,14 +40,21 @@ const BORDER: &str = "io.github.ivanmakhnyk.Dalker.Border";
 const BORDER_PATH: &str = "/io/github/ivanmakhnyk/Dalker/Border";
 
 fn name_has_owner(conn: &Connection, name: &str) -> bool {
-    let Ok(bus_name) = BusName::try_from(name) else { return false };
-    DBusProxy::new(conn).ok().and_then(|p| p.name_has_owner(bus_name).ok()).unwrap_or(false)
+    let Ok(bus_name) = BusName::try_from(name) else {
+        return false;
+    };
+    DBusProxy::new(conn)
+        .ok()
+        .and_then(|p| p.name_has_owner(bus_name).ok())
+        .unwrap_or(false)
 }
 
 /// True when this process can see a GNOME Shell (Mutter) screen-cast service on its
 /// session bus, i.e. the desktop is GNOME on Wayland (or X11 under Mutter).
 pub fn gnome_session_available() -> bool {
-    Connection::session().map(|c| name_has_owner(&c, SC)).unwrap_or(false)
+    Connection::session()
+        .map(|c| name_has_owner(&c, SC))
+        .unwrap_or(false)
 }
 
 /// True while GNOME's lock screen is up (`org.gnome.ScreenSaver.GetActive`). False when
@@ -56,8 +66,13 @@ pub fn screen_locked() -> bool {
         *conn = Connection::session().ok();
     }
     let Some(c) = conn.as_ref() else { return false };
-    let reply = Proxy::new(c, "org.gnome.ScreenSaver", "/org/gnome/ScreenSaver", "org.gnome.ScreenSaver")
-        .and_then(|p| p.call::<_, _, bool>("GetActive", &()));
+    let reply = Proxy::new(
+        c,
+        "org.gnome.ScreenSaver",
+        "/org/gnome/ScreenSaver",
+        "org.gnome.ScreenSaver",
+    )
+    .and_then(|p| p.call::<_, _, bool>("GetActive", &()));
     match reply {
         Ok(active) => active,
         Err(_) => {
@@ -111,9 +126,20 @@ struct LogicalRect {
 /// Size a monitor takes up in the layout: rotated by `transform` (odd values are
 /// 90°/270°), and divided by `scale` when the layout uses logical pixels.
 fn layout_size(mode: (i32, i32), scale: f64, transform: u32, logical_pixels: bool) -> (u32, u32) {
-    let (w, h) = if transform % 2 == 1 { (mode.1, mode.0) } else { mode };
-    let s = if logical_pixels && scale > 0.0 { scale } else { 1.0 };
-    ((w as f64 / s).round().max(1.0) as u32, (h as f64 / s).round().max(1.0) as u32)
+    let (w, h) = if transform % 2 == 1 {
+        (mode.1, mode.0)
+    } else {
+        mode
+    };
+    let s = if logical_pixels && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    (
+        (w as f64 / s).round().max(1.0) as u32,
+        (h as f64 / s).round().max(1.0) as u32,
+    )
 }
 
 fn layout_of(rects: &[LogicalRect]) -> Option<MonitorLayout> {
@@ -133,9 +159,25 @@ fn layout_of(rects: &[LogicalRect]) -> Option<MonitorLayout> {
 }
 
 type MonitorSpec = (String, String, String, String);
-type Mode = (String, i32, i32, f64, f64, Vec<f64>, HashMap<String, OwnedValue>);
+type Mode = (
+    String,
+    i32,
+    i32,
+    f64,
+    f64,
+    Vec<f64>,
+    HashMap<String, OwnedValue>,
+);
 type Monitor = (MonitorSpec, Vec<Mode>, HashMap<String, OwnedValue>);
-type Logical = (i32, i32, f64, u32, bool, Vec<MonitorSpec>, HashMap<String, OwnedValue>);
+type Logical = (
+    i32,
+    i32,
+    f64,
+    u32,
+    bool,
+    Vec<MonitorSpec>,
+    HashMap<String, OwnedValue>,
+);
 type CurrentState = (u32, Vec<Monitor>, Vec<Logical>, HashMap<String, OwnedValue>);
 
 /// Reads the monitor layout from `org.gnome.Mutter.DisplayConfig` on the session bus.
@@ -148,7 +190,8 @@ pub fn monitor_layout(conn: &Connection) -> Option<MonitorLayout> {
         "org.gnome.Mutter.DisplayConfig",
     )
     .ok()?;
-    let (_serial, monitors, logical, props): CurrentState = proxy.call("GetCurrentState", &()).ok()?;
+    let (_serial, monitors, logical, props): CurrentState =
+        proxy.call("GetCurrentState", &()).ok()?;
     // layout-mode 1 = logical pixels (the default), 2 = physical pixels.
     let logical_pixels = props
         .get("layout-mode")
@@ -158,7 +201,11 @@ pub fn monitor_layout(conn: &Connection) -> Option<MonitorLayout> {
         let (_, modes, _) = monitors.iter().find(|(s, _, _)| s == spec)?;
         modes
             .iter()
-            .find(|m| m.6.get("is-current").and_then(|v| bool::try_from(v.clone()).ok()).unwrap_or(false))
+            .find(|m| {
+                m.6.get("is-current")
+                    .and_then(|v| bool::try_from(v.clone()).ok())
+                    .unwrap_or(false)
+            })
             .map(|m| (m.1, m.2))
     };
     let rects: Vec<LogicalRect> = logical
@@ -166,7 +213,13 @@ pub fn monitor_layout(conn: &Connection) -> Option<MonitorLayout> {
         .filter_map(|(x, y, scale, transform, primary, specs, _)| {
             let mode = specs.iter().find_map(current_mode)?;
             let (width, height) = layout_size(mode, *scale, *transform, logical_pixels);
-            Some(LogicalRect { x: *x, y: *y, width, height, primary: *primary })
+            Some(LogicalRect {
+                x: *x,
+                y: *y,
+                width,
+                height,
+                primary: *primary,
+            })
         })
         .collect();
     layout_of(&rects)
@@ -208,12 +261,22 @@ impl GnomeCapturer {
     /// Returns [`CaptureError::Unsupported`] when there is no GNOME screen-cast service
     /// on the session bus, so callers can fall back to X11.
     pub fn new() -> Result<Self, CaptureError> {
-        let conn = Connection::session().map_err(|e| unsupported(format!("no D-Bus session bus: {e}")))?;
+        let conn =
+            Connection::session().map_err(|e| unsupported(format!("no D-Bus session bus: {e}")))?;
         if !name_has_owner(&conn, SC) {
-            return Err(unsupported("org.gnome.Mutter.ScreenCast is not on the session bus"));
+            return Err(unsupported(
+                "org.gnome.Mutter.ScreenCast is not on the session bus",
+            ));
         }
-        if Command::new("gst-launch-1.0").arg("--version").stdout(Stdio::null()).status().is_err() {
-            return Err(unsupported("gst-launch-1.0 not found (install gstreamer1.0-tools and gstreamer1.0-pipewire)"));
+        if Command::new("gst-launch-1.0")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .status()
+            .is_err()
+        {
+            return Err(unsupported(
+                "gst-launch-1.0 not found (install gstreamer1.0-tools and gstreamer1.0-pipewire)",
+            ));
         }
 
         let sc = Proxy::new(&conn, SC, SC_PATH, SC).map_err(|e| backend("ScreenCast proxy", e))?;
@@ -225,7 +288,9 @@ impl GnomeCapturer {
         // GNOME stops every screen cast when the screen locks (and the border extension
         // allows a new one while someone is connected). The PipeWire stream then just goes
         // quiet, so watch for the session's end to recreate the capturer.
-        let mut session_closed = session.receive_signal("Closed").map_err(|e| backend("subscribe Closed", e))?;
+        let mut session_closed = session
+            .receive_signal("Closed")
+            .map_err(|e| backend("subscribe Closed", e))?;
 
         // Empty connector = primary monitor; cursor-mode 1 = cursor embedded in the frames.
         let mut props = HashMap::<&str, Value>::new();
@@ -233,12 +298,15 @@ impl GnomeCapturer {
         let stream_path: OwnedObjectPath = session
             .call("RecordMonitor", &("", props))
             .map_err(|e| backend("RecordMonitor", e))?;
-        let stream = Proxy::new(&conn, SC, stream_path, STREAM_IFACE).map_err(|e| backend("Stream proxy", e))?;
+        let stream = Proxy::new(&conn, SC, stream_path, STREAM_IFACE)
+            .map_err(|e| backend("Stream proxy", e))?;
 
         // Subscribe *before* Start, then wait for the PipeWire node id on a helper thread
         // (the blocking signal iterator has no timeout of its own).
         let (node_tx, node_rx) = mpsc::channel::<u32>();
-        let mut signals = stream.receive_signal("PipeWireStreamAdded").map_err(|e| backend("subscribe", e))?;
+        let mut signals = stream
+            .receive_signal("PipeWireStreamAdded")
+            .map_err(|e| backend("subscribe", e))?;
         std::thread::spawn(move || {
             if let Some(msg) = signals.next() {
                 if let Ok(node) = msg.body().deserialize::<u32>() {
@@ -246,13 +314,16 @@ impl GnomeCapturer {
                 }
             }
         });
-        session.call_method("Start", &()).map_err(|e| backend("Start", e))?;
-        let node = node_rx
-            .recv_timeout(Duration::from_secs(8))
-            .map_err(|_| CaptureError::Backend("timed out waiting for the PipeWire stream".into()))?;
+        session
+            .call_method("Start", &())
+            .map_err(|e| backend("Start", e))?;
+        let node = node_rx.recv_timeout(Duration::from_secs(8)).map_err(|_| {
+            CaptureError::Backend("timed out waiting for the PipeWire stream".into())
+        })?;
 
-        let params: HashMap<String, OwnedValue> =
-            stream.get_property("Parameters").map_err(|e| backend("stream Parameters", e))?;
+        let params: HashMap<String, OwnedValue> = stream
+            .get_property("Parameters")
+            .map_err(|e| backend("stream Parameters", e))?;
         let (w, h) = params
             .get("size")
             .and_then(|v| <(i32, i32)>::try_from(v.clone()).ok())
@@ -264,9 +335,14 @@ impl GnomeCapturer {
         let crop = monitor_layout(&conn)
             .map(|l| border_crop(w as u32, l.width))
             .unwrap_or(BORDER_INSET);
-        let (w, h) = ((w as u32).saturating_sub(2 * crop) & !1, (h as u32).saturating_sub(2 * crop) & !1);
+        let (w, h) = (
+            (w as u32).saturating_sub(2 * crop) & !1,
+            (h as u32).saturating_sub(2 * crop) & !1,
+        );
         if w == 0 || h == 0 {
-            return Err(CaptureError::Backend("monitor smaller than its border".into()));
+            return Err(CaptureError::Backend(
+                "monitor smaller than its border".into(),
+            ));
         }
 
         // Fixed output size: if the monitor is resized, frames are rescaled instead of
@@ -275,7 +351,12 @@ impl GnomeCapturer {
         cmd.args(["-q", "pipewiresrc"])
             .arg(format!("path={node}"))
             .args(["do-timestamp=true", "!", "videoconvert", "!", "videocrop"])
-            .args([format!("top={crop}"), format!("bottom={crop}"), format!("left={crop}"), format!("right={crop}")])
+            .args([
+                format!("top={crop}"),
+                format!("bottom={crop}"),
+                format!("left={crop}"),
+                format!("right={crop}"),
+            ])
             .args(["!", "videoscale", "!"])
             .arg(format!("video/x-raw,format=BGRx,width={w},height={h}"))
             .args(["!", "fdsink", "fd=1"])
@@ -291,7 +372,9 @@ impl GnomeCapturer {
                 Ok(())
             });
         }
-        let mut child = cmd.spawn().map_err(|e| backend("spawn gst-launch-1.0", e))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| backend("spawn gst-launch-1.0", e))?;
         let mut stdout = child.stdout.take().expect("piped stdout");
 
         let shared = Arc::new(Shared {
@@ -366,7 +449,10 @@ impl ScreenCapturer for GnomeCapturer {
     }
 
     fn display(&self) -> DisplayInfo {
-        DisplayInfo { width: self.size.0, height: self.size.1 }
+        DisplayInfo {
+            width: self.size.0,
+            height: self.size.1,
+        }
     }
 
     fn next_frame(&mut self, timeout: Duration) -> Result<Option<RawFrame>, CaptureError> {
@@ -374,7 +460,9 @@ impl ScreenCapturer for GnomeCapturer {
         let (guard, _) = self
             .shared
             .cond
-            .wait_timeout_while(guard, timeout, |g| g.0 == self.seen && !self.shared.closed.load(Ordering::SeqCst))
+            .wait_timeout_while(guard, timeout, |g| {
+                g.0 == self.seen && !self.shared.closed.load(Ordering::SeqCst)
+            })
             .unwrap();
         if guard.0 == self.seen {
             return if self.shared.closed.load(Ordering::SeqCst) {
@@ -412,9 +500,11 @@ impl GnomeBorder {
         let conn = Connection::session().map_err(|e| format!("no D-Bus session bus: {e}"))?;
         if !name_has_owner(&conn, BUS_NAME) {
             if screen_locked() {
-                return Err("the screen is locked (GNOME turns extensions off on the lock screen; \
+                return Err(
+                    "the screen is locked (GNOME turns extensions off on the lock screen; \
                             the desktop is served again once it is unlocked)"
-                    .into());
+                        .into(),
+                );
             }
             return Err(format!(
                 "GNOME Shell extension dalker-border@ivanmakhnyk.github.io is not running \
@@ -447,7 +537,12 @@ impl GnomeBorder {
                 }
             })
             .map_err(|e| format!("spawn border thread: {e}"))?;
-        Ok(Self { conn, active, stop, heartbeat: Some(heartbeat) })
+        Ok(Self {
+            conn,
+            active,
+            stop,
+            heartbeat: Some(heartbeat),
+        })
     }
 }
 
@@ -496,15 +591,19 @@ impl GnomeClipboard {
 
     fn proxy(&mut self) -> Result<Proxy<'static>, ClipboardError> {
         if self.conn.is_none() {
-            let conn = Connection::session().map_err(|e| ClipboardError::Failed(format!("no D-Bus session bus: {e}")))?;
+            let conn = Connection::session()
+                .map_err(|e| ClipboardError::Failed(format!("no D-Bus session bus: {e}")))?;
             self.conn = Some(conn);
         }
         let conn = self.conn.clone().unwrap();
         if !name_has_owner(&conn, BUS_NAME) {
             self.conn = None;
-            return Err(ClipboardError::Failed("the Dalker GNOME Shell extension is not running".into()));
+            return Err(ClipboardError::Failed(
+                "the Dalker GNOME Shell extension is not running".into(),
+            ));
         }
-        Proxy::new(&conn, BUS_NAME, BORDER_PATH, BORDER).map_err(|e| ClipboardError::Failed(e.to_string()))
+        Proxy::new(&conn, BUS_NAME, BORDER_PATH, BORDER)
+            .map_err(|e| ClipboardError::Failed(e.to_string()))
     }
 
     fn failed(&mut self, method: &str, e: zbus::Error) -> ClipboardError {
@@ -519,7 +618,11 @@ impl GnomeClipboard {
                     )
                 }
                 // The extension only hands out the clipboard while its border is shown.
-                INACTIVE_ERROR => return ClipboardError::Busy("the remote-session border is not shown yet".into()),
+                INACTIVE_ERROR => {
+                    return ClipboardError::Busy(
+                        "the remote-session border is not shown yet".into(),
+                    )
+                }
                 _ => {}
             }
         }
@@ -579,7 +682,13 @@ mod tests {
     use super::*;
 
     fn rect(x: i32, y: i32, width: u32, height: u32, primary: bool) -> LogicalRect {
-        LogicalRect { x, y, width, height, primary }
+        LogicalRect {
+            x,
+            y,
+            width,
+            height,
+            primary,
+        }
     }
 
     #[test]
@@ -587,23 +696,48 @@ mod tests {
         let l = layout_of(&[rect(0, 0, 1280, 800, true)]).unwrap();
         assert_eq!(
             l,
-            MonitorLayout { x: 0, y: 0, width: 1280, height: 800, desktop_width: 1280, desktop_height: 800 }
+            MonitorLayout {
+                x: 0,
+                y: 0,
+                width: 1280,
+                height: 800,
+                desktop_width: 1280,
+                desktop_height: 800
+            }
         );
     }
 
     #[test]
     fn primary_on_the_right_of_a_taller_monitor() {
-        let l = layout_of(&[rect(0, 0, 1920, 1200, false), rect(1920, 100, 1280, 800, true)]).unwrap();
+        let l = layout_of(&[
+            rect(0, 0, 1920, 1200, false),
+            rect(1920, 100, 1280, 800, true),
+        ])
+        .unwrap();
         assert_eq!(
             l,
-            MonitorLayout { x: 1920, y: 100, width: 1280, height: 800, desktop_width: 3200, desktop_height: 1200 }
+            MonitorLayout {
+                x: 1920,
+                y: 100,
+                width: 1280,
+                height: 800,
+                desktop_width: 3200,
+                desktop_height: 1200
+            }
         );
     }
 
     #[test]
     fn negative_origins_are_normalized() {
-        let l = layout_of(&[rect(-1280, 0, 1280, 800, false), rect(0, 0, 1280, 800, true)]).unwrap();
-        assert_eq!((l.x, l.y, l.desktop_width, l.desktop_height), (1280, 0, 2560, 800));
+        let l = layout_of(&[
+            rect(-1280, 0, 1280, 800, false),
+            rect(0, 0, 1280, 800, true),
+        ])
+        .unwrap();
+        assert_eq!(
+            (l.x, l.y, l.desktop_width, l.desktop_height),
+            (1280, 0, 2560, 800)
+        );
         assert!(layout_of(&[]).is_none());
     }
 
@@ -611,7 +745,11 @@ mod tests {
     fn border_crop_follows_the_monitor_scale() {
         assert_eq!(border_crop(1280, 1280), 5);
         assert_eq!(border_crop(2560, 1280), 10);
-        assert_eq!(border_crop(1920, 1536), 7, "1.25x rounds up so no red is left");
+        assert_eq!(
+            border_crop(1920, 1536),
+            7,
+            "1.25x rounds up so no red is left"
+        );
         assert_eq!(border_crop(1280, 0), BORDER_INSET);
     }
 

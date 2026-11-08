@@ -12,7 +12,10 @@ pub struct NormPoint {
 impl NormPoint {
     /// Creates a point, clamping each axis into `0.0..=1.0`. NaN becomes `0.0`.
     pub fn new(x: f32, y: f32) -> Self {
-        Self { x: clamp_unit(x), y: clamp_unit(y) }
+        Self {
+            x: clamp_unit(x),
+            y: clamp_unit(y),
+        }
     }
 
     /// Returns a copy with both axes clamped into `0.0..=1.0`.
@@ -64,7 +67,12 @@ pub enum InputEvent {
     /// Absolute pointer move, normalized coordinates.
     MouseMove { x: f32, y: f32 },
     /// Button press/release. The position is applied before the button change.
-    MouseButton { button: MouseButton, down: bool, x: f32, y: f32 },
+    MouseButton {
+        button: MouseButton,
+        down: bool,
+        x: f32,
+        y: f32,
+    },
     /// Scroll. Units follow the browser `WheelEvent` in `DOM_DELTA_PIXEL` mode;
     /// 120 ≈ one notch. Positive `dy` scrolls down, positive `dx` scrolls right.
     Wheel { dx: f32, dy: f32 },
@@ -92,13 +100,28 @@ impl InputEvent {
             }
             InputEvent::MouseButton { button, down, x, y } => {
                 let p = NormPoint::new(x, y);
-                InputEvent::MouseButton { button, down, x: p.x, y: p.y }
+                InputEvent::MouseButton {
+                    button,
+                    down,
+                    x: p.x,
+                    y: p.y,
+                }
             }
             InputEvent::Wheel { dx, dy } => InputEvent::Wheel {
-                dx: if dx.is_finite() { dx.clamp(-10_000.0, 10_000.0) } else { 0.0 },
-                dy: if dy.is_finite() { dy.clamp(-10_000.0, 10_000.0) } else { 0.0 },
+                dx: if dx.is_finite() {
+                    dx.clamp(-10_000.0, 10_000.0)
+                } else {
+                    0.0
+                },
+                dy: if dy.is_finite() {
+                    dy.clamp(-10_000.0, 10_000.0)
+                } else {
+                    0.0
+                },
             },
-            InputEvent::Text { text } => InputEvent::Text { text: sanitize_text(&text) },
+            InputEvent::Text { text } => InputEvent::Text {
+                text: sanitize_text(&text),
+            },
             other => other,
         }
     }
@@ -111,7 +134,10 @@ pub const MAX_TEXT_CHARS: usize = 256;
 /// Keeps printable characters only: control characters would act as keys (Enter, Esc...),
 /// and those must come as [`InputEvent::Key`].
 fn sanitize_text(text: &str) -> String {
-    text.chars().filter(|c| !c.is_control()).take(MAX_TEXT_CHARS).collect()
+    text.chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_TEXT_CHARS)
+        .collect()
 }
 
 /// Tracks held keys/buttons so a session can release everything when the
@@ -161,7 +187,12 @@ impl InputTracker {
         let pos = self.last_pos.unwrap_or(NormPoint { x: 0.5, y: 0.5 });
         let mut out: Vec<InputEvent> = std::mem::take(&mut self.buttons)
             .into_iter()
-            .map(|button| InputEvent::MouseButton { button, down: false, x: pos.x, y: pos.y })
+            .map(|button| InputEvent::MouseButton {
+                button,
+                down: false,
+                x: pos.x,
+                y: pos.y,
+            })
             .collect();
         out.extend(
             std::mem::take(&mut self.keys)
@@ -178,15 +209,28 @@ mod tests {
 
     #[test]
     fn json_roundtrip() {
-        let ev: InputEvent =
-            serde_json::from_str(r#"{"type":"mouse_button","button":"left","down":true,"x":0.5,"y":1.0}"#)
-                .unwrap();
+        let ev: InputEvent = serde_json::from_str(
+            r#"{"type":"mouse_button","button":"left","down":true,"x":0.5,"y":1.0}"#,
+        )
+        .unwrap();
         assert_eq!(
             ev,
-            InputEvent::MouseButton { button: MouseButton::Left, down: true, x: 0.5, y: 1.0 }
+            InputEvent::MouseButton {
+                button: MouseButton::Left,
+                down: true,
+                x: 0.5,
+                y: 1.0
+            }
         );
-        let key: InputEvent = serde_json::from_str(r#"{"type":"key","code":"KeyA","down":false}"#).unwrap();
-        assert_eq!(key, InputEvent::Key { code: "KeyA".into(), down: false });
+        let key: InputEvent =
+            serde_json::from_str(r#"{"type":"key","code":"KeyA","down":false}"#).unwrap();
+        assert_eq!(
+            key,
+            InputEvent::Key {
+                code: "KeyA".into(),
+                down: false
+            }
+        );
         let sas: InputEvent = serde_json::from_str(r#"{"type":"secure_attention"}"#).unwrap();
         assert_eq!(sas, InputEvent::SecureAttention);
         let text: InputEvent = serde_json::from_str(r#"{"type":"text","text":"é"}"#).unwrap();
@@ -197,7 +241,11 @@ mod tests {
 
     #[test]
     fn sanitize_clamps_and_kills_nan() {
-        let ev = InputEvent::MouseMove { x: -3.0, y: f32::NAN }.sanitized();
+        let ev = InputEvent::MouseMove {
+            x: -3.0,
+            y: f32::NAN,
+        }
+        .sanitized();
         assert_eq!(ev, InputEvent::MouseMove { x: 0.0, y: 0.0 });
         let ev = InputEvent::MouseMove { x: 7.0, y: 0.25 }.sanitized();
         assert_eq!(ev, InputEvent::MouseMove { x: 1.0, y: 0.25 });
@@ -205,10 +253,20 @@ mod tests {
 
     #[test]
     fn sanitize_text_drops_controls_and_caps_length() {
-        let ev = InputEvent::Text { text: "a\nб\u{1b}😀".into() }.sanitized();
-        assert_eq!(ev, InputEvent::Text { text: "aб😀".into() });
+        let ev = InputEvent::Text {
+            text: "a\nб\u{1b}😀".into(),
+        }
+        .sanitized();
+        assert_eq!(
+            ev,
+            InputEvent::Text {
+                text: "aб😀".into()
+            }
+        );
         let long = "x".repeat(MAX_TEXT_CHARS + 10);
-        let InputEvent::Text { text } = (InputEvent::Text { text: long }).sanitized() else { unreachable!() };
+        let InputEvent::Text { text } = (InputEvent::Text { text: long }).sanitized() else {
+            unreachable!()
+        };
         assert_eq!(text.chars().count(), MAX_TEXT_CHARS);
     }
 
@@ -222,16 +280,38 @@ mod tests {
     #[test]
     fn tracker_releases_held_inputs() {
         let mut t = InputTracker::new();
-        t.observe(&InputEvent::Key { code: "ControlLeft".into(), down: true });
-        t.observe(&InputEvent::Key { code: "KeyC".into(), down: true });
-        t.observe(&InputEvent::Key { code: "KeyC".into(), down: false });
-        t.observe(&InputEvent::MouseButton { button: MouseButton::Left, down: true, x: 0.1, y: 0.2 });
+        t.observe(&InputEvent::Key {
+            code: "ControlLeft".into(),
+            down: true,
+        });
+        t.observe(&InputEvent::Key {
+            code: "KeyC".into(),
+            down: true,
+        });
+        t.observe(&InputEvent::Key {
+            code: "KeyC".into(),
+            down: false,
+        });
+        t.observe(&InputEvent::MouseButton {
+            button: MouseButton::Left,
+            down: true,
+            x: 0.1,
+            y: 0.2,
+        });
         let rel = t.drain_release_events();
         assert_eq!(
             rel,
             vec![
-                InputEvent::MouseButton { button: MouseButton::Left, down: false, x: 0.1, y: 0.2 },
-                InputEvent::Key { code: "ControlLeft".into(), down: false },
+                InputEvent::MouseButton {
+                    button: MouseButton::Left,
+                    down: false,
+                    x: 0.1,
+                    y: 0.2
+                },
+                InputEvent::Key {
+                    code: "ControlLeft".into(),
+                    down: false
+                },
             ]
         );
         assert!(t.drain_release_events().is_empty());

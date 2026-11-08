@@ -1,18 +1,18 @@
 use std::time::{Duration, Instant};
 
+use super::desktop;
+use super::pointer::{self, PointerShape, ShapeKind};
 use bytes::Bytes;
 use dalker_core::{CaptureError, DisplayInfo, PixelFormat, RawFrame, ScreenCapturer};
 use windows::core::Interface;
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0};
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
-    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE,
-    D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
+    D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_CPU_ACCESS_READ,
+    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_SDK_VERSION,
+    D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
-use super::desktop;
-use super::pointer::{self, PointerShape, ShapeKind};
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput1, IDXGIOutputDuplication,
     IDXGIResource, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_INVALID_CALL, DXGI_ERROR_NOT_FOUND,
@@ -103,7 +103,10 @@ impl DxgiCapturer {
             MipLevels: 1,
             ArraySize: 1,
             Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
             Usage: D3D11_USAGE_STAGING,
             BindFlags: 0,
             CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
@@ -113,7 +116,12 @@ impl DxgiCapturer {
         device.CreateTexture2D(&tex_desc, None, Some(&mut staging))?;
         let staging = staging.ok_or_else(|| windows::core::Error::from(DXGI_ERROR_NOT_FOUND))?;
 
-        tracing::info!(width, height, desktop = desktop.as_deref().unwrap_or("?"), "DXGI desktop duplication started");
+        tracing::info!(
+            width,
+            height,
+            desktop = desktop.as_deref().unwrap_or("?"),
+            "DXGI desktop duplication started"
+        );
         Ok(Self {
             _device: device,
             context,
@@ -142,7 +150,10 @@ impl DxgiCapturer {
         let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut resource: Option<IDXGIResource> = None;
         let ms = timeout.as_millis().min(u32::MAX as u128) as u32;
-        if let Err(e) = self.duplication.AcquireNextFrame(ms, &mut info, &mut resource) {
+        if let Err(e) = self
+            .duplication
+            .AcquireNextFrame(ms, &mut info, &mut resource)
+        {
             if e.code() == DXGI_ERROR_WAIT_TIMEOUT {
                 return Ok(if self.withheld { self.compose() } else { None });
             }
@@ -173,12 +184,15 @@ impl DxgiCapturer {
 
         let image_changed = info.LastPresentTime != 0 && resource.is_some();
         if image_changed {
-            let Some(resource) = resource else { return Ok(None) };
+            let Some(resource) = resource else {
+                return Ok(None);
+            };
             let texture: ID3D11Texture2D = resource.cast()?;
             self.context.CopyResource(&self.staging, &texture);
 
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            self.context.Map(&self.staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+            self.context
+                .Map(&self.staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
             let row_bytes = self.width as usize * 4;
             let image = self.image.get_or_insert_with(Vec::new);
             image.resize(row_bytes * self.height as usize, 0);
@@ -204,7 +218,11 @@ impl DxgiCapturer {
         // Never publish a desktop unless the red border is up on the host's screen, on
         // this desktop. (It is excluded from capture, so this can't be judged from the
         // frame itself; the overlay reports where its window is shown.)
-        if !self.desktop.as_deref().is_some_and(desktop::border_shown_on) {
+        if !self
+            .desktop
+            .as_deref()
+            .is_some_and(desktop::border_shown_on)
+        {
             return None;
         }
         // A pointer-only update before the first image has nothing to draw on.
@@ -234,7 +252,12 @@ impl DxgiCapturer {
         let mut data = vec![0u8; size as usize];
         let mut required = 0u32;
         let mut info = DXGI_OUTDUPL_POINTER_SHAPE_INFO::default();
-        self.duplication.GetFramePointerShape(size, data.as_mut_ptr().cast(), &mut required, &mut info)?;
+        self.duplication.GetFramePointerShape(
+            size,
+            data.as_mut_ptr().cast(),
+            &mut required,
+            &mut info,
+        )?;
         data.truncate(required.min(size) as usize);
         Ok(ShapeKind::from_dxgi(info.Type).map(|kind| PointerShape {
             kind,
@@ -262,14 +285,19 @@ impl ScreenCapturer for DxgiCapturer {
     }
 
     fn display(&self) -> DisplayInfo {
-        DisplayInfo { width: self.width, height: self.height }
+        DisplayInfo {
+            width: self.width,
+            height: self.height,
+        }
     }
 
     fn next_frame(&mut self, timeout: Duration) -> Result<Option<RawFrame>, CaptureError> {
         // DXGI notices most desktop switches itself, but not reliably all of them.
         if let (Some(ours), Some(input)) = (&self.desktop, desktop::input_desktop_name()) {
             if *ours != input {
-                return Err(CaptureError::Lost(format!("input desktop changed: {ours} -> {input}")));
+                return Err(CaptureError::Lost(format!(
+                    "input desktop changed: {ours} -> {input}"
+                )));
             }
         }
         unsafe { self.acquire(timeout) }.map_err(|e| {

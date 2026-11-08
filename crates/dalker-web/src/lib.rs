@@ -85,8 +85,16 @@ pub fn router(auth: Arc<Authenticator>, signaling: Arc<dyn SignalingHandler>) ->
 
 /// The router plus `extra` routes (the agent's settings API), which check sign-in themselves
 /// with [`signed_in`].
-pub fn router_with(auth: Arc<Authenticator>, signaling: Arc<dyn SignalingHandler>, extra: Router) -> Router {
-    let state = AppState { auth, signaling, login_gate: Arc::new(Semaphore::new(1)) };
+pub fn router_with(
+    auth: Arc<Authenticator>,
+    signaling: Arc<dyn SignalingHandler>,
+    extra: Router,
+) -> Router {
+    let state = AppState {
+        auth,
+        signaling,
+        login_gate: Arc::new(Semaphore::new(1)),
+    };
     let main = Router::new()
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
@@ -160,7 +168,11 @@ fn require_auth(state: &AppState, headers: &HeaderMap) -> Result<String, Respons
     }
 }
 
-async fn login(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<LoginRequest>) -> Response {
+async fn login(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<LoginRequest>,
+) -> Response {
     if !state.auth.has_password() {
         return error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -183,7 +195,8 @@ async fn login(State(state): State<AppState>, headers: HeaderMap, Json(req): Jso
                 secure_attr(&state.auth, &headers)
             );
             let mut resp = Json(serde_json::json!({"ok": true})).into_response();
-            resp.headers_mut().insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
+            resp.headers_mut()
+                .insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
             resp
         }
         None => {
@@ -216,9 +229,14 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Some(t) = session_token(&headers) {
         state.auth.logout(&t);
     }
-    let cookie = format!("{}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0{}", auth::COOKIE_NAME, secure_attr(&state.auth, &headers));
+    let cookie = format!(
+        "{}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0{}",
+        auth::COOKIE_NAME,
+        secure_attr(&state.auth, &headers)
+    );
     let mut resp = Json(serde_json::json!({"ok": true})).into_response();
-    resp.headers_mut().insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
+    resp.headers_mut()
+        .insert(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
     resp
 }
 
@@ -229,7 +247,11 @@ async fn info(State(state): State<AppState>, headers: HeaderMap) -> Response {
     Json(state.signaling.info()).into_response()
 }
 
-async fn offer(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<SdpMessage>) -> Response {
+async fn offer(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<SdpMessage>,
+) -> Response {
     if let Err(r) = require_auth(&state, &headers) {
         return r;
     }
@@ -288,7 +310,9 @@ mod tests {
 
     fn app() -> Router {
         let auth = Authenticator::new(
-            Credentials { password_hash: hash_password("pw").unwrap() },
+            Credentials {
+                password_hash: hash_password("pw").unwrap(),
+            },
             Duration::from_secs(60),
         )
         .unwrap();
@@ -310,12 +334,21 @@ mod tests {
     async fn offer_requires_login_then_works() {
         let app = app();
 
-        let r = app.clone().oneshot(json_req("POST", "/api/offer", r#"{"sdp":"x"}"#, None)).await.unwrap();
+        let r = app
+            .clone()
+            .oneshot(json_req("POST", "/api/offer", r#"{"sdp":"x"}"#, None))
+            .await
+            .unwrap();
         assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
 
         let r = app
             .clone()
-            .oneshot(json_req("POST", "/api/login", r#"{"password":"nope"}"#, None))
+            .oneshot(json_req(
+                "POST",
+                "/api/login",
+                r#"{"password":"nope"}"#,
+                None,
+            ))
             .await
             .unwrap();
         assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
@@ -332,16 +365,28 @@ mod tests {
 
         let r = app
             .clone()
-            .oneshot(json_req("POST", "/api/offer", r#"{"sdp":"v=0"}"#, Some(&cookie)))
+            .oneshot(json_req(
+                "POST",
+                "/api/offer",
+                r#"{"sdp":"v=0"}"#,
+                Some(&cookie),
+            ))
             .await
             .unwrap();
         assert_eq!(r.status(), StatusCode::OK);
         let body = r.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body.as_ref(), br#"{"sdp":"answer-to:v=0"}"#);
 
-        let r = app.clone().oneshot(json_req("POST", "/api/logout", "", Some(&cookie))).await.unwrap();
+        let r = app
+            .clone()
+            .oneshot(json_req("POST", "/api/logout", "", Some(&cookie)))
+            .await
+            .unwrap();
         assert_eq!(r.status(), StatusCode::OK);
-        let r = app.oneshot(json_req("GET", "/api/info", "", Some(&cookie))).await.unwrap();
+        let r = app
+            .oneshot(json_req("GET", "/api/info", "", Some(&cookie)))
+            .await
+            .unwrap();
         assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -350,7 +395,8 @@ mod tests {
         async fn login(app: Router, proto: Option<&str>) -> String {
             let mut req = json_req("POST", "/api/login", r#"{"password":"pw"}"#, None);
             if let Some(p) = proto {
-                req.headers_mut().insert("x-forwarded-proto", HeaderValue::from_str(p).unwrap());
+                req.headers_mut()
+                    .insert("x-forwarded-proto", HeaderValue::from_str(p).unwrap());
             }
             let r = app.oneshot(req).await.unwrap();
             r.headers()[header::SET_COOKIE].to_str().unwrap().to_owned()
@@ -360,19 +406,33 @@ mod tests {
         assert!(login(app(), Some("https")).await.contains("; Secure"));
         let hash = hash_password("pw").unwrap();
         let with = |mode| {
-            let a = Authenticator::new(Credentials { password_hash: hash.clone() }, Duration::from_secs(60))
-                .unwrap()
-                .with_cookie_secure(mode);
+            let a = Authenticator::new(
+                Credentials {
+                    password_hash: hash.clone(),
+                },
+                Duration::from_secs(60),
+            )
+            .unwrap()
+            .with_cookie_secure(mode);
             router(Arc::new(a), Arc::new(EchoSignaling))
         };
-        assert!(login(with(CookieSecure::Always), None).await.contains("; Secure"));
-        assert!(!login(with(CookieSecure::Never), Some("https")).await.contains("Secure"));
+        assert!(login(with(CookieSecure::Always), None)
+            .await
+            .contains("; Secure"));
+        assert!(!login(with(CookieSecure::Never), Some("https"))
+            .await
+            .contains("Secure"));
     }
 
     #[tokio::test]
     async fn old_clients_that_send_a_user_name_still_sign_in() {
         let r = app()
-            .oneshot(json_req("POST", "/api/login", r#"{"username":"anything","password":"pw"}"#, None))
+            .oneshot(json_req(
+                "POST",
+                "/api/login",
+                r#"{"username":"anything","password":"pw"}"#,
+                None,
+            ))
             .await
             .unwrap();
         assert_eq!(r.status(), StatusCode::OK);
@@ -386,10 +446,21 @@ mod tests {
             .oneshot(json_req("POST", "/api/login", r#"{"password":"pw"}"#, None))
             .await
             .unwrap();
-        let cookie = login.headers()[header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_owned();
+        let cookie = login.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
         let r = app
             .clone()
-            .oneshot(json_req("POST", "/api/password", r#"{"current":"pw","new":"whatever-123"}"#, Some(&cookie)))
+            .oneshot(json_req(
+                "POST",
+                "/api/password",
+                r#"{"current":"pw","new":"whatever-123"}"#,
+                Some(&cookie),
+            ))
             .await
             .unwrap();
         assert!(r.status().is_client_error(), "got {}", r.status());
@@ -403,12 +474,24 @@ mod tests {
 
     #[tokio::test]
     async fn serves_embedded_ui() {
-        let r = app().oneshot(Request::get("/").body(Body::empty()).unwrap()).await.unwrap();
+        let r = app()
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
         assert_eq!(r.status(), StatusCode::OK);
-        assert!(r.headers()[header::CONTENT_TYPE].to_str().unwrap().starts_with("text/html"));
-        let r = app().oneshot(Request::get("/app.js").body(Body::empty()).unwrap()).await.unwrap();
+        assert!(r.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html"));
+        let r = app()
+            .oneshot(Request::get("/app.js").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
         assert_eq!(r.status(), StatusCode::OK);
-        let r = app().oneshot(Request::get("/../Cargo.toml").body(Body::empty()).unwrap()).await.unwrap();
+        let r = app()
+            .oneshot(Request::get("/../Cargo.toml").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
         assert_eq!(r.status(), StatusCode::NOT_FOUND);
     }
 }

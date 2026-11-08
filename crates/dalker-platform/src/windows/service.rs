@@ -24,23 +24,27 @@ use windows::core::{w, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Security::Authentication::Identity::SendSAS;
 use windows::Win32::Security::{
-    DuplicateTokenEx, SecurityImpersonation, SetTokenInformation, TokenPrimary, TokenSessionId, TOKEN_ALL_ACCESS,
+    DuplicateTokenEx, SecurityImpersonation, SetTokenInformation, TokenPrimary, TokenSessionId,
+    TOKEN_ALL_ACCESS,
 };
 use windows::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows::Win32::System::RemoteDesktop::WTSGetActiveConsoleSessionId;
 use windows::Win32::System::Services::{
-    RegisterServiceCtrlHandlerExW, SetServiceStatus, StartServiceCtrlDispatcherW, SERVICE_ACCEPT_SHUTDOWN,
-    SERVICE_ACCEPT_STOP, SERVICE_CONTROL_INTERROGATE, SERVICE_CONTROL_SHUTDOWN, SERVICE_CONTROL_STOP,
-    SERVICE_RUNNING, SERVICE_START_PENDING, SERVICE_STATUS, SERVICE_STATUS_CURRENT_STATE, SERVICE_STATUS_HANDLE,
-    SERVICE_STOPPED, SERVICE_STOP_PENDING, SERVICE_TABLE_ENTRYW, SERVICE_WIN32_OWN_PROCESS,
+    RegisterServiceCtrlHandlerExW, SetServiceStatus, StartServiceCtrlDispatcherW,
+    SERVICE_ACCEPT_SHUTDOWN, SERVICE_ACCEPT_STOP, SERVICE_CONTROL_INTERROGATE,
+    SERVICE_CONTROL_SHUTDOWN, SERVICE_CONTROL_STOP, SERVICE_RUNNING, SERVICE_START_PENDING,
+    SERVICE_STATUS, SERVICE_STATUS_CURRENT_STATE, SERVICE_STATUS_HANDLE, SERVICE_STOPPED,
+    SERVICE_STOP_PENDING, SERVICE_TABLE_ENTRYW, SERVICE_WIN32_OWN_PROCESS,
 };
 use windows::Win32::System::Threading::{
-    CreateEventW, CreateProcessAsUserW, GetCurrentProcess, GetExitCodeProcess, OpenEventW, OpenProcessToken,
-    ResumeThread, SetEvent, TerminateProcess, WaitForMultipleObjects, WaitForSingleObject, CREATE_NO_WINDOW,
-    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, EVENT_MODIFY_STATE, PROCESS_INFORMATION, STARTUPINFOW,
+    CreateEventW, CreateProcessAsUserW, GetCurrentProcess, GetExitCodeProcess, OpenEventW,
+    OpenProcessToken, ResumeThread, SetEvent, TerminateProcess, WaitForMultipleObjects,
+    WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
+    EVENT_MODIFY_STATE, PROCESS_INFORMATION, STARTUPINFOW,
 };
 
 /// Service name, as registered by the installer.
@@ -65,11 +69,15 @@ pub fn run(child_command: String) -> Result<(), String> {
     let _ = CHILD_COMMAND.set(child_command);
     let mut name: Vec<u16> = SERVICE_NAME.encode_utf16().chain([0]).collect();
     let table = [
-        SERVICE_TABLE_ENTRYW { lpServiceName: PWSTR(name.as_mut_ptr()), lpServiceProc: Some(service_main) },
+        SERVICE_TABLE_ENTRYW {
+            lpServiceName: PWSTR(name.as_mut_ptr()),
+            lpServiceProc: Some(service_main),
+        },
         SERVICE_TABLE_ENTRYW::default(),
     ];
-    unsafe { StartServiceCtrlDispatcherW(table.as_ptr()) }
-        .map_err(|e| format!("not started by the service control manager ({e}); install with the MSI"))
+    unsafe { StartServiceCtrlDispatcherW(table.as_ptr()) }.map_err(|e| {
+        format!("not started by the service control manager ({e}); install with the MSI")
+    })
 }
 
 /// Asks the Dalker service to send Ctrl+Alt+Del (used by the agent it started).
@@ -84,8 +92,14 @@ pub fn request_secure_attention() -> Result<(), String> {
 }
 
 fn set_status(state: SERVICE_STATUS_CURRENT_STATE, exit_code: u32) {
-    let Some(handle) = STATUS_HANDLE.get() else { return };
-    let accepted = if state == SERVICE_RUNNING { SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN } else { 0 };
+    let Some(handle) = STATUS_HANDLE.get() else {
+        return;
+    };
+    let accepted = if state == SERVICE_RUNNING {
+        SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN
+    } else {
+        0
+    };
     let status = SERVICE_STATUS {
         dwServiceType: SERVICE_WIN32_OWN_PROCESS,
         dwCurrentState: state,
@@ -93,14 +107,23 @@ fn set_status(state: SERVICE_STATUS_CURRENT_STATE, exit_code: u32) {
         dwWin32ExitCode: exit_code,
         dwServiceSpecificExitCode: 0,
         dwCheckPoint: 0,
-        dwWaitHint: if state == SERVICE_RUNNING || state == SERVICE_STOPPED { 0 } else { 10_000 },
+        dwWaitHint: if state == SERVICE_RUNNING || state == SERVICE_STOPPED {
+            0
+        } else {
+            10_000
+        },
     };
     unsafe {
         let _ = SetServiceStatus(SERVICE_STATUS_HANDLE(*handle as *mut c_void), &status);
     }
 }
 
-unsafe extern "system" fn control_handler(control: u32, _: u32, _: *mut c_void, _: *mut c_void) -> u32 {
+unsafe extern "system" fn control_handler(
+    control: u32,
+    _: u32,
+    _: *mut c_void,
+    _: *mut c_void,
+) -> u32 {
     match control {
         SERVICE_CONTROL_STOP | SERVICE_CONTROL_SHUTDOWN => {
             STOP.store(true, Ordering::SeqCst);
@@ -183,9 +206,11 @@ impl Child {
 fn supervise() -> Result<(), String> {
     let command = CHILD_COMMAND.get().cloned().ok_or("no agent command")?;
     let (stop_event, sas_event) = unsafe {
-        let stop = CreateEventW(None, true, false, PCWSTR::null()).map_err(|e| format!("stop event: {e}"))?;
+        let stop = CreateEventW(None, true, false, PCWSTR::null())
+            .map_err(|e| format!("stop event: {e}"))?;
         // Default DACL of a SYSTEM token: only SYSTEM and administrators can signal it.
-        let sas = CreateEventW(None, false, false, SAS_EVENT).map_err(|e| format!("Ctrl+Alt+Del event: {e}"))?;
+        let sas = CreateEventW(None, false, false, SAS_EVENT)
+            .map_err(|e| format!("Ctrl+Alt+Del event: {e}"))?;
         (stop, sas)
     };
     let _ = STOP_EVENT.set(stop_event.0 as usize);
@@ -203,14 +228,19 @@ fn supervise() -> Result<(), String> {
                 tracing::warn!(pid = c.pid, code, "agent exited");
                 failures += 1;
                 // 1 s, 2 s, 4 s ... up to 30 s between restarts of a crashing agent.
-                next_start = Instant::now() + Duration::from_secs((1u64 << failures.min(5)).min(30));
+                next_start =
+                    Instant::now() + Duration::from_secs((1u64 << failures.min(5)).min(30));
                 if let Some(c) = child.take() {
                     unsafe {
                         let _ = CloseHandle(c.process);
                     }
                 }
             } else if c.session != session {
-                tracing::info!(from = c.session, to = session, "console session changed; restarting agent");
+                tracing::info!(
+                    from = c.session,
+                    to = session,
+                    "console session changed; restarting agent"
+                );
                 if let Some(c) = child.take() {
                     c.kill();
                 }
@@ -232,11 +262,14 @@ fn supervise() -> Result<(), String> {
             }
         }
         // A child that has been up for a while is healthy again.
-        if child.is_some() && failures > 0 && Instant::now() > next_start + Duration::from_secs(60) {
+        if child.is_some() && failures > 0 && Instant::now() > next_start + Duration::from_secs(60)
+        {
             failures = 0;
         }
 
-        let woke = unsafe { WaitForMultipleObjects(&[stop_event, sas_event], false, POLL.as_millis() as u32) };
+        let woke = unsafe {
+            WaitForMultipleObjects(&[stop_event, sas_event], false, POLL.as_millis() as u32)
+        };
         if woke.0 == WAIT_OBJECT_0.0 + 1 {
             tracing::info!("sending Ctrl+Alt+Del");
             unsafe { SendSAS(false) };
@@ -258,9 +291,17 @@ fn supervise() -> Result<(), String> {
 /// Starts `command` as SYSTEM in `session`, on its interactive window station.
 unsafe fn spawn_in_session(command: &str, session: u32) -> Result<Child, String> {
     let mut own = HANDLE::default();
-    OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &mut own).map_err(|e| format!("open token: {e}"))?;
+    OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &mut own)
+        .map_err(|e| format!("open token: {e}"))?;
     let mut token = HANDLE::default();
-    let dup = DuplicateTokenEx(own, TOKEN_ALL_ACCESS, None, SecurityImpersonation, TokenPrimary, &mut token);
+    let dup = DuplicateTokenEx(
+        own,
+        TOKEN_ALL_ACCESS,
+        None,
+        SecurityImpersonation,
+        TokenPrimary,
+        &mut token,
+    );
     let _ = CloseHandle(own);
     dup.map_err(|e| format!("duplicate token: {e}"))?;
 
@@ -269,7 +310,8 @@ unsafe fn spawn_in_session(command: &str, session: u32) -> Result<Child, String>
         SetTokenInformation(token, TokenSessionId, (&session as *const u32).cast(), 4)
             .map_err(|e| format!("set token session: {e}"))?;
 
-        let job = Job(CreateJobObjectW(None, PCWSTR::null()).map_err(|e| format!("create job: {e}"))?);
+        let job =
+            Job(CreateJobObjectW(None, PCWSTR::null()).map_err(|e| format!("create job: {e}"))?);
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         SetInformationJobObject(
@@ -311,7 +353,12 @@ unsafe fn spawn_in_session(command: &str, session: u32) -> Result<Child, String>
         }
         ResumeThread(info.hThread);
         let _ = CloseHandle(info.hThread);
-        Ok(Child { process: info.hProcess, pid: info.dwProcessId, session, _job: job })
+        Ok(Child {
+            process: info.hProcess,
+            pid: info.dwProcessId,
+            session,
+            _job: job,
+        })
     })();
     let _ = CloseHandle(token);
     result
@@ -351,7 +398,10 @@ mod tests {
     #[test]
     fn quoting_follows_commandline_to_argv_rules() {
         assert_eq!(quote_arg("--bind"), "--bind");
-        assert_eq!(quote_arg(r"C:\Program Files\Dalker\dalkerd.exe"), r#""C:\Program Files\Dalker\dalkerd.exe""#);
+        assert_eq!(
+            quote_arg(r"C:\Program Files\Dalker\dalkerd.exe"),
+            r#""C:\Program Files\Dalker\dalkerd.exe""#
+        );
         assert_eq!(quote_arg(""), r#""""#);
         assert_eq!(quote_arg(r#"a"b"#), r#""a\"b""#);
         assert_eq!(quote_arg(r"C:\dir with space\"), r#""C:\dir with space\\""#);

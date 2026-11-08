@@ -34,7 +34,12 @@ pub struct RateLimits {
 
 impl Default for RateLimits {
     fn default() -> Self {
-        Self { input_per_sec: 20.0, input_burst: 40.0, screenshots_per_sec: 4.0, screenshot_burst: 8.0 }
+        Self {
+            input_per_sec: 20.0,
+            input_burst: 40.0,
+            screenshots_per_sec: 4.0,
+            screenshot_burst: 8.0,
+        }
     }
 }
 
@@ -48,7 +53,12 @@ pub(crate) struct Bucket {
 
 impl Bucket {
     pub(crate) fn new(rate: f64, burst: f64) -> Self {
-        Self { tokens: burst, rate, burst, last: Instant::now() }
+        Self {
+            tokens: burst,
+            rate,
+            burst,
+            last: Instant::now(),
+        }
     }
 
     pub(crate) fn take(&mut self, now: Instant) -> bool {
@@ -152,7 +162,8 @@ impl Session {
         if self.is_closed() {
             return Err(ENDED.into());
         }
-        self.desktop.send(self.id, HostCommand::Input(ev.sanitized()));
+        self.desktop
+            .send(self.id, HostCommand::Input(ev.sanitized()));
         Ok(())
     }
 
@@ -197,7 +208,10 @@ impl State {
     }
 
     /// The latest frame from the capture thread, waiting for one where needed.
-    pub(crate) async fn latest_frame(&mut self, desktop: &dyn DesktopHandle) -> Result<Arc<RawFrame>, String> {
+    pub(crate) async fn latest_frame(
+        &mut self,
+        desktop: &dyn DesktopHandle,
+    ) -> Result<Arc<RawFrame>, String> {
         if !desktop.screen_ready() {
             return Err("the screen is not available right now (the on-screen border that tells people at the \
                         host they are being watched can't be shown, or there is no display yet); try again later"
@@ -224,12 +238,18 @@ impl State {
         };
         match tokio::time::timeout(NO_FRAME_WAIT, wait).await {
             Ok(Some(f)) => Ok(f),
-            _ => Err("no screen image yet (capture is starting or failing); try again in a moment".into()),
+            _ => Err(
+                "no screen image yet (capture is starting or failing); try again in a moment"
+                    .into(),
+            ),
         }
     }
 
     /// The coordinate frame: the last full screenshot, or what a default one would be.
-    pub(crate) async fn coordinate_frame(&mut self, desktop: &dyn DesktopHandle) -> Result<Frame, String> {
+    pub(crate) async fn coordinate_frame(
+        &mut self,
+        desktop: &dyn DesktopHandle,
+    ) -> Result<Frame, String> {
         if let Some(f) = self.frame {
             return Ok(f);
         }
@@ -238,7 +258,12 @@ impl State {
     }
 
     /// Model pixel coordinates → normalized point.
-    pub(crate) async fn point(&mut self, desktop: &dyn DesktopHandle, x: f64, y: f64) -> Result<NormPoint, String> {
+    pub(crate) async fn point(
+        &mut self,
+        desktop: &dyn DesktopHandle,
+        x: f64,
+        y: f64,
+    ) -> Result<NormPoint, String> {
         self.coordinate_frame(desktop).await?.to_norm(x, y)
     }
 
@@ -264,14 +289,30 @@ impl State {
             }
             None => None,
         };
-        let crop = native.map_or(Region { x: 0, y: 0, w: nw, h: nh }, |(_, _, n)| n);
-        let format = format.unwrap_or(if region.is_some() { Format::Png } else { Format::Jpeg });
-        let shot = tokio::task::spawn_blocking(move || screen::encode(&raw, crop, max_width, format))
-            .await
-            .map_err(|e| format!("screenshot failed: {e}"))??;
+        let crop = native.map_or(
+            Region {
+                x: 0,
+                y: 0,
+                w: nw,
+                h: nh,
+            },
+            |(_, _, n)| n,
+        );
+        let format = format.unwrap_or(if region.is_some() {
+            Format::Png
+        } else {
+            Format::Jpeg
+        });
+        let shot =
+            tokio::task::spawn_blocking(move || screen::encode(&raw, crop, max_width, format))
+                .await
+                .map_err(|e| format!("screenshot failed: {e}"))??;
         let text = match native {
             None => {
-                self.frame = Some(Frame { width: shot.width, height: shot.height });
+                self.frame = Some(Frame {
+                    width: shot.width,
+                    height: shot.height,
+                });
                 self.max_width = max_width;
                 let scale = nw as f64 / shot.width as f64;
                 format!(
@@ -304,9 +345,15 @@ mod tests {
         assert!(b.take(t0) && b.take(t0) && b.take(t0), "burst of 3");
         assert!(!b.take(t0), "then empty");
         assert!(!b.take(t0 + Duration::from_millis(400)), "0.8 tokens");
-        assert!(b.take(t0 + Duration::from_millis(500)), "1 token after 0.5 s at 2/s");
+        assert!(
+            b.take(t0 + Duration::from_millis(500)),
+            "1 token after 0.5 s at 2/s"
+        );
         assert!(b.take(t0 + Duration::from_secs(10)) && b.take(t0 + Duration::from_secs(10)));
         assert!(b.take(t0 + Duration::from_secs(10)));
-        assert!(!b.take(t0 + Duration::from_secs(10)), "refill is capped at the burst");
+        assert!(
+            !b.take(t0 + Duration::from_secs(10)),
+            "refill is capped at the burst"
+        );
     }
 }

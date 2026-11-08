@@ -64,14 +64,22 @@ impl std::str::FromStr for Scope {
         Scope::ALL
             .into_iter()
             .find(|sc| sc.as_str() == s.trim())
-            .ok_or_else(|| format!("unknown scope `{}` (known: view, input, clipboard)", s.trim()))
+            .ok_or_else(|| {
+                format!(
+                    "unknown scope `{}` (known: view, input, clipboard)",
+                    s.trim()
+                )
+            })
     }
 }
 
 /// Parses `"view,input"` into a set of scopes. At least one is required.
 pub fn parse_scopes(list: &str) -> Result<BTreeSet<Scope>, String> {
-    let scopes =
-        list.split(',').filter(|s| !s.trim().is_empty()).map(str::parse).collect::<Result<BTreeSet<_>, _>>()?;
+    let scopes = list
+        .split(',')
+        .filter(|s| !s.trim().is_empty())
+        .map(str::parse)
+        .collect::<Result<BTreeSet<_>, _>>()?;
     if scopes.is_empty() {
         return Err("at least one scope is needed (view, input, clipboard)".into());
     }
@@ -79,7 +87,11 @@ pub fn parse_scopes(list: &str) -> Result<BTreeSet<Scope>, String> {
 }
 
 pub fn format_scopes(scopes: &BTreeSet<Scope>) -> String {
-    scopes.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(",")
+    scopes
+        .iter()
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Parses a lifetime like `30d`, `12h`, `45m` or `never`.
@@ -89,12 +101,18 @@ pub fn parse_lifetime(s: &str) -> Result<Option<Duration>, String> {
         return Ok(None);
     }
     let (num, unit) = s.split_at(s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len()));
-    let n: u64 = num.parse().map_err(|_| format!("bad lifetime `{s}` (use e.g. 30d, 12h, 45m or never)"))?;
+    let n: u64 = num
+        .parse()
+        .map_err(|_| format!("bad lifetime `{s}` (use e.g. 30d, 12h, 45m or never)"))?;
     let secs = match unit {
         "d" => n * 86_400,
         "h" => n * 3600,
         "m" => n * 60,
-        _ => return Err(format!("bad lifetime `{s}` (use e.g. 30d, 12h, 45m or never)")),
+        _ => {
+            return Err(format!(
+                "bad lifetime `{s}` (use e.g. 30d, 12h, 45m or never)"
+            ))
+        }
     };
     if secs == 0 {
         return Err("lifetime must be positive".into());
@@ -103,7 +121,10 @@ pub fn parse_lifetime(s: &str) -> Result<Option<Duration>, String> {
 }
 
 pub fn unix_now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// What the host stores about one token.
@@ -133,7 +154,13 @@ impl TokenRecord {
 
     pub fn config_value(&self) -> String {
         let expires = self.expires.map_or("-".to_owned(), |e| e.to_string());
-        format!("{};{};{};{expires};{}", self.name, format_scopes(&self.scopes), self.created, self.hash)
+        format!(
+            "{};{};{};{expires};{}",
+            self.name,
+            format_scopes(&self.scopes),
+            self.created,
+            self.hash
+        )
     }
 
     /// Parses a config line; `None` if `key` is not a token key or the value is malformed.
@@ -152,7 +179,14 @@ impl TokenRecord {
         };
         let hash = parts.next()?.to_owned();
         PasswordHash::new(&hash).ok()?;
-        Some(Self { id: id.to_owned(), name, scopes, created, expires, hash })
+        Some(Self {
+            id: id.to_owned(),
+            name,
+            scopes,
+            created,
+            expires,
+            hash,
+        })
     }
 
     pub fn expired_at(&self, now: u64) -> bool {
@@ -161,7 +195,10 @@ impl TokenRecord {
 }
 
 fn valid_id(id: &str) -> bool {
-    id.len() == 8 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    id.len() == 8
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// Token names are shown in logs and the tray; keep them simple. Spaces are fine inside a
@@ -170,7 +207,9 @@ pub fn validate_name(name: &str) -> Result<(), String> {
     let ok = !name.is_empty()
         && name.len() <= 64
         && name.trim() == name
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@' | ' '));
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '@' | ' '));
     if ok {
         Ok(())
     } else {
@@ -199,7 +238,17 @@ pub fn generate(
         .to_string();
     let created = unix_now();
     let expires = lifetime.map(|l| created + l.as_secs());
-    Ok((token, TokenRecord { id, name: name.to_owned(), scopes, created, expires, hash }))
+    Ok((
+        token,
+        TokenRecord {
+            id,
+            name: name.to_owned(),
+            scopes,
+            created,
+            expires,
+            hash,
+        },
+    ))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -254,10 +303,14 @@ impl TokenStore {
     /// Installs a new set of records; returns the ids that were removed or changed (their
     /// sessions must end).
     pub fn replace(&self, records: impl IntoIterator<Item = TokenRecord>) -> Vec<String> {
-        let new: HashMap<String, TokenRecord> = records.into_iter().map(|r| (r.id.clone(), r)).collect();
+        let new: HashMap<String, TokenRecord> =
+            records.into_iter().map(|r| (r.id.clone(), r)).collect();
         let mut cur = self.records.lock().unwrap();
-        let gone: Vec<String> =
-            cur.iter().filter(|(id, r)| new.get(*id) != Some(r)).map(|(id, _)| id.clone()).collect();
+        let gone: Vec<String> = cur
+            .iter()
+            .filter(|(id, r)| new.get(*id) != Some(r))
+            .map(|(id, _)| id.clone())
+            .collect();
         let mut verified = self.verified.lock().unwrap();
         for id in &gone {
             verified.remove(id);
@@ -278,27 +331,50 @@ impl TokenStore {
 
     /// Whether `token_id` is still a live (known, unexpired) token.
     pub fn is_live(&self, token_id: &str, now: u64) -> bool {
-        self.records.lock().unwrap().get(token_id).is_some_and(|r| !r.expired_at(now))
+        self.records
+            .lock()
+            .unwrap()
+            .get(token_id)
+            .is_some_and(|r| !r.expired_at(now))
     }
 
     /// Checks a presented bearer token. Blocking (argon2) the first time a token is seen.
     pub fn verify(&self, token: &str, now: u64) -> Result<Identity, AuthError> {
         let id = token_id(token).ok_or(AuthError::Invalid)?;
-        let record = self.records.lock().unwrap().get(id).cloned().ok_or(AuthError::Invalid)?;
-        let cached =
-            self.verified.lock().unwrap().get(id).is_some_and(|t| constant_time_eq(t.as_bytes(), token.as_bytes()));
+        let record = self
+            .records
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or(AuthError::Invalid)?;
+        let cached = self
+            .verified
+            .lock()
+            .unwrap()
+            .get(id)
+            .is_some_and(|t| constant_time_eq(t.as_bytes(), token.as_bytes()));
         if !cached {
             let hash = PasswordHash::new(&record.hash).map_err(|_| AuthError::Invalid)?;
-            Argon2::default().verify_password(token.as_bytes(), &hash).map_err(|_| AuthError::Invalid)?;
+            Argon2::default()
+                .verify_password(token.as_bytes(), &hash)
+                .map_err(|_| AuthError::Invalid)?;
             // Only cache if the record wasn't replaced meanwhile.
             if self.records.lock().unwrap().get(id) == Some(&record) {
-                self.verified.lock().unwrap().insert(id.to_owned(), token.to_owned());
+                self.verified
+                    .lock()
+                    .unwrap()
+                    .insert(id.to_owned(), token.to_owned());
             }
         }
         if record.expired_at(now) {
             return Err(AuthError::Expired);
         }
-        Ok(Identity { token_id: record.id, name: record.name, scopes: record.scopes })
+        Ok(Identity {
+            token_id: record.id,
+            name: record.name,
+            scopes: record.scopes,
+        })
     }
 }
 
@@ -320,7 +396,10 @@ mod tests {
     #[test]
     fn scopes_parse_and_print() {
         assert_eq!(format_scopes(&scopes("input, view,view")), "view,input");
-        assert_eq!(format_scopes(&scopes("clipboard,input,view")), "view,input,clipboard");
+        assert_eq!(
+            format_scopes(&scopes("clipboard,input,view")),
+            "view,input,clipboard"
+        );
         assert!(parse_scopes("").is_err());
         assert!(parse_scopes("view,files").is_err());
         assert!(parse_scopes("VIEW").is_err(), "scopes are lowercase");
@@ -328,9 +407,18 @@ mod tests {
 
     #[test]
     fn lifetimes() {
-        assert_eq!(parse_lifetime("30d").unwrap(), Some(Duration::from_secs(30 * 86_400)));
-        assert_eq!(parse_lifetime("12h").unwrap(), Some(Duration::from_secs(12 * 3600)));
-        assert_eq!(parse_lifetime("45m").unwrap(), Some(Duration::from_secs(45 * 60)));
+        assert_eq!(
+            parse_lifetime("30d").unwrap(),
+            Some(Duration::from_secs(30 * 86_400))
+        );
+        assert_eq!(
+            parse_lifetime("12h").unwrap(),
+            Some(Duration::from_secs(12 * 3600))
+        );
+        assert_eq!(
+            parse_lifetime("45m").unwrap(),
+            Some(Duration::from_secs(45 * 60))
+        );
         assert_eq!(parse_lifetime("never").unwrap(), None);
         for bad in ["", "d", "0d", "10", "10s", "-1d", "1.5d"] {
             assert!(parse_lifetime(bad).is_err(), "{bad:?} should be rejected");
@@ -345,13 +433,21 @@ mod tests {
         assert!(validate_name("Claude Desktop").is_ok());
         assert!(validate_name(" padded").is_err());
         assert!(validate_name("tab\there").is_err());
-        assert!(validate_name("semi;colon").is_err(), "`;` separates record fields");
+        assert!(
+            validate_name("semi;colon").is_err(),
+            "`;` separates record fields"
+        );
         assert!(validate_name(&"x".repeat(65)).is_err());
     }
 
     #[test]
     fn record_roundtrips_through_config() {
-        let (token, rec) = generate("laptop", scopes("view,input"), Some(Duration::from_secs(3600))).unwrap();
+        let (token, rec) = generate(
+            "laptop",
+            scopes("view,input"),
+            Some(Duration::from_secs(3600)),
+        )
+        .unwrap();
         assert_eq!(token_id(&token), Some(rec.id.as_str()));
         assert!(!rec.hash.contains(&token), "only the hash is stored");
         let parsed = TokenRecord::from_config(&rec.config_key(), &rec.config_value()).unwrap();
@@ -363,7 +459,9 @@ mod tests {
         assert_eq!(parsed.expires, None);
 
         assert!(TokenRecord::from_config("DALKER_BIND", "x").is_none());
-        assert!(TokenRecord::from_config(&rec.config_key(), "laptop;view;1;-;not-a-hash").is_none());
+        assert!(
+            TokenRecord::from_config(&rec.config_key(), "laptop;view;1;-;not-a-hash").is_none()
+        );
         assert!(TokenRecord::from_config("DALKER_MCP_TOKEN_XYZ", &rec.config_value()).is_none());
     }
 
@@ -381,16 +479,28 @@ mod tests {
         let mut wrong = token.clone();
         let last = wrong.pop().unwrap();
         wrong.push(if last == '0' { '1' } else { '0' });
-        assert_eq!(store.verify(&wrong, now), Err(AuthError::Invalid), "wrong secret, even after a cached success");
-        assert_eq!(store.verify("dkmcp_00000000_00", now), Err(AuthError::Invalid));
+        assert_eq!(
+            store.verify(&wrong, now),
+            Err(AuthError::Invalid),
+            "wrong secret, even after a cached success"
+        );
+        assert_eq!(
+            store.verify("dkmcp_00000000_00", now),
+            Err(AuthError::Invalid)
+        );
         assert_eq!(store.verify("Bearer nope", now), Err(AuthError::Invalid));
         let (other, _) = generate("other", scopes("view"), None).unwrap();
-        assert_eq!(store.verify(&other, now), Err(AuthError::Invalid), "unknown id");
+        assert_eq!(
+            store.verify(&other, now),
+            Err(AuthError::Invalid),
+            "unknown id"
+        );
     }
 
     #[test]
     fn expired_and_revoked_tokens_are_refused() {
-        let (token, mut rec) = generate("t", scopes("view"), Some(Duration::from_secs(60))).unwrap();
+        let (token, mut rec) =
+            generate("t", scopes("view"), Some(Duration::from_secs(60))).unwrap();
         let store = TokenStore::new([rec.clone()]);
         let now = unix_now();
         assert!(store.verify(&token, now).is_ok());
@@ -402,7 +512,10 @@ mod tests {
         rec.scopes = scopes("view,input");
         assert_eq!(store.replace([rec.clone()]), vec![rec.id.clone()]);
         assert!(store.verify(&token, now).unwrap().has(Scope::Input));
-        assert!(store.replace([rec.clone()]).is_empty(), "unchanged records stay");
+        assert!(
+            store.replace([rec.clone()]).is_empty(),
+            "unchanged records stay"
+        );
 
         assert_eq!(store.replace([]), vec![rec.id.clone()]);
         assert_eq!(store.verify(&token, now), Err(AuthError::Invalid));
