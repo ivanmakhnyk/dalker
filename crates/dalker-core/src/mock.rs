@@ -82,7 +82,17 @@ impl MockCapturer {
         let side = (h / 6).max(8);
         let bx = triangle(t.as_secs_f64(), 4.0) * (w - side) as f64;
         let by = triangle(t.as_secs_f64(), 3.0) * (h - side) as f64;
-        fill_rect(&mut buf, stride, w, h, bx as usize, by as usize, side, side, [255, 255, 255]);
+        fill_rect(
+            &mut buf,
+            stride,
+            w,
+            h,
+            bx as usize,
+            by as usize,
+            side,
+            side,
+            [255, 255, 255],
+        );
 
         // Timer text.
         let ms = t.as_millis();
@@ -95,23 +105,91 @@ impl MockCapturer {
         );
         let scale = (h / 90).max(2);
         let tw = text.len() * 6 * scale;
-        fill_rect(&mut buf, stride, w, h, 8, 8, tw + 2 * scale, 9 * scale, [0, 0, 0]);
-        draw_text(&mut buf, stride, w, h, 8 + scale, 8 + scale, scale, &text, [0, 255, 0]);
+        fill_rect(
+            &mut buf,
+            stride,
+            w,
+            h,
+            8,
+            8,
+            tw + 2 * scale,
+            9 * scale,
+            [0, 0, 0],
+        );
+        draw_text(
+            &mut buf,
+            stride,
+            w,
+            h,
+            8 + scale,
+            8 + scale,
+            scale,
+            &text,
+            [0, 255, 0],
+        );
 
         // Remote pointer overlay.
         if let Some(state) = &self.pointer {
             let st = state.lock().unwrap();
             if let Some(pos) = st.pos {
                 let (cx, cy) = pos.to_pixels(self.width, self.height);
-                let color = if st.buttons_down != 0 { [0, 0, 255] } else { [255, 0, 255] };
+                let color = if st.buttons_down != 0 {
+                    [0, 0, 255]
+                } else {
+                    [255, 0, 255]
+                };
                 let r = (h / 60).max(4);
-                fill_rect(&mut buf, stride, w, h, (cx as usize).saturating_sub(r), cy as usize, 2 * r + 1, 1, color);
-                fill_rect(&mut buf, stride, w, h, cx as usize, (cy as usize).saturating_sub(r), 1, 2 * r + 1, color);
+                fill_rect(
+                    &mut buf,
+                    stride,
+                    w,
+                    h,
+                    (cx as usize).saturating_sub(r),
+                    cy as usize,
+                    2 * r + 1,
+                    1,
+                    color,
+                );
+                fill_rect(
+                    &mut buf,
+                    stride,
+                    w,
+                    h,
+                    cx as usize,
+                    (cy as usize).saturating_sub(r),
+                    1,
+                    2 * r + 1,
+                    color,
+                );
             }
-            let info = format!("EV {}  {}", st.events, st.last_key.as_deref().unwrap_or("-"));
+            let info = format!(
+                "EV {}  {}",
+                st.events,
+                st.last_key.as_deref().unwrap_or("-")
+            );
             let y0 = h.saturating_sub(10 * scale);
-            fill_rect(&mut buf, stride, w, h, 8, y0, info.len() * 6 * scale + 2 * scale, 9 * scale, [0, 0, 0]);
-            draw_text(&mut buf, stride, w, h, 8 + scale, y0 + scale, scale, &info.to_uppercase(), [255, 255, 0]);
+            fill_rect(
+                &mut buf,
+                stride,
+                w,
+                h,
+                8,
+                y0,
+                info.len() * 6 * scale + 2 * scale,
+                9 * scale,
+                [0, 0, 0],
+            );
+            draw_text(
+                &mut buf,
+                stride,
+                w,
+                h,
+                8 + scale,
+                y0 + scale,
+                scale,
+                &info.to_uppercase(),
+                [255, 255, 0],
+            );
         }
 
         RawFrame {
@@ -131,7 +209,10 @@ impl ScreenCapturer for MockCapturer {
     }
 
     fn display(&self) -> DisplayInfo {
-        DisplayInfo { width: self.width, height: self.height }
+        DisplayInfo {
+            width: self.width,
+            height: self.height,
+        }
     }
 
     fn next_frame(&mut self, timeout: Duration) -> Result<Option<RawFrame>, CaptureError> {
@@ -201,7 +282,9 @@ impl InputInjector for MockInjector {
                     }
                 }
                 InputEvent::ReleaseAll => st.buttons_down = 0,
-                InputEvent::Wheel { .. } | InputEvent::Text { .. } | InputEvent::SecureAttention => {}
+                InputEvent::Wheel { .. }
+                | InputEvent::Text { .. }
+                | InputEvent::SecureAttention => {}
             }
         }
         self.log.lock().unwrap().push(event.clone());
@@ -220,7 +303,17 @@ fn triangle(t: f64, period: f64) -> f64 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn fill_rect(buf: &mut [u8], stride: usize, w: usize, h: usize, x0: usize, y0: usize, rw: usize, rh: usize, rgb: [u8; 3]) {
+fn fill_rect(
+    buf: &mut [u8],
+    stride: usize,
+    w: usize,
+    h: usize,
+    x0: usize,
+    y0: usize,
+    rw: usize,
+    rh: usize,
+    rgb: [u8; 3],
+) {
     for y in y0..(y0 + rh).min(h) {
         for x in x0..(x0 + rw).min(w) {
             let i = y * stride + x * 4;
@@ -287,14 +380,34 @@ fn letter(c: char) -> [u8; 7] {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_text(buf: &mut [u8], stride: usize, w: usize, h: usize, x0: usize, y0: usize, scale: usize, text: &str, rgb: [u8; 3]) {
+fn draw_text(
+    buf: &mut [u8],
+    stride: usize,
+    w: usize,
+    h: usize,
+    x0: usize,
+    y0: usize,
+    scale: usize,
+    text: &str,
+    rgb: [u8; 3],
+) {
     for (i, c) in text.chars().enumerate() {
         let g = glyph(c);
         let gx = x0 + i * 6 * scale;
         for (row, bits) in g.iter().enumerate() {
             for col in 0..5 {
                 if bits & (0x10 >> col) != 0 {
-                    fill_rect(buf, stride, w, h, gx + col * scale, y0 + row * scale, scale, scale, rgb);
+                    fill_rect(
+                        buf,
+                        stride,
+                        w,
+                        h,
+                        gx + col * scale,
+                        y0 + row * scale,
+                        scale,
+                        scale,
+                        rgb,
+                    );
                 }
             }
         }
@@ -308,7 +421,13 @@ mod tests {
     #[test]
     fn frames_have_valid_geometry() {
         let mut cap = MockCapturer::new(321, 241, 30);
-        assert_eq!(cap.display(), DisplayInfo { width: 320, height: 240 });
+        assert_eq!(
+            cap.display(),
+            DisplayInfo {
+                width: 320,
+                height: 240
+            }
+        );
         let f = cap.next_frame(Duration::from_secs(1)).unwrap().unwrap();
         assert!(f.is_consistent());
         assert_eq!(f.format, PixelFormat::Bgra8);
@@ -323,7 +442,11 @@ mod tests {
             cap.next_frame(Duration::from_secs(1)).unwrap().unwrap();
         }
         // First frame is immediate, the next 5 are 20 ms apart.
-        assert!(start.elapsed() >= Duration::from_millis(95), "{:?}", start.elapsed());
+        assert!(
+            start.elapsed() >= Duration::from_millis(95),
+            "{:?}",
+            start.elapsed()
+        );
     }
 
     #[test]
@@ -346,10 +469,16 @@ mod tests {
         let mut inj = MockInjector::new();
         let cap = MockCapturer::new(200, 200, 30).with_injector(&inj);
         let before = cap.render(Duration::ZERO, 1);
-        inj.inject(&InputEvent::MouseMove { x: 0.5, y: 0.5 }).unwrap();
+        inj.inject(&InputEvent::MouseMove { x: 0.5, y: 0.5 })
+            .unwrap();
         let after = cap.render(Duration::ZERO, 1);
         assert_ne!(before.data, after.data);
-        assert!(inj.inject(&InputEvent::Key { code: "Bogus".into(), down: true }).is_err());
+        assert!(inj
+            .inject(&InputEvent::Key {
+                code: "Bogus".into(),
+                down: true
+            })
+            .is_err());
         assert_eq!(inj.events().len(), 1);
     }
 }

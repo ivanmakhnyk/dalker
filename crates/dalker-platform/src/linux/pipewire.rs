@@ -12,7 +12,9 @@ pub struct PipeWireCapturer;
 
 impl PipeWireCapturer {
     pub fn new() -> Result<Self, CaptureError> {
-        Err(CaptureError::Unsupported("PipeWire/Wayland capture not implemented yet".into()))
+        Err(CaptureError::Unsupported(
+            "PipeWire/Wayland capture not implemented yet".into(),
+        ))
     }
 
     /// True when the current session looks like Wayland (where X11 capture
@@ -27,9 +29,14 @@ impl ScreenCapturer for PipeWireCapturer {
         "pipewire-stub"
     }
     fn display(&self) -> DisplayInfo {
-        DisplayInfo { width: 0, height: 0 }
+        DisplayInfo {
+            width: 0,
+            height: 0,
+        }
     }
     fn next_frame(&mut self, _timeout: Duration) -> Result<Option<RawFrame>, CaptureError> {
-        Err(CaptureError::Unsupported("PipeWire/Wayland capture not implemented yet".into()))
+        Err(CaptureError::Unsupported(
+            "PipeWire/Wayland capture not implemented yet".into(),
+        ))
     }
 }

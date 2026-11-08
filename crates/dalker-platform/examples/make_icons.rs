@@ -15,7 +15,8 @@ fn png(size: usize) -> Vec<u8> {
     let px = dalker_platform::icon::rgba_sized(dalker_platform::icon::Look::Normal, size);
     let img = image::RgbaImage::from_raw(size as u32, size as u32, px).expect("size");
     let mut out = std::io::Cursor::new(Vec::new());
-    img.write_to(&mut out, image::ImageFormat::Png).expect("png");
+    img.write_to(&mut out, image::ImageFormat::Png)
+        .expect("png");
     out.into_inner()
 }
 

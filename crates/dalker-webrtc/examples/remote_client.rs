@@ -28,9 +28,18 @@ use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirecti
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 
 /// Minimal HTTP/1.1 POST with JSON; returns (status, headers, body).
-async fn post(addr: &str, path: &str, body: &str, cookie: Option<&str>) -> Result<(u16, String, String)> {
-    let mut s = TcpStream::connect(addr).await.with_context(|| format!("connect {addr}"))?;
-    let cookie = cookie.map(|c| format!("Cookie: {c}\r\n")).unwrap_or_default();
+async fn post(
+    addr: &str,
+    path: &str,
+    body: &str,
+    cookie: Option<&str>,
+) -> Result<(u16, String, String)> {
+    let mut s = TcpStream::connect(addr)
+        .await
+        .with_context(|| format!("connect {addr}"))?;
+    let cookie = cookie
+        .map(|c| format!("Cookie: {c}\r\n"))
+        .unwrap_or_default();
     let req = format!(
         "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{cookie}Connection: close\r\n\r\n{body}",
         body.len()
@@ -40,7 +49,11 @@ async fn post(addr: &str, path: &str, body: &str, cookie: Option<&str>) -> Resul
     s.read_to_end(&mut buf).await?;
     let text = String::from_utf8_lossy(&buf).into_owned();
     let (head, body) = text.split_once("\r\n\r\n").context("bad HTTP response")?;
-    let status = head.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let status = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
     Ok((status, head.to_owned(), body.to_owned()))
 }
 
@@ -63,7 +76,10 @@ async fn main() -> Result<()> {
     }
     let cookie = head
         .lines()
-        .find_map(|l| l.strip_prefix("set-cookie: ").or_else(|| l.strip_prefix("Set-Cookie: ")))
+        .find_map(|l| {
+            l.strip_prefix("set-cookie: ")
+                .or_else(|| l.strip_prefix("Set-Cookie: "))
+        })
         .and_then(|c| c.split(';').next())
         .context("no session cookie")?
         .to_owned();
@@ -73,11 +89,17 @@ async fn main() -> Result<()> {
     let mut media = MediaEngine::default();
     media.register_default_codecs()?;
     let registry = register_default_interceptors(Registry::new(), &mut media)?;
-    let api = APIBuilder::new().with_media_engine(media).with_interceptor_registry(registry).build();
+    let api = APIBuilder::new()
+        .with_media_engine(media)
+        .with_interceptor_registry(registry)
+        .build();
     let pc = Arc::new(api.new_peer_connection(RTCConfiguration::default()).await?);
     pc.add_transceiver_from_kind(
         RTPCodecType::Video,
-        Some(RTCRtpTransceiverInit { direction: RTCRtpTransceiverDirection::Recvonly, send_encodings: vec![] }),
+        Some(RTCRtpTransceiverInit {
+            direction: RTCRtpTransceiverDirection::Recvonly,
+            send_encodings: vec![],
+        }),
     )
     .await?;
     let dc = pc.create_data_channel("control", None).await?;
@@ -88,11 +110,21 @@ async fn main() -> Result<()> {
     let first_rtp = Arc::new(Mutex::new(None::<Instant>));
     let writer = Arc::new(Mutex::new(H264Writer::new(std::fs::File::create(out)?)));
     {
-        let (packets, frames, bytes, first_rtp, writer) =
-            (packets.clone(), frames.clone(), bytes.clone(), first_rtp.clone(), writer.clone());
+        let (packets, frames, bytes, first_rtp, writer) = (
+            packets.clone(),
+            frames.clone(),
+            bytes.clone(),
+            first_rtp.clone(),
+            writer.clone(),
+        );
         pc.on_track(Box::new(move |track, _, _| {
-            let (packets, frames, bytes, first_rtp, writer) =
-                (packets.clone(), frames.clone(), bytes.clone(), first_rtp.clone(), writer.clone());
+            let (packets, frames, bytes, first_rtp, writer) = (
+                packets.clone(),
+                frames.clone(),
+                bytes.clone(),
+                first_rtp.clone(),
+                writer.clone(),
+            );
             tokio::spawn(async move {
                 while let Ok((pkt, _)) = track.read_rtp().await {
                     first_rtp.lock().unwrap().get_or_insert_with(Instant::now);
@@ -114,17 +146,26 @@ async fn main() -> Result<()> {
     pc.set_local_description(offer).await?;
     let _ = gathered.recv().await;
     let sdp = pc.local_description().await.context("no local sdp")?.sdp;
-    let (status, _, body) =
-        post(addr, "/api/offer", &serde_json::json!({ "sdp": sdp }).to_string(), Some(&cookie)).await?;
+    let (status, _, body) = post(
+        addr,
+        "/api/offer",
+        &serde_json::json!({ "sdp": sdp }).to_string(),
+        Some(&cookie),
+    )
+    .await?;
     if status != 200 {
         bail!("offer failed: HTTP {status} {body}");
     }
     let answer: serde_json::Value = serde_json::from_str(&body)?;
-    let answer_sdp = answer["sdp"].as_str().context("no sdp in answer")?.to_owned();
+    let answer_sdp = answer["sdp"]
+        .as_str()
+        .context("no sdp in answer")?
+        .to_owned();
     for line in answer_sdp.lines().filter(|l| l.starts_with("a=candidate")) {
         println!("remote {line}");
     }
-    pc.set_remote_description(RTCSessionDescription::answer(answer_sdp)?).await?;
+    pc.set_remote_description(RTCSessionDescription::answer(answer_sdp)?)
+        .await?;
 
     // Watch the stream for a while.
     for _ in 0..40 {
@@ -136,7 +177,10 @@ async fn main() -> Result<()> {
     if let Some(t) = *first_rtp.lock().unwrap() {
         println!("first video after {:?}", t - started);
     } else {
-        bail!("no video received within 10s (state: {:?})", pc.connection_state());
+        bail!(
+            "no video received within 10s (state: {:?})",
+            pc.connection_state()
+        );
     }
 
     if send_input {

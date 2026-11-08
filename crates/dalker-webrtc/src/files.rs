@@ -176,7 +176,14 @@ pub(crate) struct Worker {
 
 impl Worker {
     pub(crate) fn new(factory: FileAccessFactory, out: mpsc::Sender<Out>) -> Self {
-        Self { factory, access: None, uploads: HashMap::new(), downloads: HashMap::new(), out, held: None }
+        Self {
+            factory,
+            access: None,
+            uploads: HashMap::new(),
+            downloads: HashMap::new(),
+            out,
+            held: None,
+        }
     }
 
     /// Serves requests until the viewer leaves (the incoming side closes or the outgoing one
@@ -297,13 +304,25 @@ impl Worker {
                     Ok((file, path, name)) => {
                         tracing::info!(file = %path.display(), size, "receiving a file from a viewer");
                         self.send(json!({"op": "accepted", "id": id, "name": name}));
-                        self.uploads.insert(id, Upload { file, path, name, size, written: 0, acked: 0 });
+                        self.uploads.insert(
+                            id,
+                            Upload {
+                                file,
+                                path,
+                                name,
+                                size,
+                                written: 0,
+                                acked: 0,
+                            },
+                        );
                     }
                     Err(e) => self.error(id, e),
                 }
             }
             Request::End { id } => {
-                let Some(mut up) = self.uploads.remove(&id) else { return };
+                let Some(mut up) = self.uploads.remove(&id) else {
+                    return;
+                };
                 if up.written != up.size {
                     let msg = format!("incomplete: {} of {} bytes", up.written, up.size);
                     discard(up);
@@ -329,7 +348,15 @@ impl Worker {
                     Ok((file, name, size)) => {
                         tracing::info!(file = %path, size, "sending a file to a viewer");
                         self.send(json!({"op": "accepted", "id": id, "name": name, "size": size}));
-                        self.downloads.insert(id, Download { file, size, sent: 0, paused: false });
+                        self.downloads.insert(
+                            id,
+                            Download {
+                                file,
+                                size,
+                                sent: 0,
+                                paused: false,
+                            },
+                        );
                     }
                     Err(e) => self.error(id, e),
                 }
@@ -362,7 +389,9 @@ impl Worker {
             return;
         }
         let id = u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
-        let Some(up) = self.uploads.get_mut(&id) else { return };
+        let Some(up) = self.uploads.get_mut(&id) else {
+            return;
+        };
         let data = &b[4..];
         if up.written + data.len() as u64 > up.size {
             let up = self.uploads.remove(&id).unwrap();
@@ -396,7 +425,12 @@ impl Worker {
                 Err(_) => return false,
             }
         }
-        let ids: Vec<u32> = self.downloads.iter().filter(|(_, d)| !d.paused).map(|(id, _)| *id).collect();
+        let ids: Vec<u32> = self
+            .downloads
+            .iter()
+            .filter(|(_, d)| !d.paused)
+            .map(|(id, _)| *id)
+            .collect();
         for id in ids {
             if self.held.is_some() {
                 break;
@@ -415,7 +449,11 @@ impl Worker {
             if n == 0 {
                 let d = self.downloads.remove(&id).unwrap();
                 if d.sent != d.size {
-                    tracing::info!(sent = d.sent, size = d.size, "file changed size while it was sent");
+                    tracing::info!(
+                        sent = d.sent,
+                        size = d.size,
+                        "file changed size while it was sent"
+                    );
                 }
                 self.send(json!({"op": "done", "id": id, "bytes": d.sent}));
                 progressed = true;
@@ -461,13 +499,24 @@ pub(crate) fn clean_name(name: &str) -> Option<String> {
     let base = name.rsplit(['/', '\\']).next().unwrap_or("");
     let mut s: String = base
         .chars()
-        .map(|c| if c.is_control() || r#"<>:"/\|?*"#.contains(c) { '_' } else { c })
+        .map(|c| {
+            if c.is_control() || r#"<>:"/\|?*"#.contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect();
     s = s.trim().trim_end_matches(['.', ' ']).to_string();
     if s.is_empty() || s.chars().all(|c| c == '.') {
         return None;
     }
-    let stem = s.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    let stem = s
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end()
+        .to_ascii_uppercase();
     let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
         || (stem.len() == 4
             && (stem.starts_with("COM") || stem.starts_with("LPT"))
@@ -477,7 +526,10 @@ pub(crate) fn clean_name(name: &str) -> Option<String> {
     }
     if s.len() > 200 {
         // Keep the extension when it is short.
-        let ext = Path::new(&s).extension().map(|e| e.to_string_lossy().into_owned()).filter(|e| e.len() <= 16);
+        let ext = Path::new(&s)
+            .extension()
+            .map(|e| e.to_string_lossy().into_owned())
+            .filter(|e| e.len() <= 16);
         let keep = 200 - ext.as_ref().map_or(0, |e| e.len() + 1);
         let mut cut = keep;
         while !s.is_char_boundary(cut) {
@@ -510,7 +562,11 @@ pub(crate) fn create_unique(dir: &Path, name: &str) -> Result<(File, PathBuf, St
     let name = clean_name(name).ok_or("the file has no usable name")?;
     fs::create_dir_all(dir).map_err(|e| format!("can't open {}: {e}", dir.display()))?;
     for n in 0..1000u32 {
-        let candidate = if n == 0 { name.clone() } else { numbered(&name, n) };
+        let candidate = if n == 0 {
+            name.clone()
+        } else {
+            numbered(&name, n)
+        };
         let path = dir.join(&candidate);
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(f) => return Ok((f, path, candidate)),
@@ -535,7 +591,9 @@ pub(crate) fn resolve(home: &Path, rel: &str) -> Result<PathBuf, String> {
             _ => return Err("not a folder in your home folder".into()),
         }
     }
-    let home = home.canonicalize().map_err(|e| format!("can't open the home folder: {e}"))?;
+    let home = home
+        .canonicalize()
+        .map_err(|e| format!("can't open the home folder: {e}"))?;
     let real = p.canonicalize().map_err(|e| e.to_string())?;
     if !real.starts_with(&home) {
         return Err("that is outside your home folder".into());
@@ -566,15 +624,25 @@ pub(crate) fn list(home: &Path, rel: &str) -> Result<Vec<serde_json::Value>, Str
         let Ok(entry) = entry else { continue };
         let name = entry.file_name().to_string_lossy().into_owned();
         // Follows links, so a link to a folder lists as one.
-        let Ok(meta) = fs::metadata(entry.path()).or_else(|_| entry.metadata()) else { continue };
-        let mtime = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs());
-        entries.push((meta.is_dir(), name.to_lowercase(), json!({
-            "name": name,
-            "dir": meta.is_dir(),
-            "size": if meta.is_dir() { 0 } else { meta.len() },
-            "mtime": mtime,
-            "hidden": is_hidden(&name, &meta),
-        })));
+        let Ok(meta) = fs::metadata(entry.path()).or_else(|_| entry.metadata()) else {
+            continue;
+        };
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs());
+        entries.push((
+            meta.is_dir(),
+            name.to_lowercase(),
+            json!({
+                "name": name,
+                "dir": meta.is_dir(),
+                "size": if meta.is_dir() { 0 } else { meta.len() },
+                "mtime": mtime,
+                "hidden": is_hidden(&name, &meta),
+            }),
+        ));
         if entries.len() >= MAX_ENTRIES {
             break;
         }
@@ -590,7 +658,10 @@ fn open_download(home: &Path, rel: &str) -> Result<(File, String, u64), String> 
         return Err("only files can be downloaded".into());
     }
     let file = File::open(&path).map_err(|e| e.to_string())?;
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "download".into());
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "download".into());
     Ok((file, name, meta.len()))
 }
 
@@ -615,7 +686,10 @@ mod tests {
     fn names_are_made_safe() {
         assert_eq!(clean_name("report.pdf").as_deref(), Some("report.pdf"));
         assert_eq!(clean_name("../../etc/passwd").as_deref(), Some("passwd"));
-        assert_eq!(clean_name(r"C:\Windows\evil.exe").as_deref(), Some("evil.exe"));
+        assert_eq!(
+            clean_name(r"C:\Windows\evil.exe").as_deref(),
+            Some("evil.exe")
+        );
         assert_eq!(clean_name("a:b*c?.txt").as_deref(), Some("a_b_c_.txt"));
         assert_eq!(clean_name("CON.txt").as_deref(), Some("_CON.txt"));
         assert_eq!(clean_name("com1").as_deref(), Some("_com1"));
@@ -635,7 +709,10 @@ mod tests {
         let (_, _, n2) = create_unique(&dir, "a.txt").unwrap();
         let (_, _, n3) = create_unique(&dir, "noext").unwrap();
         let (_, _, n4) = create_unique(&dir, "noext").unwrap();
-        assert_eq!((n1.as_str(), n2.as_str(), n3.as_str(), n4.as_str()), ("a (1).txt", "a (2).txt", "noext", "noext (1)"));
+        assert_eq!(
+            (n1.as_str(), n2.as_str(), n3.as_str(), n4.as_str()),
+            ("a (1).txt", "a (2).txt", "noext", "noext (1)")
+        );
         assert_eq!(p1, dir.join("a (1).txt"));
         assert_eq!(fs::read(dir.join("a.txt")).unwrap(), b"keep");
         // The Downloads folder is created when missing.
@@ -656,16 +733,28 @@ mod tests {
         assert!(resolve(&home, r"Documents\a.txt").is_ok());
         assert!(resolve(&home, "../secret").is_err());
         assert!(resolve(&home, "Documents/../../secret").is_err());
-        assert!(resolve(&home, "/etc/passwd").is_err(), "absolute paths are taken below home");
+        assert!(
+            resolve(&home, "/etc/passwd").is_err(),
+            "absolute paths are taken below home"
+        );
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(root.join("secret"), home.join("link")).unwrap();
-            assert!(resolve(&home, "link").is_err(), "a link out of home is refused");
+            assert!(
+                resolve(&home, "link").is_err(),
+                "a link out of home is refused"
+            );
         }
         fs::remove_dir_all(&root).unwrap();
     }
 
-    fn worker_for(home: PathBuf) -> (std_mpsc::Sender<In>, mpsc::Receiver<Out>, std::thread::JoinHandle<()>) {
+    fn worker_for(
+        home: PathBuf,
+    ) -> (
+        std_mpsc::Sender<In>,
+        mpsc::Receiver<Out>,
+        std::thread::JoinHandle<()>,
+    ) {
         let factory: FileAccessFactory = Arc::new(move || {
             Ok(FileAccess {
                 user: "tester".into(),
@@ -701,12 +790,20 @@ mod tests {
         fs::create_dir_all(home.join("Downloads")).unwrap();
         fs::write(home.join("Downloads/photo.jpg"), b"old").unwrap();
         let (tx, mut rx, t) = worker_for(home.clone());
-        let data: Vec<u8> = (0..(ACK_EVERY as usize * 2 + 10)).map(|i| i as u8).collect();
-        tx.send(In::Text(json!({"op":"put","id":7,"name":"photo.jpg","size":data.len()}).to_string())).unwrap();
+        let data: Vec<u8> = (0..(ACK_EVERY as usize * 2 + 10))
+            .map(|i| i as u8)
+            .collect();
+        tx.send(In::Text(
+            json!({"op":"put","id":7,"name":"photo.jpg","size":data.len()}).to_string(),
+        ))
+        .unwrap();
         let ready = text(&mut rx);
         assert_eq!(ready["op"], "ready");
         let acc = text(&mut rx);
-        assert_eq!((acc["op"].as_str(), acc["name"].as_str()), (Some("accepted"), Some("photo (1).jpg")));
+        assert_eq!(
+            (acc["op"].as_str(), acc["name"].as_str()),
+            (Some("accepted"), Some("photo (1).jpg"))
+        );
         for c in data.chunks(CHUNK) {
             tx.send(chunk(7, c)).unwrap();
         }
@@ -716,16 +813,26 @@ mod tests {
             last = text(&mut rx);
         }
         assert_eq!(last["op"], "done");
-        assert_eq!(fs::read(home.join("Downloads/photo (1).jpg")).unwrap(), data);
+        assert_eq!(
+            fs::read(home.join("Downloads/photo (1).jpg")).unwrap(),
+            data
+        );
         assert_eq!(fs::read(home.join("Downloads/photo.jpg")).unwrap(), b"old");
 
         // A cancelled upload leaves nothing behind.
-        tx.send(In::Text(json!({"op":"put","id":8,"name":"big.bin","size":100}).to_string())).unwrap();
+        tx.send(In::Text(
+            json!({"op":"put","id":8,"name":"big.bin","size":100}).to_string(),
+        ))
+        .unwrap();
         assert_eq!(text(&mut rx)["op"], "accepted");
         tx.send(chunk(8, &[1; 10])).unwrap();
-        tx.send(In::Text(r#"{"op":"cancel","id":8}"#.into())).unwrap();
+        tx.send(In::Text(r#"{"op":"cancel","id":8}"#.into()))
+            .unwrap();
         // So is one the viewer never finished.
-        tx.send(In::Text(json!({"op":"put","id":9,"name":"left.bin","size":100}).to_string())).unwrap();
+        tx.send(In::Text(
+            json!({"op":"put","id":9,"name":"left.bin","size":100}).to_string(),
+        ))
+        .unwrap();
         assert_eq!(text(&mut rx)["op"], "accepted");
         drop(tx);
         t.join().unwrap();
@@ -744,23 +851,33 @@ mod tests {
         let (tx, mut rx, t) = worker_for(home.clone());
         assert_eq!(text(&mut rx)["op"], "ready");
 
-        tx.send(In::Text(r#"{"op":"list","path":""}"#.into())).unwrap();
+        tx.send(In::Text(r#"{"op":"list","path":""}"#.into()))
+            .unwrap();
         let l = text(&mut rx);
         let entries = l["entries"].as_array().unwrap();
         assert_eq!(entries[0]["name"], "Documents");
         assert_eq!(entries[0]["dir"], true);
         #[cfg(unix)]
-        assert!(entries.iter().any(|e| e["name"] == ".hidden" && e["hidden"] == true));
-        tx.send(In::Text(r#"{"op":"list","path":".."}"#.into())).unwrap();
+        assert!(entries
+            .iter()
+            .any(|e| e["name"] == ".hidden" && e["hidden"] == true));
+        tx.send(In::Text(r#"{"op":"list","path":".."}"#.into()))
+            .unwrap();
         assert!(text(&mut rx)["error"].is_string());
 
-        tx.send(In::Text(r#"{"op":"get","id":3,"path":"Documents/b.bin"}"#.into())).unwrap();
+        tx.send(In::Text(
+            r#"{"op":"get","id":3,"path":"Documents/b.bin"}"#.into(),
+        ))
+        .unwrap();
         let mut got = Vec::new();
         let acc = match rx.blocking_recv().unwrap() {
             Out::Text(t) => serde_json::from_str::<serde_json::Value>(&t).unwrap(),
             Out::Data(_) => panic!("data before accepted"),
         };
-        assert_eq!((acc["op"].as_str(), acc["size"].as_u64()), (Some("accepted"), Some(data.len() as u64)));
+        assert_eq!(
+            (acc["op"].as_str(), acc["size"].as_u64()),
+            (Some("accepted"), Some(data.len() as u64))
+        );
         let done = loop {
             match rx.blocking_recv().unwrap() {
                 Out::Data(b) => {
@@ -773,7 +890,10 @@ mod tests {
         assert_eq!(done["op"], "done");
         assert_eq!(got, data);
 
-        tx.send(In::Text(r#"{"op":"get","id":4,"path":"../../etc/passwd"}"#.into())).unwrap();
+        tx.send(In::Text(
+            r#"{"op":"get","id":4,"path":"../../etc/passwd"}"#.into(),
+        ))
+        .unwrap();
         assert_eq!(text(&mut rx)["op"], "error");
         drop(tx);
         t.join().unwrap();
@@ -790,7 +910,12 @@ mod tests {
             if !flag.load(Ordering::SeqCst) {
                 return Err("Nobody is signed in on the host.".into());
             }
-            Ok(FileAccess { user: "u".into(), home: h.clone(), downloads: h.join("Downloads"), guard: Box::new(()) })
+            Ok(FileAccess {
+                user: "u".into(),
+                home: h.clone(),
+                downloads: h.join("Downloads"),
+                guard: Box::new(()),
+            })
         });
         let (tx, in_rx) = std_mpsc::channel();
         let (out_tx, mut rx) = mpsc::channel(16);

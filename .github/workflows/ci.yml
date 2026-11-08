@@ -16,6 +16,16 @@ env:
   DALKER_REQUIRE_NASM: 1
 
 jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
   check:
     # Fixed names, because required checks are matched by name.
     name: ${{ matrix.name }}

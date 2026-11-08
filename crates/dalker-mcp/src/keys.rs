@@ -16,7 +16,11 @@ pub struct Chord {
 impl Chord {
     /// The key events of one press: modifiers down, key down, key up, modifiers up (reversed).
     pub fn events(&self) -> Vec<(String, bool)> {
-        let mut out: Vec<(String, bool)> = self.modifiers.iter().map(|m| (m.to_string(), true)).collect();
+        let mut out: Vec<(String, bool)> = self
+            .modifiers
+            .iter()
+            .map(|m| (m.to_string(), true))
+            .collect();
         out.push((self.key.clone(), true));
         out.push((self.key.clone(), false));
         out.extend(self.modifiers.iter().rev().map(|m| (m.to_string(), false)));
@@ -85,12 +89,15 @@ fn named_key(name: &str) -> Option<String> {
                 (Some(c @ 'a'..='z'), None) => Some(format!("Key{}", c.to_ascii_uppercase())),
                 (Some(c @ '0'..='9'), None) => Some(format!("Digit{c}")),
                 _ => {
-                    if let Some(n) =
-                        name.strip_prefix("numpad").filter(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_digit())
+                    if let Some(n) = name
+                        .strip_prefix("numpad")
+                        .filter(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_digit())
                     {
                         Some(format!("Numpad{n}"))
                     } else {
-                        name.strip_prefix('f').and_then(|n| n.parse::<u8>().ok()).map(|n| format!("F{n}"))
+                        name.strip_prefix('f')
+                            .and_then(|n| n.parse::<u8>().ok())
+                            .map(|n| format!("F{n}"))
                     }
                 }
             };
@@ -132,8 +139,12 @@ pub fn parse_chord(text: &str) -> Result<Chord, String> {
     let mut modifiers = Vec::new();
     for m in mods {
         let lower = m.trim().to_ascii_lowercase();
-        let code = modifier(&lower)
-            .ok_or_else(|| format!("`{}` is not a modifier (ctrl, shift, alt, meta) in `{text}`", m.trim()))?;
+        let code = modifier(&lower).ok_or_else(|| {
+            format!(
+                "`{}` is not a modifier (ctrl, shift, alt, meta) in `{text}`",
+                m.trim()
+            )
+        })?;
         if !modifiers.contains(&code) {
             modifiers.push(code);
         }
@@ -146,7 +157,10 @@ pub fn parse_chord(text: &str) -> Result<Chord, String> {
 
 /// Parses a space-separated sequence of chords: `"ctrl+a backspace"`.
 pub fn parse_sequence(text: &str) -> Result<Vec<Chord>, String> {
-    let chords = text.split_whitespace().map(parse_chord).collect::<Result<Vec<_>, _>>()?;
+    let chords = text
+        .split_whitespace()
+        .map(parse_chord)
+        .collect::<Result<Vec<_>, _>>()?;
     if chords.is_empty() {
         return Err("no keys given".into());
     }
@@ -158,7 +172,10 @@ mod tests {
     use super::*;
 
     fn chord(mods: &[&'static str], key: &str) -> Chord {
-        Chord { modifiers: mods.to_vec(), key: key.into() }
+        Chord {
+            modifiers: mods.to_vec(),
+            key: key.into(),
+        }
     }
 
     #[test]
@@ -174,30 +191,77 @@ mod tests {
         assert_eq!(parse_chord("esc").unwrap(), chord(&[], "Escape"));
         assert_eq!(parse_chord("numpad3").unwrap(), chord(&[], "Numpad3"));
         assert_eq!(parse_chord("/").unwrap(), chord(&[], "Slash"));
-        assert_eq!(parse_chord("ArrowUp").unwrap(), chord(&[], "ArrowUp"), "DOM codes work too");
+        assert_eq!(
+            parse_chord("ArrowUp").unwrap(),
+            chord(&[], "ArrowUp"),
+            "DOM codes work too"
+        );
         assert_eq!(parse_chord("KeyQ").unwrap(), chord(&[], "KeyQ"));
-        assert_eq!(parse_chord("ctrl").unwrap(), chord(&[], "ControlLeft"), "a lone modifier is a key");
+        assert_eq!(
+            parse_chord("ctrl").unwrap(),
+            chord(&[], "ControlLeft"),
+            "a lone modifier is a key"
+        );
     }
 
     #[test]
     fn chords() {
-        assert_eq!(parse_chord("ctrl+c").unwrap(), chord(&["ControlLeft"], "KeyC"));
-        assert_eq!(parse_chord("Ctrl+Shift+T").unwrap(), chord(&["ControlLeft", "ShiftLeft"], "KeyT"));
+        assert_eq!(
+            parse_chord("ctrl+c").unwrap(),
+            chord(&["ControlLeft"], "KeyC")
+        );
+        assert_eq!(
+            parse_chord("Ctrl+Shift+T").unwrap(),
+            chord(&["ControlLeft", "ShiftLeft"], "KeyT")
+        );
         assert_eq!(parse_chord("alt+tab").unwrap(), chord(&["AltLeft"], "Tab"));
         assert_eq!(parse_chord("alt+f4").unwrap(), chord(&["AltLeft"], "F4"));
-        assert_eq!(parse_chord("cmd+space").unwrap(), chord(&["MetaLeft"], "Space"));
+        assert_eq!(
+            parse_chord("cmd+space").unwrap(),
+            chord(&["MetaLeft"], "Space")
+        );
         assert_eq!(parse_chord("win+r").unwrap(), chord(&["MetaLeft"], "KeyR"));
-        assert_eq!(parse_chord("ctrl+alt+delete").unwrap(), chord(&["ControlLeft", "AltLeft"], "Delete"));
-        assert_eq!(parse_chord(" ctrl + c ").unwrap(), chord(&["ControlLeft"], "KeyC"));
-        assert_eq!(parse_chord("ctrl+ctrl+c").unwrap(), chord(&["ControlLeft"], "KeyC"), "duplicates collapse");
-        assert_eq!(parse_chord("ctrl+shift").unwrap(), chord(&["ControlLeft"], "ShiftLeft"));
-        assert_eq!(parse_chord("ctrl++").unwrap(), chord(&["ControlLeft"], "NumpadAdd"));
-        assert_eq!(parse_chord("ctrl+-").unwrap(), chord(&["ControlLeft"], "Minus"));
+        assert_eq!(
+            parse_chord("ctrl+alt+delete").unwrap(),
+            chord(&["ControlLeft", "AltLeft"], "Delete")
+        );
+        assert_eq!(
+            parse_chord(" ctrl + c ").unwrap(),
+            chord(&["ControlLeft"], "KeyC")
+        );
+        assert_eq!(
+            parse_chord("ctrl+ctrl+c").unwrap(),
+            chord(&["ControlLeft"], "KeyC"),
+            "duplicates collapse"
+        );
+        assert_eq!(
+            parse_chord("ctrl+shift").unwrap(),
+            chord(&["ControlLeft"], "ShiftLeft")
+        );
+        assert_eq!(
+            parse_chord("ctrl++").unwrap(),
+            chord(&["ControlLeft"], "NumpadAdd")
+        );
+        assert_eq!(
+            parse_chord("ctrl+-").unwrap(),
+            chord(&["ControlLeft"], "Minus")
+        );
     }
 
     #[test]
     fn rejects_garbage() {
-        for bad in ["", "ctrl+", "+c", "ctrl++c", "c+ctrl", "hyper+x", "f99", "ü", "ctrl+banana", "numpad10"] {
+        for bad in [
+            "",
+            "ctrl+",
+            "+c",
+            "ctrl++c",
+            "c+ctrl",
+            "hyper+x",
+            "f99",
+            "ü",
+            "ctrl+banana",
+            "numpad10",
+        ] {
             assert!(parse_chord(bad).is_err(), "{bad:?} should be rejected");
         }
     }
@@ -205,8 +269,8 @@ mod tests {
     #[test]
     fn every_resolved_code_is_in_the_keymap() {
         for name in [
-            "enter", "tab", "space", "home", "end", "insert", "menu", "pause", "prtsc", "`", "'", "[", "]", "\\", ";",
-            ",", ".", "=",
+            "enter", "tab", "space", "home", "end", "insert", "menu", "pause", "prtsc", "`", "'",
+            "[", "]", "\\", ";", ",", ".", "=",
         ] {
             let c = parse_chord(name).unwrap();
             assert!(keymap::lookup(&c.key).is_some(), "{name} -> {}", c.key);
@@ -216,7 +280,10 @@ mod tests {
     #[test]
     fn sequences_and_events() {
         let seq = parse_sequence("ctrl+a  backspace").unwrap();
-        assert_eq!(seq, vec![chord(&["ControlLeft"], "KeyA"), chord(&[], "Backspace")]);
+        assert_eq!(
+            seq,
+            vec![chord(&["ControlLeft"], "KeyA"), chord(&[], "Backspace")]
+        );
         assert!(parse_sequence("   ").is_err());
         assert!(parse_sequence("ctrl+a nope").is_err());
         let ev = parse_chord("ctrl+shift+t").unwrap().events();

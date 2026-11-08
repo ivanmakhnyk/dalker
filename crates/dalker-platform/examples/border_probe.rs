@@ -39,12 +39,27 @@ fn main() {
     let indicator = dalker_platform::create_indicator().expect("create indicator");
     let mut cap = dalker_platform::create_capturer().expect("create capturer");
     let (w, h) = (cap.display().width, cap.display().height);
-    println!("indicator: {}  capture: {} {}x{}", indicator.name(), cap.name(), w, h);
+    println!(
+        "indicator: {}  capture: {} {}x{}",
+        indicator.name(),
+        cap.name(),
+        w,
+        h
+    );
 
     let edges = |f: &dalker_core::RawFrame| {
-        [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1), (w / 2, 1), (w / 2, h - 2), (1, h / 2), (w - 2, h / 2)]
-            .iter()
-            .all(|&(x, y)| is_red(f, x, y))
+        [
+            (0, 0),
+            (w - 1, 0),
+            (0, h - 1),
+            (w - 1, h - 1),
+            (w / 2, 1),
+            (w / 2, h - 2),
+            (1, h / 2),
+            (w - 2, h / 2),
+        ]
+        .iter()
+        .all(|&(x, y)| is_red(f, x, y))
     };
     let mut ok = true;
     // Let capture settle on the plain desktop first.
@@ -52,9 +67,15 @@ fn main() {
 
     indicator.set_active(true);
     ok &= wait_for(cap.as_mut(), "border visible on all 4 edges", &edges);
-    ok &= wait_for(cap.as_mut(), "screen centre not red", |f| !is_red(f, w / 2, h / 2));
-    ok &= wait_for(cap.as_mut(), "pixel just inside the frame not red", |f| !is_red(f, 8, 8));
+    ok &= wait_for(cap.as_mut(), "screen centre not red", |f| {
+        !is_red(f, w / 2, h / 2)
+    });
+    ok &= wait_for(cap.as_mut(), "pixel just inside the frame not red", |f| {
+        !is_red(f, 8, 8)
+    });
     indicator.set_active(false);
-    ok &= wait_for(cap.as_mut(), "border gone after set_active(false)", |f| !is_red(f, 0, 0));
+    ok &= wait_for(cap.as_mut(), "border gone after set_active(false)", |f| {
+        !is_red(f, 0, 0)
+    });
     std::process::exit(if ok { 0 } else { 1 });
 }

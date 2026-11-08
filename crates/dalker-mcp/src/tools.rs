@@ -241,7 +241,11 @@ fn identity(parts: &Parts) -> Result<Identity, ErrorData> {
 
 fn audit(who: &Identity, session: &Session, tool: &str, summary: &str) {
     // e.g. `audit: click x=10 y=20 ... token=claude-laptop session=...`
-    let summary = if summary.is_empty() { tool.to_owned() } else { format!("{tool} {summary}") };
+    let summary = if summary.is_empty() {
+        tool.to_owned()
+    } else {
+        format!("{tool} {summary}")
+    };
     tracing::info!(target: "dalker_mcp::audit", token = %who.name, session = session.id, "{summary}");
 }
 
@@ -251,26 +255,47 @@ fn ms(n: u64) -> Duration {
 
 impl DalkerTools {
     /// Scope check, then the caller's session. Errors are for the model.
-    fn begin(&self, parts: &Parts, scope: Scope) -> Result<Result<(Identity, Arc<Session>), String>, ErrorData> {
+    fn begin(
+        &self,
+        parts: &Parts,
+        scope: Scope,
+    ) -> Result<Result<(Identity, Arc<Session>), String>, ErrorData> {
         let who = identity(parts)?;
         if !who.has(scope) {
-            return Ok(Err(format!("this token lacks the `{scope}` scope needed for this tool")));
+            return Ok(Err(format!(
+                "this token lacks the `{scope}` scope needed for this tool"
+            )));
         }
         if scope == Scope::Input && !self.shared.desktop.input_available() {
-            return Ok(Err("input is not available on this host (it is view-only)".into()));
+            return Ok(Err(
+                "input is not available on this host (it is view-only)".into()
+            ));
         }
         Ok(self.shared.session_for(&who).map(|s| (who, s)))
     }
 
     /// Text result, plus a screenshot if asked for.
-    async fn done(&self, session: &Session, state: &mut State, text: String, after: &After) -> ToolResult {
+    async fn done(
+        &self,
+        session: &Session,
+        state: &mut State,
+        text: String,
+        after: &After,
+    ) -> ToolResult {
         // Report (and look) only once the host has applied the input.
         tri!(session.flush().await);
         let mut content = vec![ContentBlock::text(text)];
         if after.screenshot_after {
-            tokio::time::sleep(ms(after.settle_ms.unwrap_or(DEFAULT_SETTLE_MS).min(MAX_SETTLE_MS))).await;
+            tokio::time::sleep(ms(after
+                .settle_ms
+                .unwrap_or(DEFAULT_SETTLE_MS)
+                .min(MAX_SETTLE_MS)))
+            .await;
             let max = state.max_width;
-            match state.screenshot(session.desktop().as_ref(), max, None, None).await {
+            match state
+                .screenshot(session.desktop().as_ref(), max, None, None)
+                .await
+            {
                 Ok((shot, text)) => {
                     content.push(ContentBlock::text(text));
                     content.push(image(&shot));
@@ -283,7 +308,10 @@ impl DalkerTools {
 }
 
 fn image(shot: &screen::Shot) -> ContentBlock {
-    ContentBlock::image(base64::engine::general_purpose::STANDARD.encode(&shot.data), shot.format.mime())
+    ContentBlock::image(
+        base64::engine::general_purpose::STANDARD.encode(&shot.data),
+        shot.format.mime(),
+    )
 }
 
 /// Splits text for `InputEvent::Text` (≤ [`MAX_TEXT_CHARS`] printable chars each) and the keys
@@ -330,8 +358,14 @@ pub(crate) fn split_text(text: &str) -> Vec<Piece> {
 }
 
 fn tap(session: &Session, code: &str) -> Result<(), String> {
-    session.input(InputEvent::Key { code: code.into(), down: true })?;
-    session.input(InputEvent::Key { code: code.into(), down: false })
+    session.input(InputEvent::Key {
+        code: code.into(),
+        down: true,
+    })?;
+    session.input(InputEvent::Key {
+        code: code.into(),
+        down: false,
+    })
 }
 
 // ------------------------------------------------------------------ tools
@@ -339,7 +373,10 @@ fn tap(session: &Session, code: &str) -> Result<(), String> {
 #[tool_router]
 impl DalkerTools {
     pub(crate) fn new(shared: Arc<Shared>) -> Self {
-        Self { shared, tool_router: Self::tool_router() }
+        Self {
+            shared,
+            tool_router: Self::tool_router(),
+        }
     }
 
     #[tool(
@@ -360,24 +397,38 @@ impl DalkerTools {
         };
         info["screen_available"] = desktop.screen_ready().into();
         info["input_available"] = desktop.input_available().into();
-        info["scopes"] = who.scopes.iter().map(|s| s.as_str()).collect::<Vec<_>>().into();
+        info["scopes"] = who
+            .scopes
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .into();
         info["coordinate_frame"] = match state.frame {
             Some(f) => serde_json::json!({"width": f.width, "height": f.height}),
             None => serde_json::Value::Null,
         };
-        Ok(CallToolResult::success(vec![ContentBlock::text(serde_json::to_string_pretty(&info).unwrap_or_default())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            serde_json::to_string_pretty(&info).unwrap_or_default(),
+        )]))
     }
 
-    #[tool(description = "Captures the screen. Returns an image whose longest side is at most max_width (default \
+    #[tool(
+        description = "Captures the screen. Returns an image whose longest side is at most max_width (default \
                           1280); mouse tools take pixel coordinates of the last full screenshot. With `region` it \
-                          returns that part of the screen at native resolution instead (PNG), to read small text.")]
+                          returns that part of the screen at native resolution instead (PNG), to read small text."
+    )]
     async fn screenshot(
         &self,
         Extension(parts): Extension<Parts>,
         Parameters(p): Parameters<ScreenshotParams>,
     ) -> ToolResult {
         let (who, session) = tri!(self.begin(&parts, Scope::View)?);
-        let region = p.region.map(|r| Region { x: r.x, y: r.y, w: r.w, h: r.h });
+        let region = p.region.map(|r| Region {
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: r.h,
+        });
         audit(
             &who,
             &session,
@@ -393,21 +444,38 @@ impl DalkerTools {
         });
         let mut state = session.state.lock().await;
         let max = p.max_width.unwrap_or(screen::DEFAULT_MAX_WIDTH);
-        let (shot, text) = tri!(state.screenshot(session.desktop().as_ref(), max, format, region).await);
-        Ok(CallToolResult::success(vec![ContentBlock::text(text), image(&shot)]))
+        let (shot, text) = tri!(
+            state
+                .screenshot(session.desktop().as_ref(), max, format, region)
+                .await
+        );
+        Ok(CallToolResult::success(vec![
+            ContentBlock::text(text),
+            image(&shot),
+        ]))
     }
 
-    #[tool(description = "Waits `ms` milliseconds (max 10000), e.g. for a window to open, then optionally returns a \
-                          screenshot.")]
-    async fn wait(&self, Extension(parts): Extension<Parts>, Parameters(p): Parameters<WaitParams>) -> ToolResult {
+    #[tool(
+        description = "Waits `ms` milliseconds (max 10000), e.g. for a window to open, then optionally returns a \
+                          screenshot."
+    )]
+    async fn wait(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(p): Parameters<WaitParams>,
+    ) -> ToolResult {
         let (who, session) = tri!(self.begin(&parts, Scope::View)?);
         let wait = p.ms.min(MAX_WAIT_MS);
         audit(&who, &session, "wait", &format!("ms={wait}"));
         tokio::time::sleep(ms(wait)).await;
         session.touch();
         let mut state = session.state.lock().await;
-        let after = After { screenshot_after: p.screenshot_after, settle_ms: Some(0) };
-        self.done(&session, &mut state, format!("waited {wait} ms"), &after).await
+        let after = After {
+            screenshot_after: p.screenshot_after,
+            settle_ms: Some(0),
+        };
+        self.done(&session, &mut state, format!("waited {wait} ms"), &after)
+            .await
     }
 
     #[tool(description = "Moves the mouse pointer to (x, y), in pixels of the last screenshot.")]
@@ -417,26 +485,44 @@ impl DalkerTools {
         Parameters(p): Parameters<MoveParams>,
     ) -> ToolResult {
         let (who, session) = tri!(self.begin(&parts, Scope::Input)?);
-        audit(&who, &session, "mouse_move", &format!("x={} y={}", p.x, p.y));
+        audit(
+            &who,
+            &session,
+            "mouse_move",
+            &format!("x={} y={}", p.x, p.y),
+        );
         let mut state = session.state.lock().await;
         tri!(state.take_input());
         let pt = tri!(state.point(session.desktop().as_ref(), p.x, p.y).await);
         tri!(session.input(InputEvent::MouseMove { x: pt.x, y: pt.y }));
-        self.done(&session, &mut state, format!("moved to ({}, {})", p.x, p.y), &p.after).await
+        self.done(
+            &session,
+            &mut state,
+            format!("moved to ({}, {})", p.x, p.y),
+            &p.after,
+        )
+        .await
     }
 
     #[tool(
         description = "Clicks at (x, y), in pixels of the last screenshot. `button` left/right/middle/back/forward, \
                           `count` 2 or 3 for double/triple click, `modifiers` like [\"ctrl\"] held during the click."
     )]
-    async fn click(&self, Extension(parts): Extension<Parts>, Parameters(p): Parameters<ClickParams>) -> ToolResult {
+    async fn click(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(p): Parameters<ClickParams>,
+    ) -> ToolResult {
         let (who, session) = tri!(self.begin(&parts, Scope::Input)?);
         let count = p.count.unwrap_or(1);
         audit(
             &who,
             &session,
             "click",
-            &format!("x={} y={} button={:?} count={count} modifiers={:?}", p.x, p.y, p.button, p.modifiers),
+            &format!(
+                "x={} y={} button={:?} count={count} modifiers={:?}",
+                p.x, p.y, p.button, p.modifiers
+            ),
         );
         if !(1..=3).contains(&count) {
             return fail("count must be 1, 2 or 3");
@@ -445,7 +531,9 @@ impl DalkerTools {
         for m in &p.modifiers {
             let chord = tri!(keys::parse_chord(m));
             if !chord.modifiers.is_empty()
-                || !["Control", "Shift", "Alt", "Meta"].iter().any(|k| chord.key.starts_with(k))
+                || !["Control", "Shift", "Alt", "Meta"]
+                    .iter()
+                    .any(|k| chord.key.starts_with(k))
             {
                 return fail(format!("`{m}` is not a modifier (ctrl, shift, alt, meta)"));
             }
@@ -458,7 +546,10 @@ impl DalkerTools {
         let run = async {
             session.input(InputEvent::MouseMove { x: pt.x, y: pt.y })?;
             for m in &mods {
-                session.input(InputEvent::Key { code: m.clone(), down: true })?;
+                session.input(InputEvent::Key {
+                    code: m.clone(),
+                    down: true,
+                })?;
             }
             if !mods.is_empty() {
                 tokio::time::sleep(ms(20)).await;
@@ -467,12 +558,25 @@ impl DalkerTools {
                 if i > 0 {
                     tokio::time::sleep(ms(60)).await;
                 }
-                session.input(InputEvent::MouseButton { button, down: true, x: pt.x, y: pt.y })?;
+                session.input(InputEvent::MouseButton {
+                    button,
+                    down: true,
+                    x: pt.x,
+                    y: pt.y,
+                })?;
                 tokio::time::sleep(ms(20)).await;
-                session.input(InputEvent::MouseButton { button, down: false, x: pt.x, y: pt.y })?;
+                session.input(InputEvent::MouseButton {
+                    button,
+                    down: false,
+                    x: pt.x,
+                    y: pt.y,
+                })?;
             }
             for m in mods.iter().rev() {
-                session.input(InputEvent::Key { code: m.clone(), down: false })?;
+                session.input(InputEvent::Key {
+                    code: m.clone(),
+                    down: false,
+                })?;
             }
             Ok::<_, String>(())
         };
@@ -482,21 +586,33 @@ impl DalkerTools {
             3 => "triple-clicked",
             _ => "clicked",
         };
-        self.done(&session, &mut state, format!("{what} {:?} at ({}, {})", p.button, p.x, p.y).to_lowercase(), &p.after)
-            .await
+        self.done(
+            &session,
+            &mut state,
+            format!("{what} {:?} at ({}, {})", p.button, p.x, p.y).to_lowercase(),
+            &p.after,
+        )
+        .await
     }
 
     #[tool(
         description = "Drags with a mouse button held from (from_x, from_y) to (to_x, to_y), in pixels of the last \
                           screenshot."
     )]
-    async fn drag(&self, Extension(parts): Extension<Parts>, Parameters(p): Parameters<DragParams>) -> ToolResult {
+    async fn drag(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(p): Parameters<DragParams>,
+    ) -> ToolResult {
         let (who, session) = tri!(self.begin(&parts, Scope::Input)?);
         audit(
             &who,
             &session,
             "drag",
-            &format!("from=({}, {}) to=({}, {}) button={:?}", p.from_x, p.from_y, p.to_x, p.to_y, p.button),
+            &format!(
+                "from=({}, {}) to=({}, {}) button={:?}",
+                p.from_x, p.from_y, p.to_x, p.to_y, p.button
+            ),
         );
         let mut state = session.state.lock().await;
         tri!(state.take_input());
@@ -508,31 +624,56 @@ impl DalkerTools {
         let run = async {
             session.input(InputEvent::MouseMove { x: a.x, y: a.y })?;
             tokio::time::sleep(ms(30)).await;
-            session.input(InputEvent::MouseButton { button, down: true, x: a.x, y: a.y })?;
+            session.input(InputEvent::MouseButton {
+                button,
+                down: true,
+                x: a.x,
+                y: a.y,
+            })?;
             tokio::time::sleep(ms(60)).await;
             for i in 1..=STEPS {
                 let t = i as f32 / STEPS as f32;
-                session.input(InputEvent::MouseMove { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })?;
+                session.input(InputEvent::MouseMove {
+                    x: a.x + (b.x - a.x) * t,
+                    y: a.y + (b.y - a.y) * t,
+                })?;
                 tokio::time::sleep(ms(16)).await;
             }
             tokio::time::sleep(ms(60)).await;
-            session.input(InputEvent::MouseButton { button, down: false, x: b.x, y: b.y })
+            session.input(InputEvent::MouseButton {
+                button,
+                down: false,
+                x: b.x,
+                y: b.y,
+            })
         };
         tri!(run.await);
-        let text = format!("dragged from ({}, {}) to ({}, {})", p.from_x, p.from_y, p.to_x, p.to_y);
+        let text = format!(
+            "dragged from ({}, {}) to ({}, {})",
+            p.from_x, p.from_y, p.to_x, p.to_y
+        );
         self.done(&session, &mut state, text, &p.after).await
     }
 
-    #[tool(description = "Scrolls with the mouse wheel by `amount` notches (default 3) so the content moves to show \
-                          what is in `direction` (down = further down the page). Optionally at (x, y) first.")]
-    async fn scroll(&self, Extension(parts): Extension<Parts>, Parameters(p): Parameters<ScrollParams>) -> ToolResult {
+    #[tool(
+        description = "Scrolls with the mouse wheel by `amount` notches (default 3) so the content moves to show \
+                          what is in `direction` (down = further down the page). Optionally at (x, y) first."
+    )]
+    async fn scroll(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(p): Parameters<ScrollParams>,
+    ) -> ToolResult {
         let (who, session) = tri!(self.begin(&parts, Scope::Input)?);
         let amount = p.amount.unwrap_or(3);
         audit(
             &who,
             &session,
             "scroll",
-            &format!("direction={:?} amount={amount} x={:?} y={:?}", p.direction, p.x, p.y),
+            &format!(
+                "direction={:?} amount={amount} x={:?} y={:?}",
+                p.direction, p.x, p.y
+            ),
         );
         if !(1..=50).contains(&amount) {
             return fail("amount must be 1 to 50 notches");
@@ -567,10 +708,16 @@ impl DalkerTools {
         self.done(&session, &mut state, text, &p.after).await
     }
 
-    #[tool(description = "Types text as characters, whatever the host's keyboard layout (Unicode works). Newlines \
+    #[tool(
+        description = "Types text as characters, whatever the host's keyboard layout (Unicode works). Newlines \
                           press Enter, tabs press Tab. Use press_keys for shortcuts. Typing takes time (about 30 \
-                          characters a second on Windows); for long text use clipboard_set and press_keys ctrl+v.")]
-    async fn type_text(&self, Extension(parts): Extension<Parts>, Parameters(p): Parameters<TypeParams>) -> ToolResult {
+                          characters a second on Windows); for long text use clipboard_set and press_keys ctrl+v."
+    )]
+    async fn type_text(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(p): Parameters<TypeParams>,
+    ) -> ToolResult {
         let (who, session) = tri!(self.begin(&parts, Scope::Input)?);
         let chars = p.text.chars().count();
         // Never the text itself.
@@ -600,12 +747,20 @@ impl DalkerTools {
             Ok::<_, String>(())
         };
         tri!(run.await);
-        self.done(&session, &mut state, format!("typed {chars} characters"), &p.after).await
+        self.done(
+            &session,
+            &mut state,
+            format!("typed {chars} characters"),
+            &p.after,
+        )
+        .await
     }
 
-    #[tool(description = "Presses keys by physical position (US layout names): `enter`, `esc`, `tab`, `f5`, `pgdn`, \
+    #[tool(
+        description = "Presses keys by physical position (US layout names): `enter`, `esc`, `tab`, `f5`, `pgdn`, \
                           `ctrl+c`, `ctrl+shift+t`, `alt+tab`, `meta` (Windows/Super key)... Several chords separated \
-                          by spaces are pressed in turn; `repeat` repeats the whole sequence.")]
+                          by spaces are pressed in turn; `repeat` repeats the whole sequence."
+    )]
     async fn press_keys(
         &self,
         Extension(parts): Extension<Parts>,
@@ -613,7 +768,12 @@ impl DalkerTools {
     ) -> ToolResult {
         let (who, session) = tri!(self.begin(&parts, Scope::Input)?);
         let repeat = p.repeat.unwrap_or(1);
-        audit(&who, &session, "press_keys", &format!("keys={:?} repeat={repeat}", p.keys));
+        audit(
+            &who,
+            &session,
+            "press_keys",
+            &format!("keys={:?} repeat={repeat}", p.keys),
+        );
         if !(1..=50).contains(&repeat) {
             return fail("repeat must be 1 to 50");
         }
@@ -633,21 +793,37 @@ impl DalkerTools {
             Ok::<_, String>(())
         };
         tri!(run.await);
-        let times = if repeat > 1 { format!(" {repeat} times") } else { String::new() };
-        self.done(&session, &mut state, format!("pressed {}{times}", p.keys.trim()), &p.after).await
+        let times = if repeat > 1 {
+            format!(" {repeat} times")
+        } else {
+            String::new()
+        };
+        self.done(
+            &session,
+            &mut state,
+            format!("pressed {}{times}", p.keys.trim()),
+            &p.after,
+        )
+        .await
     }
 
-    #[tool(description = "Releases every key and mouse button this agent holds. Use it if a modifier seems stuck.")]
+    #[tool(
+        description = "Releases every key and mouse button this agent holds. Use it if a modifier seems stuck."
+    )]
     async fn release_all(&self, Extension(parts): Extension<Parts>) -> ToolResult {
         let (who, session) = tri!(self.begin(&parts, Scope::Input)?);
         audit(&who, &session, "release_all", "");
         let _state = session.state.lock().await;
         tri!(session.input(InputEvent::ReleaseAll));
         tri!(session.flush().await);
-        Ok(CallToolResult::success(vec![ContentBlock::text("released all keys and buttons")]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            "released all keys and buttons",
+        )]))
     }
 
-    #[tool(description = "Returns the text on the host's clipboard as JSON: {\"has_text\": bool, \"text\": string}.")]
+    #[tool(
+        description = "Returns the text on the host's clipboard as JSON: {\"has_text\": bool, \"text\": string}."
+    )]
     async fn clipboard_get(&self, Extension(parts): Extension<Parts>) -> ToolResult {
         let (who, session) = tri!(self.begin(&parts, Scope::Clipboard)?);
         let _state = session.state.lock().await;
@@ -655,23 +831,38 @@ impl DalkerTools {
         tri!(session.flush().await);
         let text = tri!(session.desktop().read_clipboard().await);
         // Never the contents.
-        audit(&who, &session, "clipboard_get", &format!("chars={}", text.as_deref().map_or(0, |t| t.chars().count())));
+        audit(
+            &who,
+            &session,
+            "clipboard_get",
+            &format!("chars={}", text.as_deref().map_or(0, |t| t.chars().count())),
+        );
         if text.as_ref().is_some_and(|t| t.len() > MAX_CLIPBOARD_BYTES) {
             return fail("the clipboard text is larger than 1 MB");
         }
-        let body = serde_json::json!({ "has_text": text.is_some(), "text": text.unwrap_or_default() });
-        Ok(CallToolResult::success(vec![ContentBlock::text(body.to_string())]))
+        let body =
+            serde_json::json!({ "has_text": text.is_some(), "text": text.unwrap_or_default() });
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            body.to_string(),
+        )]))
     }
 
-    #[tool(description = "Puts text on the host's clipboard (then e.g. press_keys \"ctrl+v\" pastes it; faster than \
-                          type_text for long text).")]
+    #[tool(
+        description = "Puts text on the host's clipboard (then e.g. press_keys \"ctrl+v\" pastes it; faster than \
+                          type_text for long text)."
+    )]
     async fn clipboard_set(
         &self,
         Extension(parts): Extension<Parts>,
         Parameters(p): Parameters<ClipboardSetParams>,
     ) -> ToolResult {
         let (who, session) = tri!(self.begin(&parts, Scope::Clipboard)?);
-        audit(&who, &session, "clipboard_set", &format!("chars={}", p.text.chars().count()));
+        audit(
+            &who,
+            &session,
+            "clipboard_set",
+            &format!("chars={}", p.text.chars().count()),
+        );
         if p.text.len() > MAX_CLIPBOARD_BYTES {
             return fail("text too large for the clipboard (max 1 MB)");
         }
@@ -679,7 +870,9 @@ impl DalkerTools {
         let chars = p.text.chars().count();
         tri!(session.set_clipboard(p.text));
         tri!(session.flush().await);
-        Ok(CallToolResult::success(vec![ContentBlock::text(format!("put {chars} characters on the clipboard"))]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+            "put {chars} characters on the clipboard"
+        ))]))
     }
 }
 
@@ -687,7 +880,9 @@ impl DalkerTools {
 impl ServerHandler for DalkerTools {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("dalker", env!("CARGO_PKG_VERSION")).with_title("Dalker"))
+            .with_server_info(
+                Implementation::new("dalker", env!("CARGO_PKG_VERSION")).with_title("Dalker"),
+            )
             .with_instructions(INSTRUCTIONS)
     }
 }
@@ -713,7 +908,10 @@ mod tests {
                 Piece::Text("ef".into()),
             ]
         );
-        assert_eq!(split_text("\n\n"), vec![Piece::Key("Enter"), Piece::Key("Enter")]);
+        assert_eq!(
+            split_text("\n\n"),
+            vec![Piece::Key("Enter"), Piece::Key("Enter")]
+        );
         assert!(split_text("").is_empty());
         let long: String = "é".repeat(MAX_TEXT_CHARS * 2 + 3);
         let pieces = split_text(&long);

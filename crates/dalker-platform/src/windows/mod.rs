@@ -35,7 +35,9 @@ use windows::Win32::UI::HiDpi::{
 /// `SendInput` coordinates are both in physical pixels.
 pub fn init_process() {
     // Fails harmlessly if awareness was already set (e.g. via manifest).
-    if let Err(e) = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) } {
+    if let Err(e) =
+        unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }
+    {
         tracing::debug!("SetProcessDpiAwarenessContext: {e}");
     }
 }
@@ -50,20 +52,34 @@ pub fn attach_parent_console() {
         CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
     };
     use windows::Win32::System::Console::{
-        AttachConsole, GetStdHandle, SetStdHandle, ATTACH_PARENT_PROCESS, STD_ERROR_HANDLE, STD_INPUT_HANDLE,
-        STD_OUTPUT_HANDLE,
+        AttachConsole, GetStdHandle, SetStdHandle, ATTACH_PARENT_PROCESS, STD_ERROR_HANDLE,
+        STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
     };
     unsafe {
         if AttachConsole(ATTACH_PARENT_PROCESS).is_err() {
             return;
         }
         let targets = [
-            (STD_OUTPUT_HANDLE, windows::core::w!("CONOUT$"), GENERIC_WRITE.0),
-            (STD_ERROR_HANDLE, windows::core::w!("CONOUT$"), GENERIC_WRITE.0),
-            (STD_INPUT_HANDLE, windows::core::w!("CONIN$"), GENERIC_READ.0),
+            (
+                STD_OUTPUT_HANDLE,
+                windows::core::w!("CONOUT$"),
+                GENERIC_WRITE.0,
+            ),
+            (
+                STD_ERROR_HANDLE,
+                windows::core::w!("CONOUT$"),
+                GENERIC_WRITE.0,
+            ),
+            (
+                STD_INPUT_HANDLE,
+                windows::core::w!("CONIN$"),
+                GENERIC_READ.0,
+            ),
         ];
         for (std, name, access) in targets {
-            let missing = GetStdHandle(std).map(|h| h.is_invalid() || h.0.is_null()).unwrap_or(true);
+            let missing = GetStdHandle(std)
+                .map(|h| h.is_invalid() || h.0.is_null())
+                .unwrap_or(true);
             if missing {
                 if let Ok(h) = CreateFileW(
                     name,
@@ -97,5 +113,9 @@ pub fn outlive_console_ctrl_c() {
 /// True when standard error points somewhere (a console, a pipe or a file).
 pub fn has_std_error() -> bool {
     use windows::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE};
-    unsafe { GetStdHandle(STD_ERROR_HANDLE).map(|h| !h.is_invalid() && !h.0.is_null()).unwrap_or(false) }
+    unsafe {
+        GetStdHandle(STD_ERROR_HANDLE)
+            .map(|h| !h.is_invalid() && !h.0.is_null())
+            .unwrap_or(false)
+    }
 }

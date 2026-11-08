@@ -15,11 +15,11 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetSystemMetrics,
-    PeekMessageW, RegisterClassExW, SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowPos, ShowWindow,
-    TranslateMessage, HWND_TOPMOST, LWA_ALPHA, MSG, WDA_EXCLUDEFROMCAPTURE, PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE,
-    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_EX_TRANSPARENT, WS_POPUP,
+    PeekMessageW, RegisterClassExW, SetLayeredWindowAttributes, SetWindowDisplayAffinity,
+    SetWindowPos, ShowWindow, TranslateMessage, HWND_TOPMOST, LWA_ALPHA, MSG, PM_REMOVE,
+    SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE,
+    SW_SHOWNOACTIVATE, WDA_EXCLUDEFROMCAPTURE, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 /// Frame thickness in physical pixels.
@@ -55,7 +55,11 @@ impl BorderOverlay {
             .spawn(move || unsafe { run(a, s, ready_tx) })
             .map_err(|e| format!("spawn overlay thread: {e}"))?;
         match ready_rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(Ok(())) => Ok(Self { active, stop, thread: Some(thread) }),
+            Ok(Ok(())) => Ok(Self {
+                active,
+                stop,
+                thread: Some(thread),
+            }),
             Ok(Err(e)) => Err(e),
             Err(_) => Err("overlay thread did not start".into()),
         }
@@ -86,7 +90,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
 }
 
 fn screen_size() -> (i32, i32) {
-    unsafe { (GetSystemMetrics(SM_CXSCREEN).max(1), GetSystemMetrics(SM_CYSCREEN).max(1)) }
+    unsafe {
+        (
+            GetSystemMetrics(SM_CXSCREEN).max(1),
+            GetSystemMetrics(SM_CYSCREEN).max(1),
+        )
+    }
 }
 
 unsafe fn apply_frame_region(hwnd: HWND, w: i32, h: i32) {
@@ -144,7 +153,11 @@ unsafe fn create_window() -> windows::core::Result<(HWND, i32, i32)> {
     Ok((hwnd, w, h))
 }
 
-unsafe fn run(active: Arc<AtomicBool>, stop: Arc<AtomicBool>, ready: mpsc::Sender<Result<(), String>>) {
+unsafe fn run(
+    active: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+    ready: mpsc::Sender<Result<(), String>>,
+) {
     // Without access to the input desktop (normal user process at the secure desktop)
     // the window simply stays on the thread's own desktop.
     let mut desk = desktop::attach_thread_to_input_desktop().ok();
@@ -219,7 +232,15 @@ unsafe fn run(active: Arc<AtomicBool>, stop: Arc<AtomicBool>, ready: mpsc::Sende
         }
         if shown {
             // Keep winning against other topmost windows.
-            let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
         }
         std::thread::sleep(TICK);
     }
