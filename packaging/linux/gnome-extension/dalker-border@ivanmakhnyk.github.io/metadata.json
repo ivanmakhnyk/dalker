@@ -1,0 +1,8 @@
+{
+  "uuid": "dalker-border@ivanmakhnyk.github.io",
+  "name": "Dalker remote-session border",
+  "description": "Draws a red frame around every monitor while someone is viewing or controlling this desktop through Dalker. Driven over D-Bus (io.github.ivanmakhnyk.Dalker); hides itself if the Dalker agent stops pinging. While someone is viewing, it also shares the clipboard text with the Dalker agent and types the text a viewer sends in Direct text keyboard mode.",
+  "shell-version": ["48", "49", "50"],
+  "session-modes": ["user", "unlock-dialog"],
+  "version": 1
+}

@@ -1,0 +1,5 @@
+#!/bin/sh
+# Run as root by "Dalker Settings" (dalkerd settings) through pkexec, once per window:
+# reads and writes /etc/dalker/dalker.conf for the window, which runs as the desktop user.
+# The running agent follows the file, so changes apply without restarting the service.
+exec /usr/bin/dalkerd settings-helper "$@"

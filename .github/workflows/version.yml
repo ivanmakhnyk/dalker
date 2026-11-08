@@ -1,0 +1,106 @@
+name: Version
+
+# GitFlow versions (see RELEASING.md):
+# * develop builds are pre-releases of the next minor version: every merge into develop counts
+#   up the -dev number (0.3.0-dev.4 -> 0.3.0-dev.5); the first merge after a release starts
+#   the next one (0.2.0 -> 0.3.0-dev.1).
+# * merging develop into main releases it: 0.3.0-dev.5 -> 0.3.0.
+# * any other change to main (a hotfix) is a patch release: 0.3.0 -> 0.3.1.
+# Releases are tagged (v0.3.0), the Release workflow is started for the tag and main is merged
+# back into develop. The commits and the tag are pushed with GITHUB_TOKEN, which doesn't start
+# workflows, so they don't trigger this workflow (or CI) again.
+on:
+  push:
+    branches: [develop, main]
+
+concurrency:
+  group: version-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The branch as it is now (it may have moved since the push that started this run).
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Bump the version
+        id: bump
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Retry if someone pushes to the branch meanwhile: start again from its new tip.
+          for attempt in 1 2 3; do
+            git fetch origin "$BRANCH"
+            git reset --hard "origin/$BRANCH"
+            current=$(sh scripts/version.sh)
+            IFS=. read -r x y z <<< "${current%%-*}"
+            if [ "$BRANCH" = develop ]; then
+              kind=dev
+              case "$current" in
+                *-dev.*) new="${current%-dev.*}-dev.$(( ${current##*-dev.} + 1 ))" ;;
+                *)       new="$x.$((y + 1)).0-dev.1" ;;
+              esac
+              msg="Version $new"
+            else
+              case "$current" in
+                *-*) kind=release; new="$x.$y.$z" ;;
+                *)   kind=hotfix;  new="$x.$y.$((z + 1))" ;;
+              esac
+              msg="Release $new"
+            fi
+            sh scripts/version.sh set "$new"
+            git commit -am "$msg"
+            if git push origin "HEAD:$BRANCH"; then
+              echo "version=$new" >> "$GITHUB_OUTPUT"
+              echo "kind=$kind" >> "$GITHUB_OUTPUT"
+              echo "$current -> $new on $BRANCH ($kind)"
+              exit 0
+            fi
+          done
+          echo "::error::could not push the version bump to $BRANCH"
+          exit 1
+
+      - name: Tag the release and start the Release workflow
+        if: github.ref_name == 'main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          git tag -a "v$VERSION" -m "Dalker $VERSION"
+          git push origin "v$VERSION"
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "v$VERSION"
+
+      # A normal merge, so a hotfix made on main reaches develop too. Where both sides changed
+      # the same lines (the version), develop's side wins. After a release, develop takes the
+      # released version, and its next merge starts the next minor (0.3.0 -> 0.4.0-dev.1);
+      # after a hotfix it keeps its own -dev version.
+      - name: Merge main back into develop
+        if: github.ref_name == 'main'
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+          KIND: ${{ steps.bump.outputs.kind }}
+        run: |
+          for attempt in 1 2 3; do
+            git fetch origin develop main
+            git checkout -B develop origin/develop
+            git merge --no-ff -X ours --no-edit -m "Merge release $VERSION into develop" origin/main
+            if [ "$KIND" = release ]; then
+              sh scripts/version.sh set "$VERSION"
+              git diff --quiet || git commit -am "Version $VERSION"
+            fi
+            if git push origin develop; then
+              exit 0
+            fi
+          done
+          echo "::error::could not push to develop"
+          exit 1

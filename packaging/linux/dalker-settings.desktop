@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Dalker Settings
+Comment=Web access, password and AI agents (MCP) for Dalker
+Exec=dalkerd settings
+Icon=dalker
+Terminal=false
+Categories=Settings;Network;RemoteAccess;
+Keywords=remote;desktop;password;dalker;mcp;ai;
+StartupWMClass=dalkerd

@@ -1,0 +1,205 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Dalker Windows installer (WiX 3.x).
+
+  What it does
+    * installs dalkerd.exe to C:\Program Files\Dalker, with dalkerd.com: its console front end,
+      which terminals run for `dalkerd ...` and wait for (dalkerd.exe is a GUI program)
+    * asks for no password: the access password is set afterwards in Dalker Settings (the
+      finish page offers to open it). Silent installs can still pass DALKER_PASSWORD=...;
+      only its argon2 hash is stored, in C:\ProgramData\Dalker\dalker.conf
+      (one shorter than 8 characters fails the install, as Dalker Settings would refuse it)
+    * opens Windows Firewall for the agent (TCP + UDP)
+    * installs and starts the "Dalker" service (LocalSystem, automatic start, restarted on
+      failure). The service keeps the agent running as SYSTEM in the console session, so the
+      sign-in screen, the lock screen and UAC prompts can be seen and controlled as well as the
+      user's desktop (always with the red border shown).
+    * adds a "Dalker Settings" Start menu entry (dalkerd.exe settings): web access and its
+      port, the web client password, the MCP server for AI agents and its tokens (asks for
+      administrator rights). The running agent applies the changes without a restart.
+    * the web port is DALKER_BIND in the config (default 8742). An upgrade from a version that
+      gave the service the web address on its command line (port 8080) writes that address into the config instead,
+      so existing installs keep port 8080.
+    * allows services to send Ctrl+Alt+Del (policy SoftwareSASGeneration = 1), so the viewer's
+      Ctrl+Alt+Del button works on the lock screen. Removed again on uninstall.
+    * older versions used a per-user logon task "Dalker"; their uninstall removes it during a
+      major upgrade, and CA_Remove cleans up leftovers.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:fire="http://schemas.microsoft.com/wix/FirewallExtension"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+
+  <Product Id="*" Name="Dalker" Language="1033" Version="$(var.Version)" Manufacturer="Dalker"
+           UpgradeCode="AE344F31-38CC-4CD2-84E6-6C5ECF7A6A9B">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64"
+             Description="Dalker remote desktop agent" />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of Dalker is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Public properties (usable on the msiexec command line for silent installs). -->
+    <Property Id="DALKER_PASSWORD" Secure="yes" Hidden="yes" />
+    <!-- The command line that carries the password must not appear in the install log. -->
+    <Property Id="CA_SetPassword" Hidden="yes" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <!-- Dalker's icon in Add/Remove Programs and on the Start menu entry. -->
+    <Icon Id="Dalker.ico" SourceFile="$(var.IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="Dalker.ico" />
+    <Property Id="CONFIGPATH">
+      <DirectorySearch Id="CfgDir" Path="[CommonAppDataFolder]Dalker" Depth="0">
+        <FileSearch Id="CfgFile" Name="dalker.conf" />
+      </DirectorySearch>
+    </Property>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="Dalker" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder" />
+      <Directory Id="CommonAppDataFolder">
+        <Directory Id="DATAFOLDER" Name="Dalker" />
+      </Directory>
+    </Directory>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="AgentExe" Guid="B55461C5-ED0E-4242-BE82-952714ABA525" Win64="yes">
+        <File Id="dalkerd.exe" Source="$(var.BinDir)\dalkerd.exe" KeyPath="yes">
+          <fire:FirewallException Id="FwTcp" Name="Dalker agent (TCP)" Protocol="tcp" Scope="any" IgnoreFailure="no" />
+          <fire:FirewallException Id="FwUdp" Name="Dalker agent (UDP)" Protocol="udp" Scope="any" IgnoreFailure="no" />
+        </File>
+        <!-- Start menu entry for the settings window (all users: the package is perMachine). -->
+        <Shortcut Id="SettingsStartMenu" Directory="ProgramMenuFolder" Name="Dalker Settings"
+                  Description="Web access, password and AI agents (MCP) for Dalker"
+                  Target="[INSTALLFOLDER]dalkerd.exe" Arguments="settings" WorkingDirectory="INSTALLFOLDER"
+                  Icon="Dalker.ico" />
+        <!-- Options before "service" are passed on to the agent the service starts. Options
+             given here can't be changed in the settings window (the command line wins), so the
+             web address lives in the config file. -->
+        <ServiceInstall Id="DalkerService" Name="Dalker" DisplayName="Dalker remote desktop"
+                        Description="Lets you view and control this PC from a web browser, including the sign-in screen. A red border is shown while someone is connected."
+                        Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem" Vital="yes"
+                        Arguments="--udp-port 8443 service">
+          <util:ServiceConfig FirstFailureActionType="restart" SecondFailureActionType="restart"
+                              ThirdFailureActionType="restart" RestartServiceDelayInSeconds="10" ResetPeriodInDays="1" />
+        </ServiceInstall>
+        <ServiceControl Id="DalkerServiceControl" Name="Dalker" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+      </Component>
+      <!-- dalkerd.com: console front end (dalkerd-console.exe), so `dalkerd set-password` in a
+           terminal prompts in that terminal and the terminal waits for it. -->
+      <Component Id="ConsoleLauncher" Guid="C89F5D97-0010-4A09-917B-28DF1A4C502F" Win64="yes">
+        <File Id="dalkerd.com" Source="$(var.BinDir)\dalkerd.com" KeyPath="yes" />
+      </Component>
+      <Component Id="SasPolicy" Guid="3BB44CB2-C0B8-47CB-87CB-23B06217127B" Win64="yes">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+                       Name="SoftwareSASGeneration" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="DATAFOLDER">
+      <Component Id="DataFolder" Guid="01787415-F7A9-4702-939F-162541A672FD" Win64="yes">
+        <CreateFolder />
+        <RegistryValue Root="HKLM" Key="Software\Dalker" Name="DataFolder" Type="string" Value="[DATAFOLDER]" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="Main" Title="Dalker" Level="1">
+      <ComponentRef Id="AgentExe" />
+      <ComponentRef Id="ConsoleLauncher" />
+      <ComponentRef Id="SasPolicy" />
+      <ComponentRef Id="DataFolder" />
+    </Feature>
+
+    <!-- custom actions -->
+    <!-- Each deferred action reads its command line from the property of the same name. -->
+    <!-- New installs write the web address, so later upgrades can tell them from old ones. -->
+    <CustomAction Id="CA_SetBind_Data" Property="CA_SetBind"
+      Value="&quot;[INSTALLFOLDER]dalkerd.exe&quot; set-config DALKER_BIND 0.0.0.0:8742 --config &quot;[DATAFOLDER]dalker.conf&quot;" />
+    <CustomAction Id="CA_SetBind" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Return="check" Impersonate="no" />
+    <!-- Upgrades from versions that gave the service the web address 0.0.0.0:8080 on its command line (and wrote no
+         DALKER_BIND) keep that port. -->
+    <CustomAction Id="CA_KeepBind_Data" Property="CA_KeepBind"
+      Value="&quot;[INSTALLFOLDER]dalkerd.exe&quot; set-config DALKER_BIND 0.0.0.0:8080 --if-missing --config &quot;[DATAFOLDER]dalker.conf&quot;" />
+    <CustomAction Id="CA_KeepBind" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
+
+    <CustomAction Id="CA_SetPassword_Data" Property="CA_SetPassword"
+      Value="&quot;[INSTALLFOLDER]dalkerd.exe&quot; set-password --config &quot;[DATAFOLDER]dalker.conf&quot; &quot;[DALKER_PASSWORD]&quot;" />
+    <CustomAction Id="CA_SetPassword" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Return="check" Impersonate="no" />
+
+    <!-- ServiceControl stops the service (which ends its agent); this catches agents started by
+         hand and the logon task of versions before the service. -->
+    <CustomAction Id="CA_Remove_Data" Property="CA_Remove"
+      Value="&quot;[SystemFolder]cmd.exe&quot; /c &quot;schtasks /End /TN Dalker &amp; schtasks /Delete /TN Dalker /F &amp; taskkill /F /IM dalkerd.exe&quot;" />
+    <CustomAction Id="CA_Remove" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
+
+    <!-- The finish page's "Open Dalker Settings" box (runs as the user; the window asks for
+         administrator rights itself). -->
+    <CustomAction Id="CA_OpenSettings" FileKey="dalkerd.exe" ExeCommand="settings" Return="asyncNoWait" Impersonate="yes" />
+
+    <!-- Wipe the config (it holds the password hash) on a real uninstall, never during an upgrade. -->
+    <CustomAction Id="CA_Wipe_Data" Property="CA_Wipe"
+      Value="&quot;[SystemFolder]cmd.exe&quot; /c rmdir /s /q &quot;[CommonAppDataFolder]Dalker&quot;" />
+    <CustomAction Id="CA_Wipe" BinaryKey="WixCA" DllEntry="CAQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
+
+    <InstallExecuteSequence>
+      <Custom Action="CA_Remove_Data" Before="CA_Remove">REMOVE="ALL"</Custom>
+      <Custom Action="CA_Remove" Before="RemoveFiles">REMOVE="ALL"</Custom>
+      <Custom Action="CA_Wipe_Data" Before="CA_Wipe">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="CA_Wipe" After="CA_Remove">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+
+      <Custom Action="CA_SetBind_Data" Before="CA_SetBind">NOT Installed AND CONFIGPATH = ""</Custom>
+      <Custom Action="CA_SetBind" After="InstallFiles">NOT Installed AND CONFIGPATH = ""</Custom>
+      <Custom Action="CA_KeepBind_Data" Before="CA_KeepBind">NOT Installed AND CONFIGPATH &lt;&gt; ""</Custom>
+      <Custom Action="CA_KeepBind" After="InstallFiles">NOT Installed AND CONFIGPATH &lt;&gt; ""</Custom>
+      <Custom Action="CA_SetPassword_Data" Before="CA_SetPassword">NOT Installed AND DALKER_PASSWORD &lt;&gt; ""</Custom>
+      <Custom Action="CA_SetPassword" After="CA_KeepBind">NOT Installed AND DALKER_PASSWORD &lt;&gt; ""</Custom>
+    </InstallExecuteSequence>
+
+    <!-- UI: a welcome page, progress, and a finish page that offers to open Dalker Settings
+         (where the access password is chosen). -->
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Open Dalker Settings to choose the access password" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <UI Id="DalkerUI">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+      <Property Id="WixUI_Mode" Value="Minimal" />
+
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+      <DialogRef Id="CancelDlg" />
+
+      <Dialog Id="InstallDlg" Width="370" Height="210" Title="Dalker Setup">
+        <Control Id="Title" Type="Text" X="15" Y="10" Width="340" Height="17" Transparent="yes" NoPrefix="yes">
+          <Text>{\WixUI_Font_Bigger}Install Dalker</Text>
+        </Control>
+        <Control Id="Intro" Type="Text" X="15" Y="40" Width="340" Height="48" Transparent="yes" NoPrefix="yes">
+          <Text>Dalker lets you view and control this PC from a web browser. While someone is connected, a red border is drawn around the screen. Dalker runs as a service, also at the sign-in screen.</Text>
+        </Control>
+        <Control Id="Next" Type="Text" X="15" Y="100" Width="340" Height="36" Transparent="yes" NoPrefix="yes">
+          <Text>After installing, choose the access password in Dalker Settings (Start menu). Nobody can sign in to the web client until it is set.</Text>
+        </Control>
+        <Control Id="BottomLine" Type="Line" X="0" Y="178" Width="370" Height="0" />
+        <Control Id="Install" Type="PushButton" X="236" Y="187" Width="56" Height="17" Default="yes" Text="Install">
+          <Publish Event="EndDialog" Value="Return"><![CDATA[1]]></Publish>
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="187" Width="56" Height="17" Cancel="yes" Text="Cancel">
+          <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+        </Control>
+      </Dialog>
+
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="CA_OpenSettings" Order="998">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed</Publish>
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999">1</Publish>
+
+      <InstallUISequence>
+        <Show Dialog="InstallDlg" Before="ProgressDlg">NOT Installed</Show>
+      </InstallUISequence>
+    </UI>
+    <UIRef Id="WixUI_Common" />
+  </Product>
+</Wix>

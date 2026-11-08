@@ -1,0 +1,16 @@
+[Unit]
+Description=Dalker remote desktop agent
+Documentation=https://github.com/ivanmakhnyk/dalker
+After=network-online.target display-manager.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=-/sbin/modprobe uinput
+ExecStart=/usr/lib/dalker/dalker-launch
+Restart=always
+RestartSec=2
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

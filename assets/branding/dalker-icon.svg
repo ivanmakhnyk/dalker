@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The Dalker mark in its orange gradient on a transparent background. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="496" viewBox="29 52 161 156">
+  <defs><linearGradient id="orange" gradientUnits="userSpaceOnUse" x1="30" y1="40" x2="190" y2="210"><stop offset="0" stop-color="#f6873a"/><stop offset="1" stop-color="#e2561f"/></linearGradient></defs>
+  <mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="240" height="240"><rect width="240" height="240" fill="#fff"/><path d="M91 120 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M29 184 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M115.00 120.00 L91.03 118.88 A40 40 0 0 1 79.80 144.84 L76.71 148.03 A40 40 0 0 1 51.12 160.07 L53.00 184.00 L76.97 185.12 A40 40 0 0 1 88.20 159.16 L91.29 155.97 A40 40 0 0 1 116.88 143.93 Z" stroke="#000" stroke-width="20" stroke-linejoin="round"/></mask><path d="M60 176V64h62a56 56 0 0 1 0 112z" fill="none" stroke="url(#orange)" stroke-width="24" stroke-linejoin="round" mask="url(#cut)"/><path d="M91 120 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M29 184 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M115.00 120.00 L91.03 118.88 A40 40 0 0 1 79.80 144.84 L76.71 148.03 A40 40 0 0 1 51.12 160.07 L53.00 184.00 L76.97 185.12 A40 40 0 0 1 88.20 159.16 L91.29 155.97 A40 40 0 0 1 116.88 143.93 Z" fill="url(#orange)"/>
+</svg>

@@ -1,0 +1,2 @@
+// The exe's icon (Explorer, taskbar, Start menu shortcut, installer): assets/branding/dalker.ico.
+1 ICON "../../assets/branding/dalker.ico"

@@ -1,0 +1,26 @@
+#!/bin/sh
+set -e
+systemctl daemon-reload >/dev/null 2>&1 || true
+# Undo the GNOME extension default.
+if [ "$1" = remove ] || [ "$1" = purge ]; then
+    rm -f /etc/dconf/db/dalker.d/10-dalker
+    rmdir /etc/dconf/db/dalker.d 2>/dev/null || true
+    if [ -f /etc/dconf/profile/user ]; then
+        sed -i '/^system-db:dalker$/d' /etc/dconf/profile/user
+    fi
+    command -v dconf >/dev/null 2>&1 && dconf update >/dev/null 2>&1 || true
+fi
+# Undo our GDM change (kept as a backup by postinst).
+if [ "$1" = remove ] || [ "$1" = purge ]; then
+    if [ -f /etc/gdm3/custom.conf.dalker-bak ]; then
+        mv -f /etc/gdm3/custom.conf.dalker-bak /etc/gdm3/custom.conf
+    fi
+fi
+if [ "$1" = purge ]; then
+    rm -rf /etc/dalker
+    if [ -e /usr/share/debconf/confmodule ]; then
+        . /usr/share/debconf/confmodule
+        db_purge || true
+    fi
+fi
+exit 0

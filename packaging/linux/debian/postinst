@@ -1,0 +1,75 @@
+#!/bin/sh
+set -e
+. /usr/share/debconf/confmodule
+
+CONF=/etc/dalker/dalker.conf
+
+case "$1" in
+configure)
+    mkdir -p /etc/dalker
+    if [ ! -f "$CONF" ]; then
+        cat > "$CONF" <<'EOF'
+# Dalker agent configuration (KEY=VALUE). Change it with the "Dalker Settings" app;
+# the running agent picks up web/MCP switches, ports, the password and MCP tokens by itself.
+# Other keys need: sudo systemctl restart dalker
+DALKER_BIND=0.0.0.0:8742
+# Single UDP port for WebRTC media: open this in your firewall.
+DALKER_UDP_PORT=8443
+EOF
+    fi
+    chmod 600 "$CONF"
+    chown root:root "$CONF"
+
+    # No password is asked for here: it is chosen in the "Dalker Settings" app. Older
+    # versions asked through debconf; forget that question.
+    db_unregister dalker/password >/dev/null 2>&1 || true
+
+    db_get dalker/disable_wayland || true
+    GDM=/etc/gdm3/custom.conf
+    if [ "$RET" = true ] && [ -f "$GDM" ]; then
+        [ -f "$GDM.dalker-bak" ] || cp -p "$GDM" "$GDM.dalker-bak"
+        if grep -qE '^[#[:space:]]*WaylandEnable=' "$GDM"; then
+            sed -i -E 's/^[#[:space:]]*WaylandEnable=.*/WaylandEnable=false/' "$GDM"
+        else
+            sed -i '/^\[daemon\]/a WaylandEnable=false' "$GDM"
+        fi
+        echo "GDM now uses Xorg (WaylandEnable=false). Reboot for the login screen to use it."
+    fi
+
+
+    # GNOME: enable the border extension for everyone via a system dconf default, keeping
+    # the stock extensions (the schema default list + ours). Loaded at the next login.
+    EXT=dalker-border@ivanmakhnyk.github.io
+    if [ -d "/usr/share/gnome-shell/extensions/$EXT" ] && command -v gsettings >/dev/null 2>&1 && command -v dconf >/dev/null 2>&1; then
+        DEFAULT=$(GSETTINGS_BACKEND=memory gsettings get org.gnome.shell enabled-extensions 2>/dev/null | sed 's/^@as //')
+        [ -n "$DEFAULT" ] || DEFAULT='[]'
+        case "$DEFAULT" in
+            *"$EXT"*) NEW=$DEFAULT ;;
+            *) NEW=$(printf '%s' "$DEFAULT" | sed "s/\]\$/, '$EXT']/; s/^\[, /[/") ;;
+        esac
+        mkdir -p /etc/dconf/profile /etc/dconf/db/dalker.d
+        PROFILE=/etc/dconf/profile/user
+        if [ -f "$PROFILE" ]; then
+            grep -q 'system-db:dalker' "$PROFILE" || echo 'system-db:dalker' >> "$PROFILE"
+        else
+            printf 'user-db:user\nsystem-db:dalker\n' > "$PROFILE"
+        fi
+        printf '[org/gnome/shell]\nenabled-extensions=%s\n' "$NEW" > /etc/dconf/db/dalker.d/10-dalker
+        dconf update >/dev/null 2>&1 || true
+        echo "GNOME: the Dalker border extension is enabled; it loads at the next login (log out and back in, or reboot)."
+    fi
+
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable dalker.service >/dev/null 2>&1 || true
+    if grep -q '^DALKER_PASSWORD_HASH=' "$CONF"; then
+        systemctl restart dalker.service >/dev/null 2>&1 || true
+        PORT=$(sed -n 's/^DALKER_BIND=.*:\([0-9]*\)$/\1/p' "$CONF" | tail -n 1)
+        echo "Dalker is running: http://<this-host>:${PORT:-8742} (sign in with the access password)"
+    else
+        echo "Dalker is installed but has no password yet. Set it with the \"Dalker Settings\" app, or run:"
+        echo "    sudo dalkerd set-password"
+    fi
+    ;;
+esac
+db_stop || true
+exit 0

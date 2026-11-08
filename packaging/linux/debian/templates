@@ -1,0 +1,9 @@
+Template: dalker/disable_wayland
+Type: boolean
+Default: false
+Description: Use Xorg for the login screen and desktop sessions?
+ Dalker can only capture Xorg screens. GDM uses Wayland by default, so the
+ login screen and Wayland sessions would show up black or not at all.
+ .
+ Answering yes sets WaylandEnable=false in /etc/gdm3/custom.conf (a backup is
+ kept and restored when Dalker is removed). It takes effect after a reboot.

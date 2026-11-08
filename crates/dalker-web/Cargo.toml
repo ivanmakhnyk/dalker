@@ -1,0 +1,23 @@
+[package]
+name = "dalker-web"
+description = "Embedded HTTP server for Dalker: login (argon2), signaling endpoint, static web client."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+axum.workspace = true
+rust-embed.workspace = true
+mime_guess.workspace = true
+argon2.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

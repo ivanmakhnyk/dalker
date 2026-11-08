@@ -1,0 +1,59 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/dalker-core",
+    "crates/dalker-platform",
+    "crates/dalker-web",
+    "crates/dalker-webrtc",
+    "crates/dalker-mcp",
+    "crates/dalker-agent",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+repository = "https://github.com/ivanmakhnyk/dalker"
+rust-version = "1.89"
+
+[workspace.dependencies]
+# Internal crates
+dalker-core = { path = "crates/dalker-core" }
+dalker-platform = { path = "crates/dalker-platform" }
+dalker-web = { path = "crates/dalker-web" }
+dalker-webrtc = { path = "crates/dalker-webrtc" }
+dalker-mcp = { path = "crates/dalker-mcp" }
+
+# Async runtime & utilities
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net"] }
+bytes = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
+rand = "0.8"
+
+# Web
+axum = "0.8"
+rust-embed = "8"
+mime_guess = "2"
+argon2 = { version = "0.5", features = ["std"] }
+
+# WebRTC & media. 0.17 is the last release line with the classic async API.
+webrtc = "0.17"
+openh264 = "0.9"
+
+# Platform
+x11rb = { version = "0.13", features = ["shm", "shape"] }
+libc = "0.2"
+evdev = "0.13"
+zbus = "5"
+windows = "0.62"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

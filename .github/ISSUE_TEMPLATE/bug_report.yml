@@ -1,0 +1,74 @@
+name: Bug report
+description: Something doesn't work as expected.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. For a security problem, use
+        [private reporting](https://github.com/ivanmakhnyk/dalker/security/advisories/new) instead.
+  - type: input
+    id: version
+    attributes:
+      label: Dalker version
+      description: Shown in Dalker Settings and in the viewer's connection details, or by `dalkerd --version`.
+      placeholder: e.g. 0.2.0
+    validations:
+      required: true
+  - type: dropdown
+    id: host
+    attributes:
+      label: Host OS and session type
+      options:
+        - Windows 11
+        - Windows 10
+        - Ubuntu, GNOME on Wayland
+        - Ubuntu, GNOME on Xorg
+        - Other Linux (describe below)
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How Dalker was installed
+      options:
+        - MSI installer
+        - .deb package
+        - tar.gz / zip archive
+        - Built from source
+    validations:
+      required: true
+  - type: input
+    id: viewer
+    attributes:
+      label: Viewer
+      description: Browser and device you connect from, or the MCP client.
+      placeholder: e.g. Chrome on Windows, Safari on iPhone, Claude Desktop
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The agent's log lines around the problem. Remove passwords, tokens and cookies.
+      render: text

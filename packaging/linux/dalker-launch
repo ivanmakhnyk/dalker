@@ -1,0 +1,135 @@
+#!/bin/sh
+# Runs dalkerd where the screen is, and restarts it when that changes:
+#
+#   1. GNOME on Wayland (Ubuntu 26.04+): the agent runs AS THE LOGGED-IN USER, because
+#      the screen-cast service lives on that user's session bus. /dev/uinput is opened
+#      to that user with an ACL (for input), and the config (root-only, holds the
+#      password hash) is handed over as a copy only that user can read, refreshed when
+#      the config changes, so changes made in "Dalker Settings" apply without a restart.
+#   2. An X11 display (Xorg login screen or X11 session): the agent runs as root.
+#   3. Nothing yet (login screen on Wayland, boot in progress): the agent still runs,
+#      without a display, so the service is up and answers; it won't serve a desktop.
+
+AGENT=/usr/bin/dalkerd
+CONF=/etc/dalker/dalker.conf
+# The Wayland agent's copy of $CONF (see sync_user_conf).
+USER_CONF_DIR=/run/dalker
+USER_CONF=$USER_CONF_DIR/agent.conf
+# The Wayland agent changes MCP tokens (its web client's "AI agents" panel) through a root
+# helper listening here; the socket belongs to the desktop user alone.
+SETTINGS_SOCK=$USER_CONF_DIR/settings.sock
+
+log() { echo "dalker-launch: $*"; }
+
+# Gives user $1 a copy of $CONF that only they can read, whenever $CONF changed. Replaced in
+# one step (rename), so the agent, which follows its config file, never reads half of it.
+# The MCP tokens themselves (DALKER_MCP_SECRET_*, kept for Dalker Settings) are left out:
+# the agent only needs their hashes.
+sync_user_conf() {
+    [ -r "$CONF" ] || return 0
+    mkdir -p "$USER_CONF_DIR" && chmod 755 "$USER_CONF_DIR" || return 1
+    tmp="$USER_CONF_DIR/.agent.conf.$$"
+    (umask 077 && grep -v '^[[:space:]]*DALKER_MCP_SECRET_' "$CONF" > "$tmp")
+    if [ -f "$USER_CONF" ] && cmp -s "$tmp" "$USER_CONF" && [ "$(stat -c %U "$USER_CONF")" = "$1" ]; then
+        rm -f "$tmp"
+        return 0
+    fi
+    chown "$1" "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$USER_CONF"
+}
+
+# Prints "wayland|<user>|<uid>" for a graphical GNOME Wayland session on seat0, if any.
+find_wayland_session() {
+    loginctl list-sessions --no-legend 2>/dev/null | while read -r sid uid user seat _rest; do
+        [ "$seat" = seat0 ] || continue
+        [ "$(loginctl show-session "$sid" -p Class --value 2>/dev/null)" = user ] || continue
+        [ "$(loginctl show-session "$sid" -p Type --value 2>/dev/null)" = wayland ] || continue
+        pgrep -u "$uid" -x gnome-shell >/dev/null 2>&1 || continue
+        [ -S "/run/user/$uid/bus" ] || continue
+        echo "wayland|$user|$uid"
+        break
+    done
+}
+
+# Prints "x11|:N|<xauthority>" for an X server on screen (Xorg preferred over XWayland).
+find_x11() {
+    ps -eo args= | while read -r line; do
+        case "$line" in
+            */Xorg*|Xorg*) ;;
+            *) continue ;;
+        esac
+        disp=$(echo "$line" | tr ' ' '\n' | grep -m1 -E '^:[0-9]+$')
+        auth=$(echo "$line" | tr ' ' '\n' | grep -A1 -m1 -x -- '-auth' | tail -1)
+        [ -n "$disp" ] || continue
+        echo "x11|$disp|$auth"
+    done | head -1
+}
+
+AGENT_PID=
+HELPER_PID=
+stop_helper() {
+    [ -n "$HELPER_PID" ] && { kill "$HELPER_PID" 2>/dev/null; wait "$HELPER_PID" 2>/dev/null; }
+    HELPER_PID=
+    rm -f "$SETTINGS_SOCK"
+}
+cleanup() { [ -n "$AGENT_PID" ] && kill "$AGENT_PID" 2>/dev/null; stop_helper; exit 0; }
+trap cleanup TERM INT
+
+start_agent() {
+    target=$1
+    kind=${target%%|*}
+    rest=${target#*|}
+    case "$kind" in
+        wayland)
+            user=${rest%%|*}
+            uid=${rest#*|}
+            home=$(getent passwd "$user" | cut -d: -f6)
+            modprobe uinput 2>/dev/null
+            setfacl -m "u:$user:rw" /dev/uinput 2>/dev/null \
+                || log "WARNING: cannot give $user access to /dev/uinput (install the 'acl' package); input will be view-only"
+            log "GNOME Wayland session of $user: starting the agent as $user"
+            sync_user_conf "$user" || log "WARNING: cannot copy $CONF for $user"
+            "$AGENT" settings-helper --config "$CONF" --listen "$SETTINGS_SOCK" --owner "$user" &
+            HELPER_PID=$!
+            runuser -u "$user" -- env \
+                HOME="$home" XDG_RUNTIME_DIR="/run/user/$uid" \
+                DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+                XDG_SESSION_TYPE=wayland DALKER_CONFIG="$USER_CONF" \
+                DALKER_SETTINGS_SOCKET="$SETTINGS_SOCK" \
+                "$AGENT" &
+            ;;
+        x11)
+            display=${rest%%|*}
+            xauth=${rest#*|}
+            rm -f "$USER_CONF"
+            log "X11 display $display (auth: ${xauth:-none}): starting the agent as root"
+            DISPLAY=$display ${xauth:+XAUTHORITY=$xauth} DALKER_CONFIG=$CONF "$AGENT" &
+            ;;
+        *)
+            rm -f "$USER_CONF"
+            log "no desktop session yet; starting without a display"
+            env -u DISPLAY -u XAUTHORITY DALKER_CONFIG=$CONF "$AGENT" &
+            ;;
+    esac
+    AGENT_PID=$!
+}
+
+current=unset
+while :; do
+    found=$(find_wayland_session)
+    [ -n "$found" ] || found=$(find_x11)
+    [ -n "$found" ] || found=none
+
+    if [ "$found" != "$current" ] || { [ -n "$AGENT_PID" ] && ! kill -0 "$AGENT_PID" 2>/dev/null; }; then
+        [ -n "$AGENT_PID" ] && { kill "$AGENT_PID" 2>/dev/null; wait "$AGENT_PID" 2>/dev/null; }
+        stop_helper
+        current=$found
+        start_agent "$found"
+    fi
+    case "$current" in
+        wayland\|*)
+            u=${current#wayland|}
+            sync_user_conf "${u%%|*}"
+            ;;
+    esac
+    sleep 2
+done

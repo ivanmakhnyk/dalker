@@ -1,0 +1,52 @@
+[package]
+name = "dalker-agent"
+description = "Dalker host daemon: serves the web client and streams the desktop over WebRTC."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "dalkerd"
+path = "src/main.rs"
+
+# Windows: console front end of the GUI-subsystem dalkerd.exe, shipped as dalkerd.com so a
+# terminal waits for `dalkerd set-password` and the like (see src/console.rs).
+[[bin]]
+name = "dalkerd-console"
+path = "src/console.rs"
+
+[dependencies]
+dalker-core.workspace = true
+dalker-platform.workspace = true
+dalker-web.workspace = true
+dalker-webrtc.workspace = true
+dalker-mcp.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+axum.workspace = true
+rand.workspace = true
+
+# The host's settings window (`dalkerd settings`): web-ui/settings.html in a native web view
+# (WebView2 on Windows, WebKitGTK on Linux), served by the window's own process.
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+wry = { version = "0.57", default-features = false, features = ["os-webview"] }
+tao = { version = "0.37", default-features = false, features = ["rwh_06"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The GTK that tao draws with: raises the settings window with the launcher's activation token.
+gtk = "0.18"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+rmcp = { version = "3.5", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[build-dependencies]
+embed-resource = "3"

@@ -1,0 +1,118 @@
+name: Release
+
+# Push a tag vX.Y.Z (matching the version in Cargo.toml) to build the installers and publish a
+# GitHub Release. Run it by hand (Actions > Release > Run workflow) to build the packages as
+# workflow artifacts without publishing anything.
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # OpenH264 without its assembly encodes several times slower; fail instead (see dalker-webrtc/build.rs).
+  DALKER_REQUIRE_NASM: 1
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        name: Check tag against Cargo.toml
+        run: |
+          sh scripts/version.sh check
+          version=$(sh scripts/version.sh)
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $version (expected v$version)"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: version
+    # Oldest supported runner, so the binary links against an older glibc (control: libc6 >= 2.34).
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # New key: older caches hold an OpenH264 built without NASM.
+          key: openh264-asm
+      - run: sudo apt-get update && sudo apt-get install -y fakeroot nasm libwebkit2gtk-4.1-dev libgtk-3-dev
+      - run: cargo build --release --locked -p dalker-agent
+      - name: Package
+        run: |
+          mkdir -p dist
+          sh packaging/linux/build-deb.sh target/release/dalkerd dist
+          tar -C target/release -czf dist/dalker-agent-linux-x86_64.tar.gz dalkerd
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/*.deb
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # New key: older caches hold an OpenH264 built without NASM.
+          key: openh264-asm
+      - uses: ilammy/setup-nasm@v1
+      - name: Build (static CRT)
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release --locked -p dalker-agent --target-dir target\static
+      - name: Get WiX 3.14
+        run: |
+          $zip = "$env:RUNNER_TEMP\wix314-binaries.zip"
+          Invoke-WebRequest https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip -OutFile $zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne "6AC824E1642D6F7277D0ED7EA09411A508F6116BA6FAE0AA5F2C7DAA2FF43D31") { throw "WiX download checksum mismatch" }
+          Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP\wix"
+      - name: Package
+        run: |
+          packaging\windows\build-msi.ps1 -Exe target\static\release\dalkerd.exe -Wix "$env:RUNNER_TEMP\wix"
+          Copy-Item target\static\release\dalkerd-console.exe target\static\release\dalkerd.com
+          Compress-Archive target\static\release\dalkerd.exe, target\static\release\dalkerd.com dist\dalker-agent-windows-x86_64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/*.msi
+            dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    needs: [version, linux, windows]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          # A tag with a suffix (v1.2.0-rc.1) is published as a pre-release.
+          case "$TAG" in *-*) pre=--prerelease ;; *) pre= ;; esac
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes \
+            --title "Dalker ${{ needs.version.outputs.version }}" $pre *

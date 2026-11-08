@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+case "$1" in
+remove|upgrade|deconfigure)
+    systemctl stop dalker.service >/dev/null 2>&1 || true
+    ;;
+esac
+case "$1" in
+remove|deconfigure)
+    systemctl disable dalker.service >/dev/null 2>&1 || true
+    ;;
+esac
+exit 0

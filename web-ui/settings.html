@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dalker Settings</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="settings.css">
+</head>
+<!-- One page for the host's settings window (Windows and Ubuntu) and the web client's
+     "AI agents" panel. What a visitor may change comes from the API (`access`). -->
+<body>
+  <div class="backdrop" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="18 41 183 178"><defs><linearGradient id="brand-mark-orange" gradientUnits="userSpaceOnUse" x1="30" y1="40" x2="190" y2="210"><stop offset="0" stop-color="#f6873a"/><stop offset="1" stop-color="#e2561f"/></linearGradient><mask id="brand-mark-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="240" height="240"><rect width="240" height="240" fill="#fff"/><path d="M91 120 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M29 184 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M115.00 120.00 L91.03 118.88 A40 40 0 0 1 79.80 144.84 L76.71 148.03 A40 40 0 0 1 51.12 160.07 L53.00 184.00 L76.97 185.12 A40 40 0 0 1 88.20 159.16 L91.29 155.97 A40 40 0 0 1 116.88 143.93 Z" stroke="#000" stroke-width="20" stroke-linejoin="round"/></mask></defs><g fill="#1d1f24" stroke="#1d1f24" stroke-linejoin="round"><path d="M60 176V64h62a56 56 0 0 1 0 112z" stroke-width="44"/><path d="M91 120 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M29 184 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M115.00 120.00 L91.03 118.88 A40 40 0 0 1 79.80 144.84 L76.71 148.03 A40 40 0 0 1 51.12 160.07 L53.00 184.00 L76.97 185.12 A40 40 0 0 1 88.20 159.16 L91.29 155.97 A40 40 0 0 1 116.88 143.93 Z" stroke-width="20"/></g><path d="M60 176V64h62a56 56 0 0 1 0 112z" fill="none" stroke="url(#brand-mark-orange)" stroke-width="24" stroke-linejoin="round" mask="url(#brand-mark-cut)"/><path d="M91 120 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M29 184 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M115.00 120.00 L91.03 118.88 A40 40 0 0 1 79.80 144.84 L76.71 148.03 A40 40 0 0 1 51.12 160.07 L53.00 184.00 L76.97 185.12 A40 40 0 0 1 88.20 159.16 L91.29 155.97 A40 40 0 0 1 116.88 143.93 Z" fill="url(#brand-mark-orange)"/></svg>
+      </span>
+      <span class="brand-name">Dalker Settings</span>
+      <span class="brand-version" id="version" hidden></span>
+      <span class="tag tag-green" id="access-tag" hidden>
+        <svg viewBox="0 0 24 24"><path d="M12 2 4 5v6c0 5 3.4 9.3 8 11 4.6-1.7 8-6 8-11V5z"/></svg>
+        <span>Admin</span>
+      </span>
+    </div>
+    <div class="sync-pill" id="sync-pill">
+      <span class="dot"></span><span id="sync-text">CONNECTING</span>
+    </div>
+  </header>
+
+  <!-- Tabs (host only; the web client shows the MCP tab alone). -->
+  <nav class="tabs" id="tabs" role="tablist" aria-label="Settings" hidden>
+    <button class="tab" role="tab" id="tab-web" data-tab="web" aria-controls="card-web" aria-selected="true">
+      <svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+      <span>Web Remote Access</span>
+      <span class="tab-dot dot" id="tab-web-dot"></span>
+    </button>
+    <button class="tab" role="tab" id="tab-mcp" data-tab="mcp" aria-controls="card-mcp" aria-selected="false">
+      <svg viewBox="0 0 24 24"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 4v4M9 13h.01M15 13h.01M9 17h6M2 13v2M22 13v2"/></svg>
+      <span>AI Agents (MCP)</span>
+      <span class="tab-dot dot" id="tab-mcp-dot"></span>
+    </button>
+  </nav>
+
+  <main id="main">
+    <div class="banner banner-red" id="blocked" hidden></div>
+
+    <!-- Web remote access (host only) -->
+    <section class="card" id="card-web" hidden>
+      <div class="card-head">
+        <div class="card-title">
+          <div class="title-row">
+            <span class="card-icon green">
+              <svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+            </span>
+            <h2>Web Remote Access</h2>
+            <span class="tag tag-green">CORE SERVICE</span>
+          </div>
+          <p class="sub">View and control this computer from a web browser over WebRTC.</p>
+        </div>
+        <label class="switch-box">
+          <span>Allow browser remote access</span>
+          <input type="checkbox" id="web-enabled" class="switch">
+        </label>
+      </div>
+
+      <div class="banner banner-amber">
+        <svg viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+        <p>When disabled, the browser server stops and everyone watching is disconnected at once.</p>
+      </div>
+
+      <div class="grid">
+        <div class="col col-5">
+          <div class="field-head">
+            <label class="label" for="web-port">HTTP Port</label>
+            <span class="hint-mono">Default: 8742</span>
+          </div>
+          <div class="input-wrap">
+            <input id="web-port" class="input mono" inputmode="numeric" maxlength="5" autocomplete="off" spellcheck="false">
+            <span class="chip-in green">TCP</span>
+          </div>
+          <p class="field-error" id="web-port-error"></p>
+          <div class="row-end">
+            <span class="hint" id="web-url"></span>
+            <button class="btn-primary" id="web-port-apply" disabled>
+              <svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span>Apply</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="col col-7">
+          <div class="field-head">
+            <span class="label">Access Password</span>
+            <span class="badge" id="pw-badge"></span>
+          </div>
+          <div class="pw-grid">
+            <div>
+              <label class="label-sm" for="pw-new">New password</label>
+              <div class="input-wrap">
+                <input id="pw-new" type="password" class="input mono pad-eye" placeholder="••••••••••••" autocomplete="new-password">
+                <button class="eye" type="button" data-for="pw-new" aria-label="Show password" title="Show password">
+                  <svg class="open" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+                  <svg class="closed" viewBox="0 0 24 24"><path d="M9.9 4.2A10.8 10.8 0 0 1 12 4c6.4 0 10 8 10 8a18 18 0 0 1-3.2 4.3M6.6 6.6A17.6 17.6 0 0 0 2 12s3.6 8 10 8a10 10 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/></svg>
+                </button>
+              </div>
+            </div>
+            <div>
+              <label class="label-sm" for="pw-repeat">Repeat password</label>
+              <div class="input-wrap">
+                <input id="pw-repeat" type="password" class="input mono pad-eye" placeholder="••••••••••••" autocomplete="new-password">
+                <button class="eye" type="button" data-for="pw-repeat" aria-label="Show password" title="Show password">
+                  <svg class="open" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+                  <svg class="closed" viewBox="0 0 24 24"><path d="M9.9 4.2A10.8 10.8 0 0 1 12 4c6.4 0 10 8 10 8a18 18 0 0 1-3.2 4.3M6.6 6.6A17.6 17.6 0 0 0 2 12s3.6 8 10 8a10 10 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+          <p class="field-error" id="pw-error"></p>
+          <div class="row-end">
+            <p class="hint with-icon">
+              <svg viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+              <span id="pw-hint">At least 8 characters. Changing it signs out everyone who is connected.</span>
+            </p>
+            <button class="btn-primary" id="pw-apply" disabled>
+              <svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span>Apply</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AI agents (MCP): the host and the web client -->
+    <section class="card" id="card-mcp" hidden>
+      <div class="card-head">
+        <div class="card-title">
+          <div class="title-row">
+            <span class="card-icon indigo">
+              <svg viewBox="0 0 24 24"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 4v4M9 13h.01M15 13h.01M9 17h6M2 13v2M22 13v2"/></svg>
+            </span>
+            <h2>AI Agents (MCP)</h2>
+            <span class="brand-version" id="mcp-version" hidden></span>
+            <span class="tag tag-indigo">MODEL CONTEXT PROTOCOL</span>
+          </div>
+          <p class="sub">Let AI assistants such as Claude, Cursor or LM Studio see the screen, use the mouse and keyboard, and share the clipboard.</p>
+        </div>
+        <label class="switch-box" id="mcp-switch-box">
+          <span>Enable MCP server</span>
+          <input type="checkbox" id="mcp-enabled" class="switch">
+        </label>
+      </div>
+
+      <div class="grid">
+        <div class="col col-5" id="mcp-port-col">
+          <div class="field-head">
+            <label class="label" for="mcp-port">MCP Port</label>
+            <span class="hint-mono" id="mcp-port-default">Default: 8743</span>
+          </div>
+          <div class="input-wrap">
+            <input id="mcp-port" class="input mono indigo-focus" inputmode="numeric" maxlength="5" autocomplete="off" spellcheck="false">
+            <span class="chip-in indigo">MCP / JSON-RPC</span>
+          </div>
+          <p class="field-error" id="mcp-port-error"></p>
+          <div class="row-end">
+            <span></span>
+            <button class="btn-primary" id="mcp-port-apply" disabled>
+              <svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span>Apply</span>
+            </button>
+          </div>
+        </div>
+        <div class="col col-7">
+          <div class="field-head"><span class="label">Address for AI clients</span></div>
+          <div class="endpoint">
+            <span class="dot" id="mcp-dot"></span>
+            <code id="mcp-url"></code>
+            <button class="icon-btn" id="mcp-url-copy" title="Copy the address" aria-label="Copy the address">
+              <svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+            </button>
+          </div>
+          <p class="hint" id="mcp-reach"></p>
+          <label class="switch-box switch-inline" id="mcp-remote-box">
+            <span>Allow other computers</span>
+            <input type="checkbox" id="mcp-remote" class="switch">
+          </label>
+        </div>
+      </div>
+
+      <div class="tokens">
+        <div class="tokens-head">
+          <div class="tokens-title">
+            <span class="label">Access Tokens</span>
+            <span class="saves-now"><span class="dot on"></span>Saved as soon as you create or change them</span>
+          </div>
+          <button class="btn-primary glow" id="token-new">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>
+            <span>Generate New Token</span>
+          </button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Token Key</th>
+                <th class="c">Remote Control</th>
+                <th class="c">Clipboard</th>
+                <th class="r">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="token-rows"></tbody>
+          </table>
+          <div class="empty" id="token-empty" hidden>
+            No tokens yet. Generate one for each AI client that should connect.
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footbar" id="footer">
+    <div class="foot-left">
+      <span class="svc-pill" id="pill-web" title="Web server"><span class="dot"></span>Web: <strong>–</strong></span>
+      <span class="svc-pill" id="pill-mcp" title="MCP server"><span class="dot"></span>MCP: <strong>–</strong></span>
+      <div class="foot-msg">
+        <span id="message" class="msg"></span>
+        <span id="file" class="file"></span>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Dialogs -->
+  <div class="modal-back" id="modal-back" hidden>
+    <div class="modal" id="dlg-new" role="dialog" aria-modal="true" aria-labelledby="dlg-new-title" hidden>
+      <h3 id="dlg-new-title">Generate a new token</h3>
+      <label class="label-sm" for="new-name">Name of the AI client that will use it</label>
+      <input id="new-name" class="input" maxlength="64" placeholder="e.g. Claude Desktop" autocomplete="off">
+      <label class="check">
+        <input type="checkbox" id="new-remote" checked>
+        <span><strong>Allow screen capture &amp; remote control</strong><small>See the screen, move and click the mouse, type.</small></span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="new-clip">
+        <span><strong>Allow clipboard access</strong><small>Read and write this computer's clipboard.</small></span>
+      </label>
+      <p class="field-error" id="new-error"></p>
+      <div class="modal-actions">
+        <button class="btn-ghost" data-close>Cancel</button>
+        <button class="btn-primary" id="new-go">Generate</button>
+      </div>
+    </div>
+
+    <div class="modal" id="dlg-token" role="dialog" aria-modal="true" aria-labelledby="dlg-token-title" hidden>
+      <h3 id="dlg-token-title">Token</h3>
+      <p class="sub">Give it to the AI client as a bearer token, or copy a ready configuration. You can copy it again later from the token list.</p>
+      <div class="secret"><code id="token-value"></code></div>
+      <div class="modal-actions spread">
+        <div class="row">
+          <button class="btn-ghost" id="token-copy">
+            <svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+            <span>Copy token</span>
+          </button>
+          <button class="btn-ghost" id="token-config">
+            <svg viewBox="0 0 24 24"><path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5a2 2 0 0 0 2 2h1M16 3h1a2 2 0 0 1 2 2v5a2 2 0 0 0 2 2 2 2 0 0 0-2 2v5a2 2 0 0 1-2 2h-1"/></svg>
+            <span>MCP config…</span>
+          </button>
+        </div>
+        <button class="btn-primary" data-close>Done</button>
+      </div>
+    </div>
+
+    <div class="modal wide" id="dlg-config" role="dialog" aria-modal="true" aria-labelledby="dlg-config-title" hidden>
+      <h3 id="dlg-config-title">MCP configuration</h3>
+      <div class="seg" id="config-clients" role="radiogroup" aria-label="Client"></div>
+      <p class="hint" id="config-where"></p>
+      <pre class="json" id="config-json"></pre>
+      <p class="banner-inline amber" id="config-off" hidden>The MCP server is off: turn it on before connecting.</p>
+      <div class="modal-actions">
+        <button class="btn-ghost" data-close>Close</button>
+        <button class="btn-primary" id="config-copy">
+          <svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+          <span>Copy to clipboard</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="modal" id="dlg-revoke" role="dialog" aria-modal="true" aria-labelledby="dlg-revoke-title" hidden>
+      <h3 id="dlg-revoke-title">Revoke token?</h3>
+      <p class="sub">AI agents using it are disconnected at once, and it can't be used again.</p>
+      <div class="modal-actions">
+        <button class="btn-ghost" data-close>Cancel</button>
+        <button class="btn-danger" id="revoke-go">Revoke</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="settings.js"></script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+/target
+*.qcow2
+*.fd
+# Local settings that may hold credentials - never commit.
+dev.env
+/vmtest
+/dist

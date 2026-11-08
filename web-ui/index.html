@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dalker</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="stage" tabindex="0" aria-label="Remote screen. Click to control.">
+    <div id="viewport">
+      <video id="screen" autoplay playsinline muted disablepictureinpicture></video>
+    </div>
+    <div id="locked" hidden role="status">
+      <strong>The host is locked.</strong>
+      Click here, press a key or use <em>Ctrl+Alt+Del</em> to show the sign-in screen.
+    </div>
+    <div id="hint" hidden>Click the screen to send keyboard input<span id="hint-esc" hidden> · Esc twice to leave fullscreen</span></div>
+
+    <!-- Floating toolbar. It lives inside #stage so it stays visible in fullscreen. -->
+    <div id="toolbar" role="toolbar" aria-label="Dalker session">
+      <div class="bar">
+        <div class="group">
+          <span id="grip" class="grip" title="Drag to move the toolbar · double-click to put it back">
+            <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="8" cy="6" r="1.75"/><circle cx="16" cy="6" r="1.75"/><circle cx="8" cy="12" r="1.75"/><circle cx="16" cy="12" r="1.75"/><circle cx="8" cy="18" r="1.75"/><circle cx="16" cy="18" r="1.75"/></svg>
+          </span>
+          <button id="btn-status" class="pill idle" aria-haspopup="true" aria-expanded="false" title="Connection details">
+            <svg class="status-mark" viewBox="29 52 161 156" fill="currentColor" aria-hidden="true"><mask id="status-mark-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="240" height="240"><rect width="240" height="240" fill="#fff"/><path d="M91 120 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M29 184 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M115.00 120.00 L91.03 118.88 A40 40 0 0 1 79.80 144.84 L76.71 148.03 A40 40 0 0 1 51.12 160.07 L53.00 184.00 L76.97 185.12 A40 40 0 0 1 88.20 159.16 L91.29 155.97 A40 40 0 0 1 116.88 143.93 Z" stroke="#000" stroke-width="20" stroke-linejoin="round"/></mask><path d="M60 176V64h62a56 56 0 0 1 0 112z" fill="none" stroke="currentColor" stroke-width="24" stroke-linejoin="round" mask="url(#status-mark-cut)"/><path d="M91 120 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M29 184 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M115.00 120.00 L91.03 118.88 A40 40 0 0 1 79.80 144.84 L76.71 148.03 A40 40 0 0 1 51.12 160.07 L53.00 184.00 L76.97 185.12 A40 40 0 0 1 88.20 159.16 L91.29 155.97 A40 40 0 0 1 116.88 143.93 Z" fill="currentColor"/></svg>
+            <span id="status">disconnected</span>
+            <svg class="chev" viewBox="0 0 20 20" fill="currentColor"><path d="M5.3 7.3a1 1 0 0 1 1.4 0L10 10.6l3.3-3.3a1 1 0 1 1 1.4 1.4l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 0 1 0-1.4z"/></svg>
+          </button>
+        </div>
+
+        <div class="group" id="group-keys" hidden>
+          <button id="btn-clip" class="icon clip off session-only" aria-haspopup="true" aria-expanded="false" title="Clipboard">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
+            <span class="sync-dot"></span>
+          </button>
+          <button id="btn-files" class="icon files session-only" hidden aria-haspopup="true" aria-expanded="false" title="File transfers">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            <span class="act-dot"></span>
+          </button>
+          <button id="btn-keys" class="icon keys session-only" aria-haspopup="true" aria-expanded="false" title="Send keys and shortcuts to the host" aria-label="Send keys and shortcuts to the host">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path stroke-width="2.4" d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M18 13h.01M10 13h4M7 16h10"/></svg>
+          </button>
+          <button id="btn-ai" class="icon ai" hidden title="AI agents (MCP tokens)" aria-label="AI agents">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 4v4M9 13h.01M15 13h.01M9 17h6M2 13v2M22 13v2"/></svg>
+          </button>
+          <button id="btn-settings" class="icon gear session-only" aria-haspopup="true" aria-expanded="false" title="Settings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
+        </div>
+
+        <div class="group">
+          <button id="btn-fullscreen" class="icon" hidden title="Fullscreen (keyboard goes to the remote host)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+          </button>
+          <button id="btn-collapse" class="icon" title="Collapse the toolbar">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m18 15-6-6-6 6"/></svg>
+          </button>
+          <button id="btn-connect" class="connect" hidden title="Connect to the host">Connect</button>
+          <button id="btn-disconnect" class="danger" hidden title="Disconnect from the host">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Connection details, anchored under the status pill. -->
+      <div id="pop-status" class="pop" hidden>
+        <div class="pop-head">
+          <svg class="status-mark" viewBox="29 52 161 156" fill="currentColor" aria-hidden="true"><mask id="pop-mark-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="240" height="240"><rect width="240" height="240" fill="#fff"/><path d="M91 120 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M29 184 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M115.00 120.00 L91.03 118.88 A40 40 0 0 1 79.80 144.84 L76.71 148.03 A40 40 0 0 1 51.12 160.07 L53.00 184.00 L76.97 185.12 A40 40 0 0 1 88.20 159.16 L91.29 155.97 A40 40 0 0 1 116.88 143.93 Z" stroke="#000" stroke-width="20" stroke-linejoin="round"/></mask><path d="M60 176V64h62a56 56 0 0 1 0 112z" fill="none" stroke="currentColor" stroke-width="24" stroke-linejoin="round" mask="url(#pop-mark-cut)"/><path d="M91 120 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M29 184 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M115.00 120.00 L91.03 118.88 A40 40 0 0 1 79.80 144.84 L76.71 148.03 A40 40 0 0 1 51.12 160.07 L53.00 184.00 L76.97 185.12 A40 40 0 0 1 88.20 159.16 L91.29 155.97 A40 40 0 0 1 116.88 143.93 Z" fill="currentColor"/></svg>
+          <span class="pop-title" id="pop-host">Dalker</span>
+          <span id="quality" class="badge" hidden></span>
+        </div>
+        <dl class="stats">
+          <dt>System</dt><dd id="s-system">–</dd>
+          <dt>Version</dt><dd id="s-version">–</dd>
+          <dt>Status</dt><dd id="s-status">–</dd>
+          <dt>Resolution</dt><dd id="s-res">–</dd>
+          <dt>Frame rate</dt><dd id="s-fps">–</dd>
+          <dt>Bitrate</dt><dd id="s-bitrate">–</dd>
+          <dt>Round trip</dt><dd id="s-rtt">–</dd>
+          <dt>Packet loss</dt><dd id="s-loss">–</dd>
+          <dt>Codec</dt><dd id="s-codec">–</dd>
+          <dt>Route</dt><dd id="s-route">–</dd>
+        </dl>
+      </div>
+
+      <!-- Clipboard sync with the host (text). -->
+      <div id="pop-clip" class="pop" hidden>
+        <div class="pop-head">
+          <span class="pop-title">Clipboard</span>
+          <span id="clip-badge" class="badge"></span>
+        </div>
+        <p id="clip-note" class="note"></p>
+        <label class="toggle"><input type="checkbox" id="clip-auto" checked> Sync automatically</label>
+        <textarea id="clip-text" rows="4" spellcheck="false"
+          placeholder="Text the host copies shows up here. Type or paste text here to send it to the host."></textarea>
+        <div class="clip-actions">
+          <button id="clip-read" hidden title="Read this computer's clipboard and send it to the host">Paste from this computer</button>
+          <button id="clip-copy" title="Copy this text to this computer's clipboard">Copy here</button>
+          <button id="clip-send" title="Put this text on the host's clipboard">Send to host</button>
+        </div>
+      </div>
+
+      <!-- File transfers over the WebRTC connection: uploads land in the host user's
+           Downloads folder, downloads come from their home folder. -->
+      <div id="pop-files" class="pop files" hidden>
+        <div class="pop-head">
+          <span class="pop-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          </span>
+          <span class="pop-titles">
+            <span class="pop-title">File Transfers</span>
+            <span class="pop-sub">Over the WebRTC connection</span>
+          </span>
+          <span id="files-badge" class="badge xfer" hidden></span>
+        </div>
+        <p id="files-note" class="note" hidden></p>
+        <div id="xfer-list" class="xfer-list"></div>
+        <div class="xfer-tools">
+          <button id="xfer-clear" class="link" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+            <span>Clear finished</span>
+          </button>
+        </div>
+        <label id="dropzone" class="dropzone" tabindex="0">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          <span>Drag &amp; drop files or click to browse</span>
+          <small id="drop-dest">They go to the Downloads folder on the host</small>
+          <input type="file" id="file-input" multiple hidden>
+        </label>
+        <div class="fb-bar">
+          <button id="fb-toggle" class="link" title="Browse the host's home folder and download files">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <span id="fb-toggle-label">Get files from host</span>
+          </button>
+        </div>
+        <div id="fb" class="fb" hidden>
+          <div class="fb-head">
+            <button id="fb-up" class="fb-btn" title="Up one folder" aria-label="Up one folder">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m18 15-6-6-6 6"/></svg>
+            </button>
+            <nav id="fb-crumbs" class="crumbs" aria-label="Folder"></nav>
+          </div>
+          <div id="fb-list" class="fb-list" role="list"></div>
+          <label class="toggle"><input type="checkbox" id="fb-hidden"> Show hidden files</label>
+        </div>
+      </div>
+
+      <!-- Viewer settings. Stream settings are asked of the host for this viewer only and
+           capped at the host's own limits; the rest only change this browser. -->
+      <div id="pop-settings" class="pop settings" hidden>
+        <div class="pop-head">
+          <span class="pop-title">Settings</span>
+          <span id="set-version" class="pop-version"></span>
+          <span id="set-badge" class="badge off" hidden></span>
+        </div>
+        <section class="set-sec">
+          <h3>Stream</h3>
+          <div id="set-stream">
+            <div class="set-row">
+              <span class="set-label">Frame rate <small id="set-fps-max"></small></span>
+              <div class="seg" id="set-fps" role="radiogroup" aria-label="Frame rate"></div>
+            </div>
+            <div class="set-row">
+              <span class="set-label">Bandwidth limit, Mbit/s <small>lower drops frames in motion</small></span>
+              <div class="seg" id="set-bw" role="radiogroup" aria-label="Bandwidth limit"></div>
+            </div>
+            <div class="set-row">
+              <span class="set-label">Stream resolution</span>
+              <div class="seg" id="set-scale" role="radiogroup" aria-label="Stream resolution"></div>
+            </div>
+          </div>
+          <p id="set-old" class="note" hidden>This host doesn't support stream settings.</p>
+          <p id="set-applied" class="note"></p>
+        </section>
+        <section class="set-sec">
+          <h3>Display</h3>
+          <div class="set-row">
+            <span class="set-label">View <small>this browser only</small></span>
+            <div class="seg" id="set-view" role="radiogroup" aria-label="View"></div>
+          </div>
+        </section>
+        <section class="set-sec">
+          <h3>Keyboard</h3>
+          <div class="set-row">
+            <span class="set-label">Keyboard mode <small>host layout or this computer's</small></span>
+            <div class="seg" id="set-kbd" role="radiogroup" aria-label="Keyboard mode"></div>
+          </div>
+          <label class="toggle"><input type="checkbox" id="set-clip"> Sync clipboard automatically</label>
+        </section>
+        <section class="set-sec">
+          <h3>Mouse</h3>
+          <label class="toggle" title="Turns the scroll direction around, like natural scrolling on a touchpad"><input type="checkbox" id="set-wheel"> Natural scrolling (invert wheel)</label>
+          <label class="toggle" title="While connected and idle, presses F15 on the host now and then so it doesn't lock or sleep"><input type="checkbox" id="set-awake"> Prevent host sleep (keep-alive jiggler)</label>
+          <div class="set-row" id="set-awake-row">
+            <span class="set-label">Every <small>while you're idle</small></span>
+            <div class="seg" id="set-awake-sec" role="radiogroup" aria-label="Keep-alive interval"></div>
+          </div>
+        </section>
+        <div class="pop-foot">
+          <button id="set-reset" class="link">Reset defaults</button>
+          <button id="set-done" class="done">Done</button>
+        </div>
+      </div>
+
+      <!-- Key combinations the browser would otherwise act on itself. -->
+      <div id="pop-keys" class="pop narrow" hidden>
+        <div class="pop-head"><span class="pop-title">Send key combinations</span></div>
+        <div class="keylist">
+          <button id="btn-cad" data-hint="Windows sign-in and lock screen" title="Send Ctrl+Alt+Del to the host (Windows sign-in and lock screen)">
+            <span>Ctrl + Alt + Del</span><kbd>Secure</kbd></button>
+          <button data-combo="MetaLeft KeyL" title="Lock the host (Win + L)"><span>Lock</span><kbd>Win + L</kbd></button>
+          <button data-combo="MetaLeft"><span>Windows / Super key</span><kbd>Win</kbd></button>
+          <button data-combo="AltLeft Tab"><span>Alt + Tab</span><kbd>Switch</kbd></button>
+          <button data-combo="ControlLeft ShiftLeft Escape"><span>Ctrl + Shift + Esc</span><kbd>Task Mgr</kbd></button>
+          <button data-combo="Escape"><span>Esc</span><kbd>Cancel</kbd></button>
+        </div>
+        <div class="keys-mode">
+          <span class="set-label">Keyboard mode</span>
+          <div class="seg" id="keys-kbd" role="radiogroup" aria-label="Keyboard mode"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="drop-overlay" hidden>
+      <div>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        <strong>Drop to send to the host</strong>
+        <span id="drop-overlay-dest">Files go to the Downloads folder</span>
+      </div>
+    </div>
+
+    <!-- AI agents: the MCP part of the host's settings page (web-ui/settings.html), shared with
+         Dalker Settings on the host. Lives inside #stage so it shows in fullscreen too. -->
+    <div id="ai-panel" hidden role="dialog" aria-modal="true" aria-label="AI agents">
+      <div class="ai-sheet">
+        <button id="ai-close" class="ai-close" title="Close" aria-label="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+        <iframe id="ai-frame" title="AI agents"></iframe>
+      </div>
+    </div>
+
+    <button id="notch" hidden title="Show the toolbar" aria-label="Show the toolbar">
+      <span class="dot"></span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+    </button>
+  </main>
+
+  <!-- Sign-in: the host's access password is the only credential (no user name). Styled like
+       the toolbar's cards. -->
+  <dialog id="login" aria-labelledby="login-title">
+    <form id="login-form" method="dialog">
+      <div class="pop-head">
+        <span class="login-mark" aria-hidden="true">
+          <svg viewBox="18 41 183 178"><defs><linearGradient id="login-mark-orange" gradientUnits="userSpaceOnUse" x1="30" y1="40" x2="190" y2="210"><stop offset="0" stop-color="#f6873a"/><stop offset="1" stop-color="#e2561f"/></linearGradient><mask id="login-mark-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="240" height="240"><rect width="240" height="240" fill="#fff"/><path d="M91 120 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M29 184 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M115.00 120.00 L91.03 118.88 A40 40 0 0 1 79.80 144.84 L76.71 148.03 A40 40 0 0 1 51.12 160.07 L53.00 184.00 L76.97 185.12 A40 40 0 0 1 88.20 159.16 L91.29 155.97 A40 40 0 0 1 116.88 143.93 Z" stroke="#000" stroke-width="20" stroke-linejoin="round"/></mask></defs><g fill="#1d1f24" stroke="#1d1f24" stroke-linejoin="round"><path d="M60 176V64h62a56 56 0 0 1 0 112z" stroke-width="44"/><path d="M91 120 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M29 184 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M115.00 120.00 L91.03 118.88 A40 40 0 0 1 79.80 144.84 L76.71 148.03 A40 40 0 0 1 51.12 160.07 L53.00 184.00 L76.97 185.12 A40 40 0 0 1 88.20 159.16 L91.29 155.97 A40 40 0 0 1 116.88 143.93 Z" stroke-width="20"/></g><path d="M60 176V64h62a56 56 0 0 1 0 112z" fill="none" stroke="url(#login-mark-orange)" stroke-width="24" stroke-linejoin="round" mask="url(#login-mark-cut)"/><path d="M91 120 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M29 184 a24 24 0 1 0 48 0 a24 24 0 1 0 -48 0 Z M115.00 120.00 L91.03 118.88 A40 40 0 0 1 79.80 144.84 L76.71 148.03 A40 40 0 0 1 51.12 160.07 L53.00 184.00 L76.97 185.12 A40 40 0 0 1 88.20 159.16 L91.29 155.97 A40 40 0 0 1 116.88 143.93 Z" fill="url(#login-mark-orange)"/></svg>
+        </span>
+        <span class="pop-titles">
+          <span class="pop-title" id="login-title">Dalker</span>
+          <span class="pop-sub">Remote desktop</span>
+        </span>
+        <span class="badge lock">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+          locked
+        </span>
+      </div>
+      <p class="note">Enter the access password set on the host in Dalker Settings.</p>
+      <!-- Lets password managers file the password under this host. -->
+      <input type="text" name="username" autocomplete="username" value="Dalker" hidden>
+      <div class="pw-field">
+        <svg class="pw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 9.8-9.8M17 6l3 3M14 9l2 2"/></svg>
+        <input id="login-password" name="password" type="password" autocomplete="current-password"
+          placeholder="Password" aria-label="Password" required autofocus>
+        <button type="button" id="login-show" class="pw-eye" title="Show password" aria-label="Show password" aria-pressed="false">
+          <svg class="eye-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+          <svg class="eye-closed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.9 4.2A10.8 10.8 0 0 1 12 4c6.4 0 10 8 10 8a18 18 0 0 1-3.2 4.3M6.6 6.6A17.6 17.6 0 0 0 2 12s3.6 8 10 8a10 10 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/></svg>
+        </button>
+      </div>
+      <p id="login-error" role="alert"></p>
+      <button type="submit" class="login-go">
+        <span>Sign in</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </button>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
