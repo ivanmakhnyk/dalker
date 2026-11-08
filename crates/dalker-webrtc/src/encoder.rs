@@ -50,7 +50,13 @@ pub fn bgra_to_i420(frame: &RawFrame, factor: usize, out: &mut I420) {
     let h = (frame.height as usize / f) & !1;
     let (cw, ch) = (w / 2, h / 2);
     if out.width != w || out.height != h {
-        *out = I420 { width: w, height: h, y: vec![0; w * h], u: vec![0; cw * ch], v: vec![0; cw * ch] };
+        *out = I420 {
+            width: w,
+            height: h,
+            y: vec![0; w * h],
+            u: vec![0; cw * ch],
+            v: vec![0; cw * ch],
+        };
     }
     let data = &frame.data[..];
     let px = |x: usize, y: usize| -> (i32, i32, i32) {
@@ -95,7 +101,14 @@ pub struct EncoderSettings {
 
 impl Default for EncoderSettings {
     fn default() -> Self {
-        Self { bitrate_bps: 6_000_000, max_fps: 30.0, max_width: 1920, keyframe_interval: 300, downscale: 1, strict_bitrate: false }
+        Self {
+            bitrate_bps: 6_000_000,
+            max_fps: 30.0,
+            max_width: 1920,
+            keyframe_interval: 300,
+            downscale: 1,
+            strict_bitrate: false,
+        }
     }
 }
 
@@ -122,7 +135,13 @@ impl H264Encoder {
             settings,
             encoder: None,
             dims: (0, 0),
-            yuv: I420 { width: 0, height: 0, y: vec![], u: vec![], v: vec![] },
+            yuv: I420 {
+                width: 0,
+                height: 0,
+                y: vec![],
+                u: vec![],
+                v: vec![],
+            },
             force_idr: true,
         }
     }
@@ -149,23 +168,37 @@ impl H264Encoder {
             .bitrate(BitRate::from_bps(self.settings.bitrate_bps))
             .max_frame_rate(FrameRate::from_hz(self.settings.max_fps))
             .skip_frames(self.settings.strict_bitrate)
-            .intra_frame_period(IntraFramePeriod::from_num_frames(self.settings.keyframe_interval))
-            .num_threads(std::thread::available_parallelism().map_or(1, |n| n.get().min(MAX_THREADS)) as u16)
+            .intra_frame_period(IntraFramePeriod::from_num_frames(
+                self.settings.keyframe_interval,
+            ))
+            .num_threads(
+                std::thread::available_parallelism().map_or(1, |n| n.get().min(MAX_THREADS)) as u16,
+            )
             .max_slice_len(MAX_SLICE_BYTES);
-        Encoder::with_api_config(OpenH264API::from_source(), config).context("create OpenH264 encoder")
+        Encoder::with_api_config(OpenH264API::from_source(), config)
+            .context("create OpenH264 encoder")
     }
 
     /// Encodes one frame into an Annex-B byte stream. Returns `(bytes, is_keyframe)`,
     /// or `None` if the encoder decided to skip the frame.
     pub fn encode(&mut self, frame: &RawFrame) -> Result<Option<(Vec<u8>, bool)>> {
-        let factor = downscaled(scale_factor(frame.width, self.settings.max_width), self.settings.downscale, frame.width);
+        let factor = downscaled(
+            scale_factor(frame.width, self.settings.max_width),
+            self.settings.downscale,
+            frame.width,
+        );
         bgra_to_i420(frame, factor, &mut self.yuv);
         let dims = (self.yuv.width, self.yuv.height);
         if dims.0 < 16 || dims.1 < 16 {
             anyhow::bail!("frame too small: {}x{}", dims.0, dims.1);
         }
         if self.encoder.is_none() || self.dims != dims {
-            tracing::info!(width = dims.0, height = dims.1, factor, "configuring H.264 encoder");
+            tracing::info!(
+                width = dims.0,
+                height = dims.1,
+                factor,
+                "configuring H.264 encoder"
+            );
             self.encoder = Some(self.make_encoder()?);
             self.dims = dims;
             self.force_idr = true;
@@ -212,7 +245,13 @@ mod tests {
 
     #[test]
     fn colour_conversion_reference_values() {
-        let mut out = I420 { width: 0, height: 0, y: vec![], u: vec![], v: vec![] };
+        let mut out = I420 {
+            width: 0,
+            height: 0,
+            y: vec![],
+            u: vec![],
+            v: vec![],
+        };
         bgra_to_i420(&solid(4, 4, [255, 255, 255, 255]), 1, &mut out);
         assert_eq!((out.y[0], out.u[0], out.v[0]), (235, 128, 128));
         bgra_to_i420(&solid(4, 4, [0, 0, 0, 255]), 1, &mut out);
@@ -230,8 +269,18 @@ mod tests {
         assert_eq!(downscaled(1, 2, 1920), 2);
         assert_eq!(downscaled(2, 2, 3840), 4);
         assert_eq!(downscaled(1, 3, 800), 2, "stops at 320 px wide");
-        assert_eq!(downscaled(2, 3, 600), 2, "never below the host's own factor");
-        let mut out = I420 { width: 0, height: 0, y: vec![], u: vec![], v: vec![] };
+        assert_eq!(
+            downscaled(2, 3, 600),
+            2,
+            "never below the host's own factor"
+        );
+        let mut out = I420 {
+            width: 0,
+            height: 0,
+            y: vec![],
+            u: vec![],
+            v: vec![],
+        };
         bgra_to_i420(&solid(1367, 769, [10, 20, 30, 255]), 2, &mut out);
         assert_eq!((out.width, out.height), (682, 384));
         assert_eq!(out.u.len(), 341 * 192);
@@ -266,7 +315,10 @@ mod tests {
             ..Default::default()
         });
         let f = cap.next_frame(Duration::from_secs(1)).unwrap().unwrap();
-        assert!(enc.encode(&f).unwrap().unwrap().1, "keyframe after a settings change");
+        assert!(
+            enc.encode(&f).unwrap().unwrap().1,
+            "keyframe after a settings change"
+        );
         assert_eq!((enc.yuv.width, enc.yuv.height), (320, 180));
     }
 }

@@ -27,13 +27,15 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, FromArgMatches};
 use dalker_core::{
-    CaptureError, Clipboard, ClipboardError, DisplayInfo, InputEvent, InputInjector, InputTracker, MockCapturer, MockClipboard,
-    MockInjector, RawFrame, ScreenCapturer, MAX_CLIPBOARD_BYTES,
+    CaptureError, Clipboard, ClipboardError, DisplayInfo, InputEvent, InputInjector, InputTracker,
+    MockCapturer, MockClipboard, MockInjector, RawFrame, ScreenCapturer, MAX_CLIPBOARD_BYTES,
 };
 use dalker_mcp::tokens::{self, TokenRecord};
 use dalker_mcp::{HostCommand, McpServer};
 use dalker_web::{Authenticator, BoxFuture, Credentials, SignalingHandler};
-use dalker_webrtc::{ClipboardState, ControlMessage, EndReason, SessionId, WebRtcConfig, WebRtcEngine};
+use dalker_webrtc::{
+    ClipboardState, ControlMessage, EndReason, SessionId, WebRtcConfig, WebRtcEngine,
+};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use cli::{CaptureMode, Cli, Command, McpTokenCommand, OnOff};
@@ -66,7 +68,10 @@ fn main() -> Result<()> {
     if service && std::env::var_os(LOG_DIR_ENV).is_none() {
         // SYSTEM's own profile is a poor place for logs; the agent inherits this too.
         let base = std::env::var_os("ProgramData").unwrap_or_else(|| r"C:\ProgramData".into());
-        std::env::set_var(LOG_DIR_ENV, std::path::Path::new(&base).join("Dalker").join("logs"));
+        std::env::set_var(
+            LOG_DIR_ENV,
+            std::path::Path::new(&base).join("Dalker").join("logs"),
+        );
     }
     init_logging(if service { "service.log" } else { "dalker.log" });
 
@@ -89,26 +94,44 @@ fn main() -> Result<()> {
             None => cli::read_password_from_stdin("set-password")?,
         };
         // The same rule as the settings window, whichever way the password came in.
-        settings::check_new_password(&password, &password, settings::MIN_PASSWORD_LEN).map_err(anyhow::Error::msg)?;
+        settings::check_new_password(&password, &password, settings::MIN_PASSWORD_LEN)
+            .map_err(anyhow::Error::msg)?;
         let path = config.clone().unwrap_or_else(|| config_path.clone());
-        cli::write_config_value(&path, "DALKER_PASSWORD_HASH", &dalker_web::hash_password(&password)?)?;
+        cli::write_config_value(
+            &path,
+            "DALKER_PASSWORD_HASH",
+            &dalker_web::hash_password(&password)?,
+        )?;
         println!("password updated in {}", path.display());
         return Ok(());
     }
 
-    if let Some(Command::Settings { config, elevated, no_window }) = &cli.command {
+    if let Some(Command::Settings {
+        config,
+        elevated,
+        no_window,
+    }) = &cli.command
+    {
         let path = config.clone().unwrap_or_else(|| config_path.clone());
         return settings::run(&path, *elevated, *no_window);
     }
 
-    if let Some(Command::SettingsHelper { config, listen, owner }) = &cli.command {
+    if let Some(Command::SettingsHelper {
+        config,
+        listen,
+        owner,
+    }) = &cli.command
+    {
         let path = config.clone().unwrap_or_else(|| config_path.clone());
         #[cfg(unix)]
         if let (Some(socket), Some(owner)) = (listen, owner) {
             return settings::store::run_socket_helper(&path, socket, owner);
         }
         #[cfg(not(unix))]
-        anyhow::ensure!(listen.is_none() && owner.is_none(), "--listen is for Linux only");
+        anyhow::ensure!(
+            listen.is_none() && owner.is_none(),
+            "--listen is for Linux only"
+        );
         return settings::store::run_helper(&path);
     }
 
@@ -116,7 +139,13 @@ fn main() -> Result<()> {
         return run_mcp_token(action, &config_path);
     }
 
-    if let Some(Command::SetConfig { key, value, config, if_missing }) = &cli.command {
+    if let Some(Command::SetConfig {
+        key,
+        value,
+        config,
+        if_missing,
+    }) = &cli.command
+    {
         anyhow::ensure!(key.starts_with("DALKER_"), "only DALKER_* keys can be set");
         let path = config.clone().unwrap_or_else(|| config_path.clone());
         if *if_missing {
@@ -217,10 +246,17 @@ fn init_logging(file_name: &str) {
     let file = local_data_dir().and_then(|dir| {
         std::fs::create_dir_all(&dir).ok()?;
         let path = dir.join(file_name);
-        if std::fs::metadata(&path).map(|m| m.len() > 5 * 1024 * 1024).unwrap_or(false) {
+        if std::fs::metadata(&path)
+            .map(|m| m.len() > 5 * 1024 * 1024)
+            .unwrap_or(false)
+        {
             let _ = std::fs::rename(&path, dir.join(format!("{file_name}.old")));
         }
-        std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .ok()
     });
     if let Some(file) = file {
         tracing_subscriber::fmt()
@@ -255,8 +291,16 @@ fn start_tray(
         // Wherever the web server is now (the settings window can move it or turn it off).
         open_url: Box::new(move || {
             let addr = (*web.web.lock().unwrap())?;
-            let host = if addr.ip().is_unspecified() { "127.0.0.1".to_owned() } else { addr.ip().to_string() };
-            let host = if addr.is_ipv6() && !addr.ip().is_unspecified() { format!("[{host}]") } else { host };
+            let host = if addr.ip().is_unspecified() {
+                "127.0.0.1".to_owned()
+            } else {
+                addr.ip().to_string()
+            };
+            let host = if addr.is_ipv6() && !addr.ip().is_unspecified() {
+                format!("[{host}]")
+            } else {
+                host
+            };
             Some(format!("http://{host}:{}/", addr.port()))
         }),
         on_settings: Box::new(|| {
@@ -303,28 +347,36 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
     };
     // The password can only be changed on the host (settings window, `dalkerd set-password`),
     // which rewrites the config file; pick that up without a restart.
-    let auth = Arc::new(Authenticator::new(
-        Credentials { password_hash },
-        Duration::from_secs(cli.session_hours * 3600),
-    )?
-    .with_cookie_secure(cli.cookie_secure));
+    let auth = Arc::new(
+        Authenticator::new(
+            Credentials { password_hash },
+            Duration::from_secs(cli.session_hours * 3600),
+        )?
+        .with_cookie_secure(cli.cookie_secure),
+    );
     // Shown to viewers; the probe below names the real backend (GNOME screen cast or X11).
     let mut capture_name = match cli.capture {
         CaptureMode::Mock => "mock",
         CaptureMode::Native if cfg!(windows) => "dxgi",
         // Under Wayland only the GNOME screen cast can serve (it may not be up yet at start).
-        CaptureMode::Native if std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t == "wayland") => "gnome-screencast",
+        CaptureMode::Native if std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t == "wayland") => {
+            "gnome-screencast"
+        }
         CaptureMode::Native => "x11",
     }
     .to_string();
     // Backends. Mock capture pairs with a mock injector so input is visible on screen.
-    let (capture_factory, injector): (CaptureFactory, Option<Box<dyn InputInjector>>) = match cli.capture {
+    let (capture_factory, injector): (CaptureFactory, Option<Box<dyn InputInjector>>) = match cli
+        .capture
+    {
         CaptureMode::Mock => {
             let inj = MockInjector::new();
             let (w, h, fps) = (cli.mock_width, cli.mock_height, cli.fps);
             let paired = inj.clone();
             (
-                Box::new(move || Ok(Box::new(MockCapturer::new(w, h, fps).with_injector(&paired)) as _)),
+                Box::new(move || {
+                    Ok(Box::new(MockCapturer::new(w, h, fps).with_injector(&paired)) as _)
+                }),
                 Some(Box::new(inj)),
             )
         }
@@ -337,7 +389,9 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                     tracing::info!(backend = probe.name(), display = ?probe.display(), "capture backend ready");
                     capture_name = probe.name().to_string();
                 }
-                Err(e) => tracing::warn!("no screen to capture yet ({e}); serving anyway and retrying"),
+                Err(e) => {
+                    tracing::warn!("no screen to capture yet ({e}); serving anyway and retrying")
+                }
             }
             let injector = match dalker_platform::create_injector() {
                 Ok(i) => {
@@ -359,7 +413,12 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
     // Mock sources show no real screen, so they need no border; native capture is
     // gated on the border being up (see below).
     let border_ready = Arc::new(AtomicBool::new(cli.capture == CaptureMode::Mock));
-    spawn_capture_thread(capture_factory, frame_tx.clone(), display_tx, Arc::clone(&border_ready))?;
+    spawn_capture_thread(
+        capture_factory,
+        frame_tx.clone(),
+        display_tx,
+        Arc::clone(&border_ready),
+    )?;
     let active = Arc::new(AtomicUsize::new(0));
     let clipboard_factory: ClipboardFactory = match cli.capture {
         CaptureMode::Mock => {
@@ -369,27 +428,30 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
         CaptureMode::Native => Box::new(dalker_platform::create_clipboard),
     };
     let (clipboard_tx, clipboard_rx) = watch::channel(ClipboardState::default());
-    let clipboard_requests = spawn_clipboard_thread(clipboard_factory, clipboard_tx, Arc::clone(&active))?;
+    let clipboard_requests =
+        spawn_clipboard_thread(clipboard_factory, clipboard_tx, Arc::clone(&active))?;
     let input_available = injector.is_some();
     spawn_input_thread(injector, control_rx, display_rx, clipboard_requests.clone())?;
 
-    let engine = Arc::new(WebRtcEngine::new(WebRtcConfig {
-        ice_servers: cli.stun.clone(),
-        udp_port: cli.udp_port,
-        public_ips: cli.public_ip.clone(),
-        encoder: dalker_webrtc::EncoderSettings {
-            bitrate_bps: cli.bitrate_kbps * 1000,
-            max_fps: cli.fps as f32,
-            max_width: cli.max_width,
-            keyframe_interval: cli.fps * 10,
-            downscale: 1,
-            strict_bitrate: false,
-        },
-        ..Default::default()
-    })
-    .await?
-    // File transfers run as the signed-in user, never as SYSTEM or root (see FileAccess).
-    .with_files(Arc::new(dalker_platform::open_file_access)));
+    let engine = Arc::new(
+        WebRtcEngine::new(WebRtcConfig {
+            ice_servers: cli.stun.clone(),
+            udp_port: cli.udp_port,
+            public_ips: cli.public_ip.clone(),
+            encoder: dalker_webrtc::EncoderSettings {
+                bitrate_bps: cli.bitrate_kbps * 1000,
+                max_fps: cli.fps as f32,
+                max_width: cli.max_width,
+                keyframe_interval: cli.fps * 10,
+                downscale: 1,
+                strict_bitrate: false,
+            },
+            ..Default::default()
+        })
+        .await?
+        // File transfers run as the signed-in user, never as SYSTEM or root (see FileAccess).
+        .with_files(Arc::new(dalker_platform::open_file_access)),
+    );
 
     let signaling = Arc::new(Agent {
         engine,
@@ -478,14 +540,20 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
 
     {
         let signaling = Arc::clone(&signaling);
-        tokio::spawn(follow_password_changes(cli::config_path(), Arc::clone(&auth), move || {
-            signaling.end_streams(EndReason::PasswordChanged)
-        }));
+        tokio::spawn(follow_password_changes(
+            cli::config_path(),
+            Arc::clone(&auth),
+            move || signaling.end_streams(EndReason::PasswordChanged),
+        ));
     }
 
     let exit = Arc::new(tokio::sync::Notify::new());
     #[cfg(windows)]
-    let _tray = if cli.no_tray { None } else { start_tray(&status, &signaling.active, &mcp, &exit) };
+    let _tray = if cli.no_tray {
+        None
+    } else {
+        start_tray(&status, &signaling.active, &mcp, &exit)
+    };
 
     let config_file = followed_config_file();
     if let Some(path) = &config_file {
@@ -507,8 +575,17 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
             Box::new(move |reason| signaling.end_streams(reason))
         },
     };
-    let mcp = listeners::McpParts { server: mcp, allow_plaintext: cli.mcp_allow_plaintext };
-    let supervisor = tokio::spawn(listeners::supervise(wanted_rx, web, mcp, stop_rx, Arc::clone(&status)));
+    let mcp = listeners::McpParts {
+        server: mcp,
+        allow_plaintext: cli.mcp_allow_plaintext,
+    };
+    let supervisor = tokio::spawn(listeners::supervise(
+        wanted_rx,
+        web,
+        mcp,
+        stop_rx,
+        Arc::clone(&status),
+    ));
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
@@ -537,7 +614,10 @@ fn web_settings_api(auth: &Arc<Authenticator>, status: &Arc<listeners::Status>) 
     };
     let live = {
         let status = Arc::clone(status);
-        move || Live { web: Some(status.web.lock().unwrap().is_some()), mcp: Some(status.mcp.lock().unwrap().is_some()) }
+        move || Live {
+            web: Some(status.web.lock().unwrap().is_some()),
+            mcp: Some(status.mcp.lock().unwrap().is_some()),
+        }
     };
     let path = cli::config_path();
     // GNOME on Wayland: the agent runs as the desktop user, and the launcher's root helper
@@ -547,7 +627,8 @@ fn web_settings_api(auth: &Arc<Authenticator>, status: &Arc<listeners::Status>) 
         let store = settings::store::SocketStore::new(std::path::Path::new(&socket), &path);
         return Api::new(Box::new(store), Access::Tokens, signed_in, live).router();
     }
-    let writable = std::fs::OpenOptions::new().append(true).open(&path).is_ok() && cli::is_writable_config(&path);
+    let writable = std::fs::OpenOptions::new().append(true).open(&path).is_ok()
+        && cli::is_writable_config(&path);
     if writable {
         let store = settings::store::FileStore::new(&path);
         Api::new(Box::new(store), Access::Tokens, signed_in, live).router()
@@ -565,7 +646,11 @@ fn web_settings_api(auth: &Arc<Authenticator>, status: &Arc<listeners::Status>) 
 /// Applies a new `DALKER_PASSWORD_HASH` written to the config file on the host and calls
 /// `sign_out` to end the running streams. Only changes to the file count, so a password given
 /// on the command line stays until the file changes.
-async fn follow_password_changes(path: std::path::PathBuf, auth: Arc<Authenticator>, sign_out: impl Fn()) {
+async fn follow_password_changes(
+    path: std::path::PathBuf,
+    auth: Arc<Authenticator>,
+    sign_out: impl Fn(),
+) {
     let mut seen = cli::read_config_value(&path, "DALKER_PASSWORD_HASH");
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -591,9 +676,16 @@ async fn follow_password_changes(path: std::path::PathBuf, auth: Arc<Authenticat
 /// `dalkerd mcp-token create|list|revoke`: tokens live in the config file, so (like the
 /// password) they can only be managed on the host.
 fn run_mcp_token(action: &McpTokenCommand, default_path: &std::path::Path) -> Result<()> {
-    let path_of = |config: &Option<std::path::PathBuf>| config.clone().unwrap_or_else(|| default_path.to_owned());
+    let path_of = |config: &Option<std::path::PathBuf>| {
+        config.clone().unwrap_or_else(|| default_path.to_owned())
+    };
     match action {
-        McpTokenCommand::Create { name, scopes, expires, config } => {
+        McpTokenCommand::Create {
+            name,
+            scopes,
+            expires,
+            config,
+        } => {
             let path = path_of(config);
             let scopes = tokens::parse_scopes(scopes).map_err(anyhow::Error::msg)?;
             let lifetime = match expires {
@@ -601,13 +693,19 @@ fn run_mcp_token(action: &McpTokenCommand, default_path: &std::path::Path) -> Re
                 None => None,
             };
             if mcp_tokens_in(&path).iter().any(|r| r.name == *name) {
-                bail!("a token named `{name}` already exists in {} (revoke it first)", path.display());
+                bail!(
+                    "a token named `{name}` already exists in {} (revoke it first)",
+                    path.display()
+                );
             }
             let (token, record) = tokens::generate(name, scopes, lifetime)?;
             // The token itself is kept too, so Dalker Settings can copy it again later.
             cli::edit_config(
                 &path,
-                &[(record.config_key(), record.config_value()), (record.secret_key(), token.clone())],
+                &[
+                    (record.config_key(), record.config_value()),
+                    (record.secret_key(), token.clone()),
+                ],
                 &[],
             )?;
             eprintln!(
@@ -629,7 +727,10 @@ fn run_mcp_token(action: &McpTokenCommand, default_path: &std::path::Path) -> Re
                 return Ok(());
             }
             let now = tokens::unix_now();
-            println!("{:<10} {:<24} {:<22} {:<11} {:<11} STATUS", "ID", "NAME", "SCOPES", "CREATED", "EXPIRES");
+            println!(
+                "{:<10} {:<24} {:<22} {:<11} {:<11} STATUS",
+                "ID", "NAME", "SCOPES", "CREATED", "EXPIRES"
+            );
             for r in records {
                 println!(
                     "{:<10} {:<24} {:<22} {:<11} {:<11} {}",
@@ -638,7 +739,11 @@ fn run_mcp_token(action: &McpTokenCommand, default_path: &std::path::Path) -> Re
                     tokens::format_scopes(&r.scopes),
                     date(r.created),
                     r.expires.map_or("never".to_owned(), date),
-                    if r.expired_at(now) { "expired" } else { "active" }
+                    if r.expired_at(now) {
+                        "expired"
+                    } else {
+                        "active"
+                    }
                 );
             }
             Ok(())
@@ -646,12 +751,18 @@ fn run_mcp_token(action: &McpTokenCommand, default_path: &std::path::Path) -> Re
         McpTokenCommand::Revoke { name_or_id, config } => {
             let path = path_of(config);
             let records = mcp_tokens_in(&path);
-            let matches: Vec<&TokenRecord> = records.iter().filter(|r| r.name == *name_or_id || r.id == *name_or_id).collect();
+            let matches: Vec<&TokenRecord> = records
+                .iter()
+                .filter(|r| r.name == *name_or_id || r.id == *name_or_id)
+                .collect();
             match matches.as_slice() {
                 [] => bail!("no MCP token named `{name_or_id}` in {}", path.display()),
                 [r] => {
                     cli::edit_config(&path, &[], &[r.config_key(), r.secret_key()])?;
-                    println!("token `{}` ({}) revoked; a running agent ends its sessions within seconds", r.name, r.id);
+                    println!(
+                        "token `{}` ({}) revoked; a running agent ends its sessions within seconds",
+                        r.name, r.id
+                    );
                     Ok(())
                 }
                 _ => bail!("several tokens match `{name_or_id}`; revoke by id"),
@@ -669,7 +780,10 @@ fn mcp_tokens_in(path: &std::path::Path) -> Vec<TokenRecord> {
         .filter_map(|(k, v)| {
             let r = TokenRecord::from_config(&k, &v);
             if r.is_none() {
-                tracing::warn!("ignoring malformed MCP token line {k} in {}", path.display());
+                tracing::warn!(
+                    "ignoring malformed MCP token line {k} in {}",
+                    path.display()
+                );
             }
             r
         })
@@ -728,9 +842,16 @@ fn mcp_server(cli: &Cli, agent: &Arc<Agent>) -> McpServer {
             mcp_tokens_from_env()
         }
     };
-    let config = dalker_mcp::McpConfig { max_sessions: cli.mcp_max_sessions, ..Default::default() };
+    let config = dalker_mcp::McpConfig {
+        max_sessions: cli.mcp_max_sessions,
+        ..Default::default()
+    };
     let agent: Arc<dyn dalker_mcp::DesktopHandle> = Arc::clone(agent) as _;
-    McpServer::new(agent, Arc::new(dalker_mcp::TokenStore::new(records)), config)
+    McpServer::new(
+        agent,
+        Arc::new(dalker_mcp::TokenStore::new(records)),
+        config,
+    )
 }
 
 /// Picks up tokens created or revoked on the host (`mcp-token`) without a restart; a revoked
@@ -777,7 +898,9 @@ impl dalker_mcp::DesktopHandle for Agent {
     fn open_viewer(&self) -> Result<u64, String> {
         // Shares the viewer limit (and the border) with WebRTC viewers.
         self.active
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < self.max_sessions).then_some(n + 1))
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                (n < self.max_sessions).then_some(n + 1)
+            })
             .map_err(|_| format!("too many viewers connected (max {})", self.max_sessions))?;
         Ok(MCP_SESSION_BASE + self.next_mcp_id.fetch_add(1, Ordering::SeqCst))
     }
@@ -802,14 +925,19 @@ impl dalker_mcp::DesktopHandle for Agent {
         Box::pin(async move {
             if sent {
                 // Typing on Windows takes ~30 ms a character; the caller bounds the wait.
-                let _ = tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(600))).await;
+                let _ =
+                    tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(600)))
+                        .await;
             }
         })
     }
 
     fn read_clipboard(&self) -> dalker_mcp::BoxFuture<Result<Option<String>, String>> {
         let (tx, rx) = oneshot::channel();
-        let sent = self.clipboard_requests.send(ClipboardRequest::Get(tx)).is_ok();
+        let sent = self
+            .clipboard_requests
+            .send(ClipboardRequest::Get(tx))
+            .is_ok();
         Box::pin(async move {
             if !sent {
                 return Err("the host's clipboard is not available".into());
@@ -856,7 +984,9 @@ impl SignalingHandler for Agent {
         // Reserve a slot up front so concurrent offers can't exceed the limit.
         let active = Arc::clone(&self.active);
         let reserved = active
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| (n < self.max_sessions).then_some(n + 1))
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                (n < self.max_sessions).then_some(n + 1)
+            })
             .is_ok();
         if !reserved {
             let max = self.max_sessions;
@@ -869,7 +999,10 @@ impl SignalingHandler for Agent {
         let control = self.control.clone();
         let engine = Arc::clone(&self.engine);
         Box::pin(async move {
-            match engine.accept_offer(offer_sdp, frames, clipboard, control).await {
+            match engine
+                .accept_offer(offer_sdp, frames, clipboard, control)
+                .await
+            {
                 Ok((answer, mut session)) => {
                     streams.fetch_add(1, Ordering::SeqCst);
                     tokio::spawn(async move {
@@ -1069,19 +1202,20 @@ fn spawn_clipboard_thread(
             let mut next_poll = Instant::now();
             // What the viewers last saw: (marker, text). `None` = take a fresh baseline.
             let mut seen: Option<(Option<u64>, Option<String>)> = None;
-            let fail = |clip: &mut Option<Box<dyn Clipboard>>, next_open: &mut Instant, why: String| {
-                *clip = None;
-                *next_open = Instant::now() + CLIPBOARD_RETRY;
-                state.send_if_modified(|s| {
-                    let changed = s.available || s.reason.as_deref() != Some(why.as_str());
-                    if changed {
-                        tracing::warn!("host clipboard not shared: {why}");
-                        s.available = false;
-                        s.reason = Some(why);
-                    }
-                    changed
-                });
-            };
+            let fail =
+                |clip: &mut Option<Box<dyn Clipboard>>, next_open: &mut Instant, why: String| {
+                    *clip = None;
+                    *next_open = Instant::now() + CLIPBOARD_RETRY;
+                    state.send_if_modified(|s| {
+                        let changed = s.available || s.reason.as_deref() != Some(why.as_str());
+                        if changed {
+                            tracing::warn!("host clipboard not shared: {why}");
+                            s.available = false;
+                            s.reason = Some(why);
+                        }
+                        changed
+                    });
+                };
             loop {
                 // Short waits keep the window messages flowing (Windows); see WinClipboard.
                 let request = match set_rx.recv_timeout(Duration::from_millis(25)) {
@@ -1105,16 +1239,28 @@ fn spawn_clipboard_thread(
                 }
                 if let Some(ClipboardRequest::Get(reply)) = request {
                     let result = match clip.as_mut() {
-                        None => Err(state.borrow().reason.clone().unwrap_or_else(|| "the host's clipboard is not available".into())),
+                        None => Err(state
+                            .borrow()
+                            .reason
+                            .clone()
+                            .unwrap_or_else(|| "the host's clipboard is not available".into())),
                         Some(c) => {
                             let mut result = c.get_text();
                             for _ in 0..4 {
-                                let Err(ClipboardError::Busy(_)) = &result else { break };
+                                let Err(ClipboardError::Busy(_)) = &result else {
+                                    break;
+                                };
                                 std::thread::sleep(Duration::from_millis(50));
                                 result = c.get_text();
                             }
                             match result {
-                                Ok(t) => Ok(t.map(|t| if t.contains('\r') { t.replace("\r\n", "\n") } else { t })),
+                                Ok(t) => Ok(t.map(|t| {
+                                    if t.contains('\r') {
+                                        t.replace("\r\n", "\n")
+                                    } else {
+                                        t
+                                    }
+                                })),
                                 Err(ClipboardError::Busy(why)) => Err(why),
                                 Err(ClipboardError::Failed(why)) => {
                                     fail(&mut clip, &mut next_open, why.clone());
@@ -1130,14 +1276,20 @@ fn spawn_clipboard_thread(
                     if let Some(c) = clip.as_mut() {
                         let mut result = c.set_text(&text);
                         for _ in 0..4 {
-                            let Err(ClipboardError::Busy(_)) = &result else { break };
+                            let Err(ClipboardError::Busy(_)) = &result else {
+                                break;
+                            };
                             std::thread::sleep(Duration::from_millis(50));
                             result = c.set_text(&text);
                         }
                         match result {
                             Ok(()) => {}
-                            Err(ClipboardError::Busy(why)) => tracing::info!("viewer's clipboard text not applied: {why}"),
-                            Err(ClipboardError::Failed(why)) => fail(&mut clip, &mut next_open, why),
+                            Err(ClipboardError::Busy(why)) => {
+                                tracing::info!("viewer's clipboard text not applied: {why}")
+                            }
+                            Err(ClipboardError::Failed(why)) => {
+                                fail(&mut clip, &mut next_open, why)
+                            }
                         }
                     }
                     let _ = done.send(());
@@ -1166,7 +1318,13 @@ fn spawn_clipboard_thread(
                 }
                 let text = match c.get_text() {
                     // Line ends as the browser uses them; Windows apps put CRLF there.
-                    Ok(t) => t.map(|t| if t.contains('\r') { t.replace("\r\n", "\n") } else { t }),
+                    Ok(t) => t.map(|t| {
+                        if t.contains('\r') {
+                            t.replace("\r\n", "\n")
+                        } else {
+                            t
+                        }
+                    }),
                     Err(ClipboardError::Busy(_)) => continue,
                     Err(ClipboardError::Failed(why)) => {
                         fail(&mut clip, &mut next_open, why);
@@ -1216,7 +1374,10 @@ impl InjectErrorLog {
         };
         if loud {
             if self.suppressed > 0 {
-                tracing::warn!("input injection failed: {msg} ({} similar failures suppressed)", self.suppressed);
+                tracing::warn!(
+                    "input injection failed: {msg} ({} similar failures suppressed)",
+                    self.suppressed
+                );
             } else {
                 tracing::warn!("input injection failed: {msg}");
             }
@@ -1234,7 +1395,11 @@ fn hostname() -> String {
     std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .ok()
-        .or_else(|| std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_owned()))
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .map(|s| s.trim().to_owned())
+        })
         .unwrap_or_else(|| "unknown".into())
 }
 
@@ -1247,11 +1412,23 @@ mod tests {
         let mut log = InjectErrorLog::default();
         let ev = InputEvent::MouseMove { x: 0.5, y: 0.5 };
         let t0 = Instant::now();
-        assert!(log.failed("secure desktop", &ev, t0), "first failure is logged");
-        assert!(!log.failed("secure desktop", &ev, t0 + Duration::from_secs(1)), "repeat is suppressed");
-        assert!(log.failed("uipi", &ev, t0 + Duration::from_secs(2)), "a different error is logged");
+        assert!(
+            log.failed("secure desktop", &ev, t0),
+            "first failure is logged"
+        );
+        assert!(
+            !log.failed("secure desktop", &ev, t0 + Duration::from_secs(1)),
+            "repeat is suppressed"
+        );
+        assert!(
+            log.failed("uipi", &ev, t0 + Duration::from_secs(2)),
+            "a different error is logged"
+        );
         assert!(!log.failed("uipi", &ev, t0 + Duration::from_secs(3)));
-        assert!(log.failed("uipi", &ev, t0 + Duration::from_secs(33)), "repeats again after REPEAT");
+        assert!(
+            log.failed("uipi", &ev, t0 + Duration::from_secs(33)),
+            "repeats again after REPEAT"
+        );
         assert_eq!(log.suppressed, 0);
     }
 }

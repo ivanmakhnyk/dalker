@@ -29,14 +29,14 @@ use tokio::sync::{mpsc, watch};
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264};
 use webrtc::api::setting_engine::SettingEngine;
-use webrtc::ice::mdns::MulticastDnsMode;
 use webrtc::api::{APIBuilder, API};
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 use webrtc::data_channel::RTCDataChannel;
+use webrtc::ice::mdns::MulticastDnsMode;
+use webrtc::ice::network_type::NetworkType;
 use webrtc::ice::udp_mux::{UDPMuxDefault, UDPMuxParams};
 use webrtc::ice::udp_network::UDPNetwork;
-use webrtc::ice::network_type::NetworkType;
 use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
@@ -155,7 +155,9 @@ impl WebRtcEngine {
                 .await
                 .with_context(|| format!("bind ICE UDP port {port}"))?;
             tracing::info!("ICE UDP mux listening on 0.0.0.0:{port}");
-            settings.set_udp_network(UDPNetwork::Muxed(UDPMuxDefault::new(UDPMuxParams::new(socket))));
+            settings.set_udp_network(UDPNetwork::Muxed(UDPMuxDefault::new(UDPMuxParams::new(
+                socket,
+            ))));
             settings.set_network_types(vec![NetworkType::Udp4]);
         }
         if !config.public_ips.is_empty() {
@@ -182,7 +184,12 @@ impl WebRtcEngine {
             .with_interceptor_registry(registry)
             .with_setting_engine(settings)
             .build();
-        Ok(Self { api, config, next_id: AtomicU64::new(1), files: None })
+        Ok(Self {
+            api,
+            config,
+            next_id: AtomicU64::new(1),
+            files: None,
+        })
     }
 
     /// Offers file transfers to viewers (their `"files"` channel), run as the user `access`
@@ -207,7 +214,10 @@ impl WebRtcEngine {
             ice_servers: if self.config.ice_servers.is_empty() {
                 vec![]
             } else {
-                vec![RTCIceServer { urls: self.config.ice_servers.clone(), ..Default::default() }]
+                vec![RTCIceServer {
+                    urls: self.config.ice_servers.clone(),
+                    ..Default::default()
+                }]
             },
             ..Default::default()
         };
@@ -220,14 +230,17 @@ impl WebRtcEngine {
                 mime_type: MIME_TYPE_H264.to_owned(),
                 clock_rate: 90_000,
                 channels: 0,
-                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
-                    .to_owned(),
+                sdp_fmtp_line:
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+                        .to_owned(),
                 rtcp_feedback: vec![],
             },
             "video".to_owned(),
             "dalker".to_owned(),
         ));
-        let sender = pc.add_track(Arc::clone(&track) as Arc<dyn TrackLocal + Send + Sync>).await?;
+        let sender = pc
+            .add_track(Arc::clone(&track) as Arc<dyn TrackLocal + Send + Sync>)
+            .await?;
 
         let stop = Arc::new(AtomicBool::new(false));
         let keyframe = Arc::new(AtomicBool::new(true));
@@ -272,12 +285,19 @@ impl WebRtcEngine {
                                 tracing::debug!(session = id, "file channel open");
                                 files::attach(id, dc, access);
                             }
-                            None => tracing::warn!(session = id, "file transfers are off; ignoring the files channel"),
+                            None => tracing::warn!(
+                                session = id,
+                                "file transfers are off; ignoring the files channel"
+                            ),
                         }
                         return;
                     }
                     if dc.label() != CONTROL_CHANNEL {
-                        tracing::warn!(session = id, label = dc.label(), "ignoring unknown DataChannel");
+                        tracing::warn!(
+                            session = id,
+                            label = dc.label(),
+                            "ignoring unknown DataChannel"
+                        );
                         return;
                     }
                     tracing::debug!(session = id, "control channel open");
@@ -309,7 +329,10 @@ impl WebRtcEngine {
                                     let _ = control.send((id, ControlMessage::Clipboard(text)));
                                 }
                                 Ok(None) => {}
-                                Err(e) => tracing::info!(session = id, "viewer clipboard not applied: {e}"),
+                                Err(e) => tracing::info!(
+                                    session = id,
+                                    "viewer clipboard not applied: {e}"
+                                ),
                             }
                             return Box::pin(async {});
                         }
@@ -343,7 +366,9 @@ impl WebRtcEngine {
                 tracing::info!(session = id, ?state, "peer connection state");
                 let terminal = matches!(
                     state,
-                    RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed | RTCPeerConnectionState::Disconnected
+                    RTCPeerConnectionState::Failed
+                        | RTCPeerConnectionState::Closed
+                        | RTCPeerConnectionState::Disconnected
                 );
                 if terminal && !ended.swap(true, Ordering::SeqCst) {
                     stop.store(true, Ordering::SeqCst);
@@ -360,22 +385,31 @@ impl WebRtcEngine {
         }
 
         // SDP exchange (non-trickle).
-        pc.set_remote_description(RTCSessionDescription::offer(offer_sdp)?).await?;
+        pc.set_remote_description(RTCSessionDescription::offer(offer_sdp)?)
+            .await?;
         let answer = pc.create_answer(None).await?;
         let mut gathered = pc.gathering_complete_promise().await;
         pc.set_local_description(answer).await?;
         let _ = tokio::time::timeout(Duration::from_secs(5), gathered.recv()).await;
-        let local = pc.local_description().await.context("no local description")?;
+        let local = pc
+            .local_description()
+            .await
+            .context("no local description")?;
 
         // A peer that never connects must not keep its slot.
         {
             let weak = Arc::downgrade(&pc);
             let stop = Arc::clone(&stop);
-            let limit = self.config.connect_timeout.unwrap_or(DEFAULT_CONNECT_TIMEOUT);
+            let limit = self
+                .config
+                .connect_timeout
+                .unwrap_or(DEFAULT_CONNECT_TIMEOUT);
             tokio::spawn(async move {
                 tokio::time::sleep(limit).await;
                 if let Some(pc) = weak.upgrade() {
-                    if !stop.load(Ordering::SeqCst) && pc.connection_state() != RTCPeerConnectionState::Connected {
+                    if !stop.load(Ordering::SeqCst)
+                        && pc.connection_state() != RTCPeerConnectionState::Connected
+                    {
                         tracing::info!(session = id, ?limit, "viewer never connected; dropping it");
                         let _ = pc.close().await;
                     }
@@ -388,11 +422,30 @@ impl WebRtcEngine {
         let thread_stop = Arc::clone(&stop);
         std::thread::Builder::new()
             .name(format!("dalker-enc-{id}"))
-            .spawn(move || encode_loop(id, settings_rx, frames, track, keyframe, thread_stop, runtime))
+            .spawn(move || {
+                encode_loop(
+                    id,
+                    settings_rx,
+                    frames,
+                    track,
+                    keyframe,
+                    thread_stop,
+                    runtime,
+                )
+            })
             .context("spawn encoder thread")?;
 
         tracing::info!(session = id, "session negotiated");
-        Ok((local.sdp, Session { id, pc, stop, closed: closed_rx, control_dc }))
+        Ok((
+            local.sdp,
+            Session {
+                id,
+                pc,
+                stop,
+                closed: closed_rx,
+                control_dc,
+            },
+        ))
     }
 }
 
@@ -512,7 +565,8 @@ fn encode_loop(
         if !frames.has_changed().unwrap_or(true) {
             // A clone so `changed()` doesn't mark the frame seen for the check at the top.
             let mut next = frames.clone();
-            let _ = runtime.block_on(async { tokio::time::timeout(FRAME_POLL, next.changed()).await });
+            let _ =
+                runtime.block_on(async { tokio::time::timeout(FRAME_POLL, next.changed()).await });
         }
     }
     tracing::info!(session = id, encoded, "encoder stopped");
@@ -530,7 +584,10 @@ mod tests {
             (EndReason::HostShutdown, "host_shutdown"),
         ] {
             let msg: serde_json::Value = serde_json::from_str(&reason.message()).unwrap();
-            assert_eq!(msg, serde_json::json!({"type": "session_end", "reason": code}));
+            assert_eq!(
+                msg,
+                serde_json::json!({"type": "session_end", "reason": code})
+            );
         }
     }
 }

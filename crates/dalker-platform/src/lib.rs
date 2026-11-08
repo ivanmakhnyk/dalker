@@ -11,7 +11,9 @@
 //! Use [`create_capturer`] / [`create_injector`] to get the backend for the
 //! current OS without any `cfg` at the call site.
 
-use dalker_core::{CaptureError, Clipboard, FileAccess, InputError, InputInjector, ScreenCapturer, ViewerIndicator};
+use dalker_core::{
+    CaptureError, Clipboard, FileAccess, InputError, InputInjector, ScreenCapturer, ViewerIndicator,
+};
 
 pub mod icon;
 #[cfg(target_os = "linux")]
@@ -117,7 +119,10 @@ pub fn open_file_access() -> Result<FileAccess, String> {
         return linux::files::open_file_access();
     }
     #[allow(unreachable_code)]
-    Err(format!("no file transfer support for {}", std::env::consts::OS))
+    Err(format!(
+        "no file transfer support for {}",
+        std::env::consts::OS
+    ))
 }
 
 /// Creates the on-screen "remote session active" indicator (red screen border).
@@ -139,7 +144,10 @@ pub fn create_indicator() -> Result<Box<dyn ViewerIndicator>, String> {
         return Ok(Box::new(linux::BorderOverlay::new()?));
     }
     #[allow(unreachable_code)]
-    Err(format!("no on-screen indicator for {}", std::env::consts::OS))
+    Err(format!(
+        "no on-screen indicator for {}",
+        std::env::consts::OS
+    ))
 }
 
 /// True while the host's lock screen is up and its picture is withheld from viewers,

@@ -12,8 +12,8 @@ use std::sync::Mutex;
 
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::StationsAndDesktops::{
-    CloseDesktop, GetUserObjectInformationW, OpenInputDesktop, SetThreadDesktop, DESKTOP_ACCESS_FLAGS,
-    DESKTOP_CONTROL_FLAGS, HDESK, UOI_NAME,
+    CloseDesktop, GetUserObjectInformationW, OpenInputDesktop, SetThreadDesktop,
+    DESKTOP_ACCESS_FLAGS, DESKTOP_CONTROL_FLAGS, HDESK, UOI_NAME,
 };
 
 /// `GENERIC_ALL`: create windows, hook, read the screen, send input.
@@ -49,7 +49,8 @@ fn desktop_name(desk: HDESK) -> Option<String> {
 /// (a non-SYSTEM process while the secure desktop is shown).
 pub fn input_desktop_name() -> Option<String> {
     unsafe {
-        let desk = OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_ACCESS_FLAGS(0)).ok()?;
+        let desk =
+            OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_ACCESS_FLAGS(0)).ok()?;
         let name = desktop_name(desk);
         let _ = CloseDesktop(desk);
         name
@@ -99,20 +100,28 @@ pub fn attach_thread_to_input_desktop() -> Result<String, String> {
 pub fn session_locked() -> bool {
     use windows::core::PWSTR;
     use windows::Win32::System::RemoteDesktop::{
-        WTSFreeMemory, WTSQuerySessionInformationW, WTSSessionInfoEx, WTSINFOEXW, WTS_CURRENT_SESSION,
-        WTS_SESSIONSTATE_LOCK,
+        WTSFreeMemory, WTSQuerySessionInformationW, WTSSessionInfoEx, WTSINFOEXW,
+        WTS_CURRENT_SESSION, WTS_SESSIONSTATE_LOCK,
     };
     unsafe {
         let mut buf = PWSTR::null();
         let mut len = 0u32;
-        if WTSQuerySessionInformationW(None, WTS_CURRENT_SESSION, WTSSessionInfoEx, &mut buf, &mut len).is_err()
+        if WTSQuerySessionInformationW(
+            None,
+            WTS_CURRENT_SESSION,
+            WTSSessionInfoEx,
+            &mut buf,
+            &mut len,
+        )
+        .is_err()
             || buf.is_null()
         {
             return false;
         }
         let locked = if len as usize >= std::mem::size_of::<WTSINFOEXW>() {
             let info = &*(buf.0 as *const WTSINFOEXW);
-            info.Level == 1 && info.Data.WTSInfoExLevel1.SessionFlags as u32 == WTS_SESSIONSTATE_LOCK
+            info.Level == 1
+                && info.Data.WTSInfoExLevel1.SessionFlags as u32 == WTS_SESSIONSTATE_LOCK
         } else {
             false
         };
@@ -160,7 +169,11 @@ pub(crate) fn set_border_desktop(name: Option<String>) {
 }
 
 pub(crate) fn border_shown_on(name: &str) -> bool {
-    BORDER_DESKTOP.lock().unwrap_or_else(|e| e.into_inner()).as_deref() == Some(name)
+    BORDER_DESKTOP
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_deref()
+        == Some(name)
 }
 
 #[cfg(test)]
@@ -188,7 +201,10 @@ mod tests {
         // desktop is readable; skip quietly when it is not (service session 0).
         if let Some(name) = input_desktop_name() {
             assert!(!name.is_empty());
-            assert_eq!(attach_thread_to_input_desktop().as_deref(), Ok(name.as_str()));
+            assert_eq!(
+                attach_thread_to_input_desktop().as_deref(),
+                Ok(name.as_str())
+            );
             assert_eq!(thread_desktop_name(), Some(name));
         }
     }

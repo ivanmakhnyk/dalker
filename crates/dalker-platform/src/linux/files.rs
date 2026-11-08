@@ -32,7 +32,15 @@ fn account_by_name(name: &str) -> Option<Account> {
     let mut buf = vec![0 as libc::c_char; 16 * 1024];
     let mut pw: libc::passwd = unsafe { std::mem::zeroed() };
     let mut out: *mut libc::passwd = std::ptr::null_mut();
-    let r = unsafe { libc::getpwnam_r(cname.as_ptr(), &mut pw, buf.as_mut_ptr(), buf.len(), &mut out) };
+    let r = unsafe {
+        libc::getpwnam_r(
+            cname.as_ptr(),
+            &mut pw,
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut out,
+        )
+    };
     (r == 0 && !out.is_null()).then(|| unsafe { account_from(&pw) })
 }
 
@@ -47,7 +55,10 @@ unsafe fn account_from(pw: &libc::passwd) -> Account {
 
 /// The user of the active graphical session on seat0 (not the login screen), from logind.
 fn desktop_user() -> Option<String> {
-    let out = Command::new("loginctl").args(["list-sessions", "--no-legend"]).output().ok()?;
+    let out = Command::new("loginctl")
+        .args(["list-sessions", "--no-legend"])
+        .output()
+        .ok()?;
     for line in String::from_utf8_lossy(&out.stdout).lines() {
         let cols: Vec<&str> = line.split_whitespace().collect();
         // SESSION UID USER SEAT ...
@@ -55,14 +66,37 @@ fn desktop_user() -> Option<String> {
             continue;
         }
         let show = Command::new("loginctl")
-            .args(["show-session", cols[0], "-p", "Class", "-p", "Active", "-p", "Type", "-p", "Name"])
+            .args([
+                "show-session",
+                cols[0],
+                "-p",
+                "Class",
+                "-p",
+                "Active",
+                "-p",
+                "Type",
+                "-p",
+                "Name",
+            ])
             .output()
             .ok()?;
         let props = String::from_utf8_lossy(&show.stdout);
-        let get = |k: &str| props.lines().find_map(|l| l.strip_prefix(k)?.strip_prefix('=')).unwrap_or("");
-        if get("Class") == "user" && get("Active") == "yes" && matches!(get("Type"), "x11" | "wayland") {
+        let get = |k: &str| {
+            props
+                .lines()
+                .find_map(|l| l.strip_prefix(k)?.strip_prefix('='))
+                .unwrap_or("")
+        };
+        if get("Class") == "user"
+            && get("Active") == "yes"
+            && matches!(get("Type"), "x11" | "wayland")
+        {
             let name = get("Name");
-            return Some(if name.is_empty() { cols[2].to_string() } else { name.to_string() });
+            return Some(if name.is_empty() {
+                cols[2].to_string()
+            } else {
+                name.to_string()
+            });
         }
     }
     None
@@ -73,7 +107,9 @@ fn desktop_user() -> Option<String> {
 fn downloads_dir(home: &Path) -> PathBuf {
     let dirs = std::fs::read_to_string(home.join(".config/user-dirs.dirs")).unwrap_or_default();
     for line in dirs.lines() {
-        let Some(v) = line.trim().strip_prefix("XDG_DOWNLOAD_DIR=") else { continue };
+        let Some(v) = line.trim().strip_prefix("XDG_DOWNLOAD_DIR=") else {
+            continue;
+        };
         let v = v.trim().trim_matches('"');
         let path = match v.strip_prefix("$HOME") {
             Some(rest) => home.join(rest.trim_start_matches('/')),
@@ -133,12 +169,15 @@ impl Drop for FsIdentity {
 }
 
 fn user_groups(acct: &Account) -> Vec<libc::gid_t> {
-    let Ok(name) = CString::new(acct.name.as_str()) else { return vec![acct.gid] };
+    let Ok(name) = CString::new(acct.name.as_str()) else {
+        return vec![acct.gid];
+    };
     let mut n: libc::c_int = 64;
     loop {
         let mut groups = vec![0 as libc::gid_t; n as usize];
         let mut count = n;
-        let r = unsafe { libc::getgrouplist(name.as_ptr(), acct.gid, groups.as_mut_ptr(), &mut count) };
+        let r =
+            unsafe { libc::getgrouplist(name.as_ptr(), acct.gid, groups.as_mut_ptr(), &mut count) };
         if r >= 0 {
             groups.truncate(count as usize);
             return groups;
@@ -155,8 +194,15 @@ pub fn open_file_access() -> Result<FileAccess, String> {
     if euid != 0 {
         // Already the user (GNOME on Wayland, or started by hand).
         let acct = account_by_uid(euid).ok_or("unknown user")?;
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or(acct.home);
-        return Ok(FileAccess { user: acct.name, downloads: downloads_dir(&home), home, guard: Box::new(()) });
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or(acct.home);
+        return Ok(FileAccess {
+            user: acct.name,
+            downloads: downloads_dir(&home),
+            home,
+            guard: Box::new(()),
+        });
     }
     let name = desktop_user().ok_or("Nobody is signed in on the host.")?;
     let acct = account_by_name(&name).ok_or_else(|| format!("unknown user {name}"))?;
@@ -165,7 +211,12 @@ pub fn open_file_access() -> Result<FileAccess, String> {
     }
     let guard = FsIdentity::assume(&acct)?;
     let downloads = downloads_dir(&acct.home);
-    Ok(FileAccess { user: acct.name, home: acct.home, downloads, guard: Box::new(guard) })
+    Ok(FileAccess {
+        user: acct.name,
+        home: acct.home,
+        downloads,
+        guard: Box::new(guard),
+    })
 }
 
 #[cfg(test)]
@@ -177,9 +228,17 @@ mod tests {
         let home = std::env::temp_dir().join(format!("dalker-xdg-{}", std::process::id()));
         std::fs::create_dir_all(home.join(".config")).unwrap();
         assert_eq!(downloads_dir(&home), home.join("Downloads"));
-        std::fs::write(home.join(".config/user-dirs.dirs"), "# x\nXDG_DOWNLOAD_DIR=\"$HOME/Téléchargements\"\n").unwrap();
+        std::fs::write(
+            home.join(".config/user-dirs.dirs"),
+            "# x\nXDG_DOWNLOAD_DIR=\"$HOME/Téléchargements\"\n",
+        )
+        .unwrap();
         assert_eq!(downloads_dir(&home), home.join("Téléchargements"));
-        std::fs::write(home.join(".config/user-dirs.dirs"), "XDG_DOWNLOAD_DIR=\"$HOME/\"\n").unwrap();
+        std::fs::write(
+            home.join(".config/user-dirs.dirs"),
+            "XDG_DOWNLOAD_DIR=\"$HOME/\"\n",
+        )
+        .unwrap();
         assert_eq!(downloads_dir(&home), home.join("Downloads"));
         std::fs::remove_dir_all(&home).unwrap();
     }
@@ -193,4 +252,3 @@ mod tests {
         assert!(!a.user.is_empty());
     }
 }
-

@@ -51,7 +51,15 @@ impl PointerShape {
 /// Draws `shape` with its top-left corner at `(left, top)` onto a BGRA `frame` of
 /// `width`×`height` pixels with `stride` bytes per row. Parts outside the frame are
 /// clipped. The frame's alpha channel is left opaque.
-pub fn draw(frame: &mut [u8], width: u32, height: u32, stride: usize, shape: &PointerShape, left: i32, top: i32) {
+pub fn draw(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    stride: usize,
+    shape: &PointerShape,
+    left: i32,
+    top: i32,
+) {
     let (w, h) = (shape.width as i64, shape.visible_height() as i64);
     let pitch = shape.pitch as usize;
     for sy in 0..h {
@@ -65,7 +73,9 @@ pub fn draw(frame: &mut [u8], width: u32, height: u32, stride: usize, shape: &Po
                 continue;
             }
             let at = fy as usize * stride + fx as usize * 4;
-            let Some(dst) = frame.get_mut(at..at + 3) else { continue };
+            let Some(dst) = frame.get_mut(at..at + 3) else {
+                continue;
+            };
             let (sx, sy) = (sx as usize, sy as usize);
             match shape.kind {
                 ShapeKind::Monochrome => {
@@ -73,18 +83,23 @@ pub fn draw(frame: &mut [u8], width: u32, height: u32, stride: usize, shape: &Po
                         let byte = *shape.data.get(row * pitch + sx / 8)?;
                         Some(byte & (0x80 >> (sx % 8)) != 0)
                     };
-                    let (Some(and), Some(xor)) = (bit(sy), bit(sy + h as usize)) else { continue };
+                    let (Some(and), Some(xor)) = (bit(sy), bit(sy + h as usize)) else {
+                        continue;
+                    };
                     for c in dst.iter_mut() {
                         *c = (if and { *c } else { 0 }) ^ (if xor { 0xFF } else { 0 });
                     }
                 }
                 ShapeKind::Color | ShapeKind::MaskedColor => {
                     let i = sy * pitch + sx * 4;
-                    let Some(src) = shape.data.get(i..i + 4) else { continue };
+                    let Some(src) = shape.data.get(i..i + 4) else {
+                        continue;
+                    };
                     let a = src[3] as u32;
                     if shape.kind == ShapeKind::Color {
                         for k in 0..3 {
-                            dst[k] = ((src[k] as u32 * a + dst[k] as u32 * (255 - a) + 127) / 255) as u8;
+                            dst[k] =
+                                ((src[k] as u32 * a + dst[k] as u32 * (255 - a) + 127) / 255) as u8;
                         }
                     } else if a == 0 {
                         dst.copy_from_slice(&src[..3]);
@@ -104,7 +119,9 @@ mod tests {
     use super::*;
 
     fn frame(w: u32, h: u32, bgr: [u8; 3]) -> Vec<u8> {
-        (0..w * h).flat_map(|_| [bgr[0], bgr[1], bgr[2], 255]).collect()
+        (0..w * h)
+            .flat_map(|_| [bgr[0], bgr[1], bgr[2], 255])
+            .collect()
     }
 
     fn px(f: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
@@ -125,9 +142,17 @@ mod tests {
         };
         let mut f = frame(4, 1, [10, 20, 30]);
         draw(&mut f, 4, 1, 16, &shape, 0, 0);
-        assert_eq!(px(&f, 4, 0, 0), [10, 20, 30, 255], "AND=1 XOR=0 keeps the desktop");
+        assert_eq!(
+            px(&f, 4, 0, 0),
+            [10, 20, 30, 255],
+            "AND=1 XOR=0 keeps the desktop"
+        );
         assert_eq!(px(&f, 4, 1, 0), [0, 0, 0, 255], "AND=0 XOR=0 is black");
-        assert_eq!(px(&f, 4, 2, 0), [255, 255, 255, 255], "AND=0 XOR=1 is white");
+        assert_eq!(
+            px(&f, 4, 2, 0),
+            [255, 255, 255, 255],
+            "AND=0 XOR=1 is white"
+        );
         assert_eq!(px(&f, 4, 3, 0), [245, 235, 225, 255], "AND=1 XOR=1 inverts");
     }
 
@@ -186,7 +211,13 @@ mod tests {
 
     #[test]
     fn truncated_shape_data_does_not_panic() {
-        let shape = PointerShape { kind: ShapeKind::Color, width: 4, height: 4, pitch: 16, data: vec![0; 10] };
+        let shape = PointerShape {
+            kind: ShapeKind::Color,
+            width: 4,
+            height: 4,
+            pitch: 16,
+            data: vec![0; 10],
+        };
         let mut f = frame(4, 4, [1, 1, 1]);
         draw(&mut f, 4, 4, 16, &shape, 0, 0);
         assert_eq!(ShapeKind::from_dxgi(3), None);

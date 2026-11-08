@@ -21,7 +21,11 @@ fn frame(w: usize, h: usize, n: usize) -> RawFrame {
     for y in 0..h {
         for x in 0..w {
             let i = (y * w + x) * 4;
-            let sy = if std::env::var_os("SCROLL").is_some() { y + n * 7 } else { y };
+            let sy = if std::env::var_os("SCROLL").is_some() {
+                y + n * 7
+            } else {
+                y
+            };
             let text = (sy / 18) % 2 == 0 && x % 9 < 6 && {
                 seed ^= seed << 13;
                 seed ^= seed >> 17;
@@ -39,7 +43,14 @@ fn frame(w: usize, h: usize, n: usize) -> RawFrame {
             data[i..i + 4].copy_from_slice(&[(x + n) as u8, (y * 2) as u8, 200, 255]);
         }
     }
-    RawFrame { width: w as u32, height: h as u32, stride: w * 4, format: PixelFormat::Bgra8, data: Bytes::from(data), timestamp: Duration::ZERO }
+    RawFrame {
+        width: w as u32,
+        height: h as u32,
+        stride: w * 4,
+        format: PixelFormat::Bgra8,
+        data: Bytes::from(data),
+        timestamp: Duration::ZERO,
+    }
 }
 
 fn stats(name: &str, v: &mut [Duration]) {
@@ -55,11 +66,24 @@ fn stats(name: &str, v: &mut [Duration]) {
 }
 
 fn main() -> anyhow::Result<()> {
-    let args: Vec<usize> = std::env::args().skip(1).filter_map(|a| a.parse().ok()).collect();
-    let (w, h, n) = (*args.first().unwrap_or(&1920), *args.get(1).unwrap_or(&1080), *args.get(2).unwrap_or(&120));
+    let args: Vec<usize> = std::env::args()
+        .skip(1)
+        .filter_map(|a| a.parse().ok())
+        .collect();
+    let (w, h, n) = (
+        *args.first().unwrap_or(&1920),
+        *args.get(1).unwrap_or(&1080),
+        *args.get(2).unwrap_or(&120),
+    );
     let frames: Vec<RawFrame> = (0..n).map(|i| frame(w, h, i)).collect();
 
-    let mut yuv = I420 { width: 0, height: 0, y: vec![], u: vec![], v: vec![] };
+    let mut yuv = I420 {
+        width: 0,
+        height: 0,
+        y: vec![],
+        u: vec![],
+        v: vec![],
+    };
     let mut convert = Vec::new();
     for f in &frames {
         let t = Instant::now();
@@ -76,10 +100,16 @@ fn main() -> anyhow::Result<()> {
         }
         total.push(t.elapsed());
     }
-    println!("{w}x{h}, {n} frames, {:.0} kB/frame", bytes as f64 / n as f64 / 1000.0);
+    println!(
+        "{w}x{h}, {n} frames, {:.0} kB/frame",
+        bytes as f64 / n as f64 / 1000.0
+    );
     stats("convert", &mut convert);
     stats("conv+enc", &mut total);
     let mean = total.iter().sum::<Duration>().as_secs_f64() / n as f64;
-    println!("max sustainable fps from the encode thread alone: {:.1}", 1.0 / mean);
+    println!(
+        "max sustainable fps from the encode thread alone: {:.1}",
+        1.0 / mean
+    );
     Ok(())
 }

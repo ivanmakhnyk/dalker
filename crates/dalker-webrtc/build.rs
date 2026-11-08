@@ -15,7 +15,11 @@ fn main() {
         return;
     }
     let nasm = std::env::var("NASM").unwrap_or_else(|_| "nasm".into());
-    if Command::new(&nasm).arg("-v").output().is_ok_and(|o| o.status.success()) {
+    if Command::new(&nasm)
+        .arg("-v")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
         return;
     }
     let msg = "nasm not found: OpenH264 is built without its assembly and encodes video several \

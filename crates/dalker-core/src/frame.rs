@@ -63,6 +63,9 @@ impl RawFrame {
     }
 
     pub fn display_info(&self) -> DisplayInfo {
-        DisplayInfo { width: self.width, height: self.height }
+        DisplayInfo {
+            width: self.width,
+            height: self.height,
+        }
     }
 }

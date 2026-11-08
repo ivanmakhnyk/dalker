@@ -14,13 +14,13 @@ use windows::Win32::System::Threading::{
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, GetKeyboardLayout, MapVirtualKeyExW, SendInput, VkKeyScanExW, HKL, INPUT, INPUT_0, INPUT_KEYBOARD,
-    INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS, MAPVK_VK_TO_CHAR, MAPVK_VK_TO_VSC_EX, VK_CAPITAL,
-    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE,
-    MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
-    MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
-    MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, MOUSE_EVENT_FLAGS,
-    VIRTUAL_KEY,
+    GetKeyState, GetKeyboardLayout, MapVirtualKeyExW, SendInput, VkKeyScanExW, HKL, INPUT, INPUT_0,
+    INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY,
+    KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_UNICODE, MAPVK_VK_TO_CHAR, MAPVK_VK_TO_VSC_EX,
+    MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
+    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT,
+    MOUSE_EVENT_FLAGS, VIRTUAL_KEY, VK_CAPITAL,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetAncestor, GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId, WindowFromPoint,
@@ -90,14 +90,24 @@ impl SendInputInjector {
             let max = size.saturating_sub(1).max(1) as i64;
             ((p as i64 * 65535) / max) as i32
         };
-        (to_abs(px, self.display.width), to_abs(py, self.display.height))
+        (
+            to_abs(px, self.display.width),
+            to_abs(py, self.display.height),
+        )
     }
 
     fn mouse(&self, dx: i32, dy: i32, data: u32, flags: MOUSE_EVENT_FLAGS) -> INPUT {
         INPUT {
             r#type: INPUT_MOUSE,
             Anonymous: INPUT_0 {
-                mi: MOUSEINPUT { dx, dy, mouseData: data, dwFlags: flags, time: 0, dwExtraInfo: 0 },
+                mi: MOUSEINPUT {
+                    dx,
+                    dy,
+                    mouseData: data,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
             },
         }
     }
@@ -140,7 +150,9 @@ impl SendInputInjector {
     /// a click there would do nothing for the viewer. A lone Ctrl tap raises the sign-in
     /// prompt instead, and can never type anything into it.
     fn wake_lock_screen() {
-        if desktop::thread_desktop_name().as_deref() != Some("Default") || !desktop::session_locked() {
+        if desktop::thread_desktop_name().as_deref() != Some("Default")
+            || !desktop::session_locked()
+        {
             return;
         }
         let key = |up: bool| INPUT {
@@ -149,7 +161,11 @@ impl SendInputInjector {
                 ki: KEYBDINPUT {
                     wVk: VIRTUAL_KEY(0),
                     wScan: CTRL_SCANCODE,
-                    dwFlags: if up { KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP } else { KEYEVENTF_SCANCODE },
+                    dwFlags: if up {
+                        KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP
+                    } else {
+                        KEYEVENTF_SCANCODE
+                    },
                     time: 0,
                     dwExtraInfo: 0,
                 },
@@ -172,7 +188,11 @@ impl SendInputInjector {
     }
 
     fn is_win_l_chord(&self, code: &str, down: bool) -> bool {
-        down && code == "KeyL" && self.meta_down && !self.ctrl_down && !self.alt_down && !self.shift_down
+        down && code == "KeyL"
+            && self.meta_down
+            && !self.ctrl_down
+            && !self.alt_down
+            && !self.shift_down
     }
 
     fn release_meta() -> Result<(), InputError> {
@@ -230,7 +250,9 @@ impl SendInputInjector {
     /// higher integrity level than ours (UIPI): `SendInput` still reports success. Detect
     /// that case so it shows up in the log instead of input just "not working".
     fn uipi_check(&self, hwnd: HWND, what: &str) -> Result<(), InputError> {
-        let Some(own) = self.own_integrity else { return Ok(()) };
+        let Some(own) = self.own_integrity else {
+            return Ok(());
+        };
         if hwnd.is_invalid() {
             return Ok(());
         }
@@ -239,7 +261,9 @@ impl SendInputInjector {
         if pid == 0 {
             return Ok(());
         }
-        let Some(target) = (unsafe { process_integrity(pid) }) else { return Ok(()) };
+        let Some(target) = (unsafe { process_integrity(pid) }) else {
+            return Ok(());
+        };
         if uipi_blocks(own, target) {
             return Err(InputError::Backend(format!(
                 "{what} dropped by Windows UIPI: the target window (pid {pid}, integrity {}) runs at a higher \
@@ -333,7 +357,10 @@ impl InputInjector for SendInputInjector {
                         // and trailing keyup) so it never types into the lock screen.
                         return Ok(());
                     }
-                    if matches!(code.as_str(), "MetaLeft" | "OSLeft" | "MetaRight" | "OSRight") {
+                    if matches!(
+                        code.as_str(),
+                        "MetaLeft" | "OSLeft" | "MetaRight" | "OSRight"
+                    ) {
                         if !down {
                             // Win key was released: clear the locked state.
                             self.win_l_locked = false;
@@ -356,7 +383,8 @@ impl InputInjector for SendInputInjector {
 
                 self.update_modifiers(code, *down);
 
-                let kc = keymap::lookup(code).ok_or_else(|| InputError::UnknownKey(code.clone()))?;
+                let kc =
+                    keymap::lookup(code).ok_or_else(|| InputError::UnknownKey(code.clone()))?;
                 // Right after typed text (Enter after a line, Shift+...), wait like the next
                 // character would: otherwise Notepad loses the key and the last character's Shift.
                 let since = self.last_char.elapsed();
@@ -380,7 +408,13 @@ impl InputInjector for SendInputInjector {
                 Self::send(&[INPUT {
                     r#type: INPUT_KEYBOARD,
                     Anonymous: INPUT_0 {
-                        ki: KEYBDINPUT { wVk: vk, wScan: scan, dwFlags: flags, time: 0, dwExtraInfo: 0 },
+                        ki: KEYBDINPUT {
+                            wVk: vk,
+                            wScan: scan,
+                            dwFlags: flags,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
                     },
                 }])?;
                 if *down {
@@ -400,7 +434,9 @@ impl InputInjector for SendInputInjector {
                     if since < TEXT_GAP {
                         std::thread::sleep(TEXT_GAP - since);
                     }
-                    Self::send(&layout_key_inputs(c, hkl, caps).unwrap_or_else(|| unicode_inputs(c)))?;
+                    Self::send(
+                        &layout_key_inputs(c, hkl, caps).unwrap_or_else(|| unicode_inputs(c)),
+                    )?;
                     self.last_char = Instant::now();
                 }
                 self.uipi_check(unsafe { GetForegroundWindow() }, "keyboard input")
@@ -434,7 +470,15 @@ fn key_input(vk: u16, scan: u16, mut flags: KEYBD_EVENT_FLAGS, up: bool) -> INPU
     }
     INPUT {
         r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VIRTUAL_KEY(vk), wScan: scan, dwFlags: flags, time: 0, dwExtraInfo: 0 } },
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(vk),
+                wScan: scan,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
     }
 }
 
@@ -476,7 +520,11 @@ fn layout_key_inputs(c: char, hkl: HKL, caps: bool) -> Option<Vec<INPUT>> {
         mods ^= 0x01;
     }
     let vsc = unsafe { MapVirtualKeyExW(vk as u32, MAPVK_VK_TO_VSC_EX, Some(hkl)) };
-    let ext = if vsc & 0xFF00 == 0xE000 { KEYEVENTF_EXTENDEDKEY } else { KEYBD_EVENT_FLAGS(0) };
+    let ext = if vsc & 0xFF00 == 0xE000 {
+        KEYEVENTF_EXTENDEDKEY
+    } else {
+        KEYBD_EVENT_FLAGS(0)
+    };
     let mut mod_keys: Vec<(u16, u16, KEYBD_EVENT_FLAGS)> = Vec::new();
     if mods & 0x01 != 0 {
         mod_keys.push((0xA0, 0x2A, KEYBD_EVENT_FLAGS(0))); // VK_LSHIFT
@@ -485,10 +533,18 @@ fn layout_key_inputs(c: char, hkl: HKL, caps: bool) -> Option<Vec<INPUT>> {
         mod_keys.push((0xA2, 0x1D, KEYBD_EVENT_FLAGS(0))); // VK_LCONTROL
         mod_keys.push((0xA5, 0x38, KEYEVENTF_EXTENDEDKEY)); // VK_RMENU (AltGr)
     }
-    let mut out: Vec<INPUT> = mod_keys.iter().map(|&(v, s, f)| key_input(v, s, f, false)).collect();
+    let mut out: Vec<INPUT> = mod_keys
+        .iter()
+        .map(|&(v, s, f)| key_input(v, s, f, false))
+        .collect();
     out.push(key_input(vk, (vsc & 0xFF) as u16, ext, false));
     out.push(key_input(vk, (vsc & 0xFF) as u16, ext, true));
-    out.extend(mod_keys.iter().rev().map(|&(v, s, f)| key_input(v, s, f, true)));
+    out.extend(
+        mod_keys
+            .iter()
+            .rev()
+            .map(|&(v, s, f)| key_input(v, s, f, true)),
+    );
     Some(out)
 }
 
@@ -502,7 +558,11 @@ fn unicode_inputs(c: char) -> Vec<INPUT> {
             ki: KEYBDINPUT {
                 wVk: VIRTUAL_KEY(0),
                 wScan: unit,
-                dwFlags: if up { KEYEVENTF_UNICODE | KEYEVENTF_KEYUP } else { KEYEVENTF_UNICODE },
+                dwFlags: if up {
+                    KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+                } else {
+                    KEYEVENTF_UNICODE
+                },
                 time: 0,
                 dwExtraInfo: 0,
             },
@@ -575,7 +635,14 @@ unsafe fn token_integrity_of(process: HANDLE) -> Option<u32> {
         }
         // u64 storage keeps the TOKEN_MANDATORY_LABEL pointer-aligned.
         let mut buf = vec![0u64; (len as usize).div_ceil(8)];
-        GetTokenInformation(token, TokenIntegrityLevel, Some(buf.as_mut_ptr().cast()), len, &mut len).ok()?;
+        GetTokenInformation(
+            token,
+            TokenIntegrityLevel,
+            Some(buf.as_mut_ptr().cast()),
+            len,
+            &mut len,
+        )
+        .ok()?;
         let label = &*(buf.as_ptr() as *const TOKEN_MANDATORY_LABEL);
         let sid = label.Label.Sid;
         let count = *GetSidSubAuthorityCount(sid);
@@ -598,26 +665,53 @@ mod tests {
         let keys = |c| -> Vec<(u16, bool)> {
             unicode_inputs(c)
                 .iter()
-                .map(|i| unsafe { (i.Anonymous.ki.wScan, i.Anonymous.ki.dwFlags.contains(KEYEVENTF_KEYUP)) })
+                .map(|i| unsafe {
+                    (
+                        i.Anonymous.ki.wScan,
+                        i.Anonymous.ki.dwFlags.contains(KEYEVENTF_KEYUP),
+                    )
+                })
                 .collect()
         };
         assert_eq!(keys('é'), vec![(0xE9, false), (0xE9, true)]);
-        assert_eq!(keys('😀'), vec![(0xD83D, false), (0xDE00, false), (0xD83D, true), (0xDE00, true)]);
+        assert_eq!(
+            keys('😀'),
+            vec![
+                (0xD83D, false),
+                (0xDE00, false),
+                (0xD83D, true),
+                (0xDE00, true)
+            ]
+        );
     }
 
     #[test]
     fn layout_keys_type_with_shift_on_us() {
         // 00000409 = US English, loaded by every Windows install.
-        let hkl = unsafe { LoadKeyboardLayoutW(windows::core::w!("00000409"), KLF_NOTELLSHELL) }.unwrap();
+        let hkl =
+            unsafe { LoadKeyboardLayoutW(windows::core::w!("00000409"), KLF_NOTELLSHELL) }.unwrap();
         let vks = |c| -> Option<Vec<(u16, bool)>> {
             layout_key_inputs(c, hkl, false).map(|v| {
                 v.iter()
-                    .map(|i| unsafe { (i.Anonymous.ki.wVk.0, i.Anonymous.ki.dwFlags.contains(KEYEVENTF_KEYUP)) })
+                    .map(|i| unsafe {
+                        (
+                            i.Anonymous.ki.wVk.0,
+                            i.Anonymous.ki.dwFlags.contains(KEYEVENTF_KEYUP),
+                        )
+                    })
                     .collect()
             })
         };
         assert_eq!(vks('a'), Some(vec![(0x41, false), (0x41, true)]));
-        assert_eq!(vks('A'), Some(vec![(0xA0, false), (0x41, false), (0x41, true), (0xA0, true)]));
+        assert_eq!(
+            vks('A'),
+            Some(vec![
+                (0xA0, false),
+                (0x41, false),
+                (0x41, true),
+                (0xA0, true)
+            ])
+        );
         assert_eq!(vks('ж'), None);
         let caps_a = layout_key_inputs('a', hkl, true).unwrap();
         assert_eq!(unsafe { caps_a[0].Anonymous.ki.wVk.0 }, 0xA0);
@@ -626,19 +720,36 @@ mod tests {
 
     #[test]
     fn absolute_mapping_hits_corners() {
-        let inj = SendInputInjector { display: DisplayInfo { width: 1920, height: 1080 }, ..SendInputInjector::new() };
+        let inj = SendInputInjector {
+            display: DisplayInfo {
+                width: 1920,
+                height: 1080,
+            },
+            ..SendInputInjector::new()
+        };
         assert_eq!(inj.absolute(0.0, 0.0), (0, 0));
         assert_eq!(inj.absolute(1.0, 1.0), (65535, 65535));
         let (x, y) = inj.absolute(0.5, 0.5);
-        assert!((32700..32800).contains(&x) && (32700..32800).contains(&y), "{x},{y}");
+        assert!(
+            (32700..32800).contains(&x) && (32700..32800).contains(&y),
+            "{x},{y}"
+        );
     }
 
     #[test]
     fn wheel_whole_notches_pass_through_with_win32_sign() {
         let mut acc = (0.0, 0.0);
-        assert_eq!(take_wheel_notches(&mut acc, 0.0, 120.0), (-120, 0), "browser down = Win32 negative");
+        assert_eq!(
+            take_wheel_notches(&mut acc, 0.0, 120.0),
+            (-120, 0),
+            "browser down = Win32 negative"
+        );
         assert_eq!(take_wheel_notches(&mut acc, 0.0, -240.0), (240, 0));
-        assert_eq!(take_wheel_notches(&mut acc, 120.0, 0.0), (0, 120), "right stays positive");
+        assert_eq!(
+            take_wheel_notches(&mut acc, 120.0, 0.0),
+            (0, 120),
+            "right stays positive"
+        );
         assert_eq!(acc, (0.0, 0.0));
     }
 
@@ -646,7 +757,9 @@ mod tests {
     fn wheel_chrome_pixel_deltas_accumulate_to_notches() {
         // Chrome reports 100 per notch: 6 notches = 600 = exactly 5 Win32 notches.
         let mut acc = (0.0, 0.0);
-        let out: Vec<i32> = (0..6).map(|_| take_wheel_notches(&mut acc, 0.0, 100.0).0).collect();
+        let out: Vec<i32> = (0..6)
+            .map(|_| take_wheel_notches(&mut acc, 0.0, 100.0).0)
+            .collect();
         assert_eq!(out, vec![0, -120, -120, -120, -120, -120]);
         assert_eq!(acc.0, 0.0);
     }
@@ -675,14 +788,20 @@ mod tests {
     #[test]
     fn wheel_ignores_non_finite_and_zero() {
         let mut acc = (0.0, 0.0);
-        assert_eq!(take_wheel_notches(&mut acc, f32::NAN, f32::INFINITY), (0, 0));
+        assert_eq!(
+            take_wheel_notches(&mut acc, f32::NAN, f32::INFINITY),
+            (0, 0)
+        );
         assert_eq!(take_wheel_notches(&mut acc, 0.0, 0.0), (0, 0));
         assert_eq!(acc, (0.0, 0.0));
     }
 
     #[test]
     fn uipi_only_blocks_higher_integrity() {
-        assert!(uipi_blocks(0x2000, 0x3000), "medium agent -> elevated window");
+        assert!(
+            uipi_blocks(0x2000, 0x3000),
+            "medium agent -> elevated window"
+        );
         assert!(!uipi_blocks(0x3000, 0x3000));
         assert!(!uipi_blocks(0x3000, 0x2000));
         assert!(!uipi_blocks(0x2000, 0x2000));
@@ -743,20 +862,40 @@ mod tests {
         inj.win_l_locked = true;
 
         // Auto-repeated KeyL down is dropped without error and without clearing locked state
-        assert!(inj.inject(&InputEvent::Key { code: "KeyL".into(), down: true }).is_ok());
+        assert!(inj
+            .inject(&InputEvent::Key {
+                code: "KeyL".into(),
+                down: true
+            })
+            .is_ok());
         assert!(inj.win_l_locked);
 
         // Auto-repeated Win down is dropped without setting meta_down
-        assert!(inj.inject(&InputEvent::Key { code: "MetaLeft".into(), down: true }).is_ok());
+        assert!(inj
+            .inject(&InputEvent::Key {
+                code: "MetaLeft".into(),
+                down: true
+            })
+            .is_ok());
         assert!(inj.win_l_locked);
         assert!(!inj.meta_down);
 
         // KeyL up is dropped without error
-        assert!(inj.inject(&InputEvent::Key { code: "KeyL".into(), down: false }).is_ok());
+        assert!(inj
+            .inject(&InputEvent::Key {
+                code: "KeyL".into(),
+                down: false
+            })
+            .is_ok());
         assert!(inj.win_l_locked);
 
         // Win up clears win_l_locked and meta_down
-        assert!(inj.inject(&InputEvent::Key { code: "MetaLeft".into(), down: false }).is_ok());
+        assert!(inj
+            .inject(&InputEvent::Key {
+                code: "MetaLeft".into(),
+                down: false
+            })
+            .is_ok());
         assert!(!inj.win_l_locked);
         assert!(!inj.meta_down);
     }

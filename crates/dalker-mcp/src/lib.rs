@@ -96,7 +96,11 @@ pub struct McpConfig {
 
 impl Default for McpConfig {
     fn default() -> Self {
-        Self { max_sessions: 1, idle_timeout: Duration::from_secs(600), limits: RateLimits::default() }
+        Self {
+            max_sessions: 1,
+            idle_timeout: Duration::from_secs(600),
+            limits: RateLimits::default(),
+        }
     }
 }
 
@@ -125,7 +129,10 @@ impl Shared {
         }
         sessions.retain(|_, s| !s.is_closed());
         if sessions.len() >= self.config.max_sessions {
-            return Err(format!("too many AI agents connected (max {})", self.config.max_sessions));
+            return Err(format!(
+                "too many AI agents connected (max {})",
+                self.config.max_sessions
+            ));
         }
         let id = self.desktop.open_viewer()?;
         let s = Arc::new(Session::new(
@@ -143,7 +150,11 @@ impl Shared {
     fn end_where(&self, why: &str, mut pred: impl FnMut(&Session) -> bool) -> usize {
         let ended: Vec<Arc<Session>> = {
             let mut sessions = self.sessions.lock().unwrap();
-            let ids: Vec<String> = sessions.iter().filter(|(_, s)| pred(s)).map(|(k, _)| k.clone()).collect();
+            let ids: Vec<String> = sessions
+                .iter()
+                .filter(|(_, s)| pred(s))
+                .map(|(k, _)| k.clone())
+                .collect();
             ids.iter().filter_map(|k| sessions.remove(k)).collect()
         };
         let mut n = 0;
@@ -161,7 +172,9 @@ impl Shared {
         let unix = tokens::unix_now();
         let idle = self.config.idle_timeout;
         self.end_where("idle", |s| s.idle_for(now) >= idle);
-        self.end_where("token revoked or expired", |s| !self.tokens.is_live(&s.token_id, unix));
+        self.end_where("token revoked or expired", |s| {
+            !self.tokens.is_live(&s.token_id, unix)
+        });
     }
 }
 
@@ -172,7 +185,11 @@ pub struct McpServer {
 }
 
 impl McpServer {
-    pub fn new(desktop: Arc<dyn DesktopHandle>, tokens: Arc<TokenStore>, config: McpConfig) -> Self {
+    pub fn new(
+        desktop: Arc<dyn DesktopHandle>,
+        tokens: Arc<TokenStore>,
+        config: McpConfig,
+    ) -> Self {
         Self {
             shared: Arc::new(Shared {
                 desktop,
@@ -193,13 +210,20 @@ impl McpServer {
     pub fn set_tokens(&self, records: Vec<TokenRecord>) {
         let gone = self.shared.tokens.replace(records);
         if !gone.is_empty() {
-            self.shared.end_where("token revoked or changed", |s| gone.contains(&s.token_id));
+            self.shared
+                .end_where("token revoked or changed", |s| gone.contains(&s.token_id));
         }
     }
 
     /// Connected AI agents.
     pub fn session_count(&self) -> usize {
-        self.shared.sessions.lock().unwrap().values().filter(|s| !s.is_closed()).count()
+        self.shared
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|s| !s.is_closed())
+            .count()
     }
 
     /// Ends every session (held input is released). Returns how many there were.
@@ -239,7 +263,10 @@ impl McpServer {
         );
         Router::new()
             .nest_service("/mcp", mcp)
-            .layer(axum::middleware::from_fn_with_state(Arc::clone(&self.shared), authenticate))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&self.shared),
+                authenticate,
+            ))
             .layer(axum::middleware::from_fn(no_proxy_buffering))
     }
 
@@ -262,7 +289,9 @@ impl McpServer {
         let _reaper = AbortOnDrop(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(5)).await;
-                let Some(shared) = shared.upgrade() else { return };
+                let Some(shared) = shared.upgrade() else {
+                    return;
+                };
                 shared.reap();
             }
         }));
@@ -282,14 +311,18 @@ impl McpServer {
 /// to (other proxies follow `Cache-Control: no-cache` / `text/event-stream`).
 async fn no_proxy_buffering(req: Request, next: Next) -> Response {
     let mut resp = next.run(req).await;
-    resp.headers_mut().insert("x-accel-buffering", HeaderValue::from_static("no"));
+    resp.headers_mut()
+        .insert("x-accel-buffering", HeaderValue::from_static("no"));
     resp
 }
 
 fn reject(status: StatusCode, msg: &str) -> Response {
     let mut r = (status, axum::Json(serde_json::json!({ "error": msg }))).into_response();
     if status == StatusCode::UNAUTHORIZED {
-        r.headers_mut().insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer realm=\"dalker\""));
+        r.headers_mut().insert(
+            header::WWW_AUTHENTICATE,
+            HeaderValue::from_static("Bearer realm=\"dalker\""),
+        );
     }
     r
 }
@@ -305,14 +338,18 @@ async fn authenticate(State(shared): State<Arc<Shared>>, mut req: Request, next:
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")))
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+        })
         .map(|t| t.trim().to_owned());
     let Some(token) = token else {
         return reject(StatusCode::UNAUTHORIZED, "missing bearer token");
     };
     let tokens = Arc::clone(&shared.tokens);
     // Argon2 the first time a token is seen: keep it off the async workers.
-    let result = tokio::task::spawn_blocking(move || tokens.verify(&token, tokens::unix_now())).await;
+    let result =
+        tokio::task::spawn_blocking(move || tokens.verify(&token, tokens::unix_now())).await;
     match result {
         Ok(Ok(who)) => {
             req.extensions_mut().insert(who);

@@ -51,7 +51,9 @@ impl X11Capturer {
             );
         }
         let (conn, screen_num) = x11rb::connect(None).map_err(|e| {
-            CaptureError::Unsupported(format!("cannot connect to X server (is $DISPLAY set?): {e}"))
+            CaptureError::Unsupported(format!(
+                "cannot connect to X server (is $DISPLAY set?): {e}"
+            ))
         })?;
         let setup = conn.setup();
         let screen = &setup.roots[screen_num];
@@ -59,7 +61,9 @@ impl X11Capturer {
         let depth = screen.root_depth;
 
         if setup.image_byte_order != ImageOrder::LSB_FIRST {
-            return Err(CaptureError::Unsupported("big-endian X server image order".into()));
+            return Err(CaptureError::Unsupported(
+                "big-endian X server image order".into(),
+            ));
         }
         let bpp = setup
             .pixmap_formats
@@ -120,7 +124,11 @@ impl X11Capturer {
             .map_err(|e| e.to_string())?
             .reply()
             .map_err(|e| e.to_string())?;
-        tracing::debug!("MIT-SHM {}.{}", version.major_version, version.minor_version);
+        tracing::debug!(
+            "MIT-SHM {}.{}",
+            version.major_version,
+            version.minor_version
+        );
 
         let size = self.frame_size();
         unsafe {
@@ -139,7 +147,10 @@ impl X11Capturer {
                 libc::shmctl(shmid, libc::IPC_RMID, std::ptr::null_mut());
                 msg
             };
-            let seg = self.conn.generate_id().map_err(|e| cleanup(e.to_string()))?;
+            let seg = self
+                .conn
+                .generate_id()
+                .map_err(|e| cleanup(e.to_string()))?;
             self.conn
                 .shm_attach(seg, shmid as u32, false)
                 .map_err(|e| cleanup(e.to_string()))?
@@ -147,7 +158,11 @@ impl X11Capturer {
                 .map_err(|e| cleanup(format!("ShmAttach (remote X server?): {e}")))?;
             // Both sides are attached; mark for deletion so it is freed on detach/exit.
             libc::shmctl(shmid, libc::IPC_RMID, std::ptr::null_mut());
-            Ok(ShmSegment { seg, addr: addr as *mut u8, size })
+            Ok(ShmSegment {
+                seg,
+                addr: addr as *mut u8,
+                size,
+            })
         }
     }
 
@@ -185,7 +200,17 @@ impl X11Capturer {
         let (w, h) = (self.width, self.height);
         if let Some(s) = &self.shm {
             self.conn
-                .shm_get_image(self.root, 0, 0, w, h, !0, ImageFormat::Z_PIXMAP.into(), s.seg, 0)
+                .shm_get_image(
+                    self.root,
+                    0,
+                    0,
+                    w,
+                    h,
+                    !0,
+                    ImageFormat::Z_PIXMAP.into(),
+                    s.seg,
+                    0,
+                )
                 .map_err(backend("ShmGetImage"))?
                 .reply()
                 .map_err(backend("ShmGetImage"))?;
@@ -220,7 +245,10 @@ impl ScreenCapturer for X11Capturer {
     }
 
     fn display(&self) -> DisplayInfo {
-        DisplayInfo { width: self.width as u32, height: self.height as u32 }
+        DisplayInfo {
+            width: self.width as u32,
+            height: self.height as u32,
+        }
     }
 
     fn next_frame(&mut self, timeout: Duration) -> Result<Option<RawFrame>, CaptureError> {
