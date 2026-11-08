@@ -44,7 +44,7 @@ mime_guess = "2"
 argon2 = { version = "0.5", features = ["std"] }
 
 # WebRTC & media. 0.17 is the last release line with the classic async API.
-webrtc = "0.17"
+webrtc = "0.21"
 openh264 = "0.9"
 
 # Platform
