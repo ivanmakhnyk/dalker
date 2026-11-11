@@ -180,6 +180,7 @@ async function watchMcp() {
     const s = await api("/api/settings");
     on = !s.blocked && s.mcp && s.mcp.enabled;
   } catch (err) {
+    if (pc !== peer) return;
     if (err.status === 401) return;
   }
   $("btn-ai").hidden = !on;
@@ -352,15 +353,20 @@ async function connect() {
     else if (s === "closed") setStatus("disconnected", "idle");
   };
 
+  // A second connect() replaces `pc` while this one awaits; never apply this offer's
+  // answer to that newer connection, which would fail with a confusing SDP error.
+  const peer = pc;
   try {
-    await pc.setLocalDescription(await pc.createOffer());
-    await waitIceComplete(pc);
-    const answer = await api("/api/offer", { sdp: pc.localDescription.sdp });
-    await pc.setRemoteDescription({ type: "answer", sdp: answer.sdp });
+    await peer.setLocalDescription(await peer.createOffer());
+    await waitIceComplete(peer);
+    const answer = await api("/api/offer", { sdp: peer.localDescription.sdp });
+    if (pc !== peer) { peer.close(); return; }
+    await peer.setRemoteDescription({ type: "answer", sdp: answer.sdp });
     slotRetries = 0;
     statsTimer = setInterval(updateStats, 1000);
     lockTimer = setInterval(pollLocked, 1000);
   } catch (err) {
+    if (pc !== peer) return;
     if (err.status === 401) { disconnect(); showLogin("Your session expired. Sign in again."); return; }
     // Viewer slots can still be held by a connection that is closing; they free up within
     // about 20 s, so wait and try again instead of showing a dead end.
@@ -1586,6 +1592,7 @@ async function start() {
   try {
     info = await api("/api/info");
   } catch (err) {
+    if (pc !== peer) return;
     if (err.status === 401) { showLogin(); return; }
     setStatus(`error: ${err.message}`, "error");
     return;
