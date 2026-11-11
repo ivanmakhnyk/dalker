@@ -296,17 +296,13 @@ async fn reconcile_mcp(
 
 /// Follows the listener settings in the config file and publishes them on `wanted`.
 pub async fn follow_config(
-    path: std::path::PathBuf,
+    mut config: watch::Receiver<crate::config_watch::Snapshot>,
     startup: Startup,
     wanted: watch::Sender<Wanted>,
 ) {
-    loop {
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        // A file that can't be read right now changes nothing.
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let now = startup.wanted_from(&cli::parse_config(&text));
+    while config.changed().await.is_ok() {
+        let snapshot = config.borrow_and_update().clone();
+        let now = startup.wanted_from(&snapshot);
         wanted.send_if_modified(|w| {
             if *w == now {
                 return false;
