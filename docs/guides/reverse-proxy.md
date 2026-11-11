@@ -31,8 +31,9 @@ DALKER_UDP_PORT=8744
 DALKER_PUBLIC_IP=203.0.113.7
 ```
 
-Instead of a fixed `DALKER_PUBLIC_IP`, Dalker can ask a public STUN server for the address each
-time it starts, which suits a home connection whose IP changes:
+Instead of a fixed `DALKER_PUBLIC_IP`, Dalker can ask a public STUN server for the address, which
+suits a home connection whose IP changes. It asks when it starts, again every 10 minutes, and
+when a viewer fails to connect; new viewers get the new address without a restart:
 
 ```ini
 DALKER_UDP_PORT=8744
