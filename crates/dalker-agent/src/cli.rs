@@ -111,9 +111,9 @@ pub struct Cli {
     #[arg(long, value_delimiter = ',')]
     pub stun: Vec<String>,
 
-    /// Do not show the notification-area (tray) icon (Windows).
+    /// Do not show the notification-area (tray) icon (Windows) or menu bar icon (macOS).
     #[arg(long)]
-    #[cfg_attr(not(windows), allow(dead_code))]
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     pub no_tray: bool,
 
     /// MCP server for AI agents (Claude Desktop/Code...): `on` serves `/mcp` on --mcp-bind.
@@ -268,13 +268,17 @@ pub fn read_password_from_stdin(command: &str) -> anyhow::Result<String> {
     Ok(pw)
 }
 
-/// System-wide config file used by the installed service.
+/// Config file of the installed agent: system-wide on Windows and Linux, per user on macOS.
 pub fn default_config_path() -> std::path::PathBuf {
     if cfg!(windows) {
         let base = std::env::var_os("ProgramData").unwrap_or_else(|| r"C:\ProgramData".into());
         std::path::PathBuf::from(base)
             .join("Dalker")
             .join("dalker.conf")
+    } else if cfg!(target_os = "macos") {
+        // The agent runs as the signed-in user (a LaunchAgent), so its config is that user's.
+        let home = std::env::var_os("HOME").unwrap_or_else(|| "/".into());
+        std::path::PathBuf::from(home).join("Library/Application Support/Dalker/dalker.conf")
     } else {
         std::path::PathBuf::from("/etc/dalker/dalker.conf")
     }
