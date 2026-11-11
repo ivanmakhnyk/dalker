@@ -74,6 +74,7 @@ fn main() -> Result<()> {
         );
     }
     init_logging(if service { "service.log" } else { "dalker.log" });
+    install_panic_hook();
 
     if service {
         return run_service();
@@ -239,6 +240,41 @@ fn run_service() -> Result<()> {
 #[cfg(not(windows))]
 fn run_service() -> Result<()> {
     bail!("`service` is only available on Windows")
+}
+
+/// Threads the agent can't work without: if one of them panics, the process ends so the service
+/// (systemd, the Windows service, launchd) starts a fresh one, instead of serving a black screen
+/// or ignoring input.
+const ESSENTIAL_THREADS: [&str; 3] = ["dalker-capture", "dalker-input", "dalker-clipboard"];
+
+/// Logs every panic where the agent's log goes (stderr may go nowhere on Windows and macOS), and
+/// aborts when an essential thread panicked.
+fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        let name = thread.name().unwrap_or("unnamed").to_owned();
+        let message = panic_message(info.payload());
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_default();
+        tracing::error!(thread = %name, %location, "panic: {message}");
+        default(info);
+        if ESSENTIAL_THREADS.contains(&name.as_str()) {
+            tracing::error!(thread = %name, "an essential thread panicked; stopping so Dalker is restarted");
+            std::process::abort();
+        }
+    }));
+}
+
+/// The text a panic was raised with (`panic!("...")` gives a `&str` or a `String`).
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "(no message)".to_owned())
 }
 
 fn init_logging(file_name: &str) {
@@ -569,7 +605,15 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                                 last_err = e;
                             }
                         }
-                        Err(_) => {}
+                        Err(e) => {
+                            let e = format!("the border backend failed: {e}");
+                            if e != last_err {
+                                tracing::error!(
+                                    "{e}; the desktop is not served until the border can be shown"
+                                );
+                                last_err = e;
+                            }
+                        }
                     }
                 }
                 if indicator.as_ref().is_some_and(|i| !i.healthy()) {
@@ -1475,6 +1519,17 @@ fn hostname() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panic_messages_are_read_from_both_payload_kinds() {
+        let fixed = std::panic::catch_unwind(|| panic!("fixed text")).unwrap_err();
+        assert_eq!(panic_message(fixed.as_ref()), "fixed text");
+        let n = 3;
+        let formatted = std::panic::catch_unwind(|| panic!("formatted {n}")).unwrap_err();
+        assert_eq!(panic_message(formatted.as_ref()), "formatted 3");
+        let other = std::panic::catch_unwind(|| std::panic::panic_any(42u8)).unwrap_err();
+        assert_eq!(panic_message(other.as_ref()), "(no message)");
+    }
 
     #[test]
     fn inject_errors_are_rate_limited_per_message() {
