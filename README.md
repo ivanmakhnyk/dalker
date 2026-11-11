@@ -62,6 +62,7 @@ Get the installer for the computer you want to reach from
 |---|---|
 | Windows 10 or 11 (64-bit) | `Dalker-<version>-x64.msi` |
 | Ubuntu (GNOME desktop) or Debian, 64-bit | `dalker_<version>_amd64.deb` |
+| macOS 14 or later, Apple silicon (preview) | `Dalker-<version>.pkg` |
 
 The computer you connect *from* needs only a web browser.
 
@@ -81,12 +82,17 @@ sudo apt install ./dalker_*_amd64.deb
 then **log out and back in once** so the desktop loads Dalker's red frame. (Without the frame,
 Dalker shows nothing; see [Questions](#questions).)
 
+**macOS:** open the `.pkg`. The first time, macOS blocks it because it isn't notarized: open
+**System Settings → Privacy & Security** and click **Open Anyway**. When Dalker starts, allow it
+under **Screen & System Audio Recording** and **Accessibility** in the same settings page, then
+choose **Quit Dalker** in its menu bar icon and open **Dalker** from Applications again.
+
 Dalker now runs in the background and starts with the computer.
 
 ### 2. Choose a password
 
-Open **Dalker Settings** (Windows: the Start menu; Ubuntu: the app grid). It asks for
-administrator rights. Under **Web Remote Access**, type an access password and click **Apply**.
+Open **Dalker Settings** (Windows: the Start menu; Ubuntu: the app grid; macOS: the menu bar
+icon). On Windows and Ubuntu it asks for administrator rights. Under **Web Remote Access**, type an access password and click **Apply**.
 
 <img src="docs/images/settings-web.png" alt="The Web Remote Access tab of Dalker Settings" width="720">
 
@@ -100,8 +106,8 @@ On the other device, open
 http://<the computer's IP address>:8742
 ```
 
-and sign in with the access password. (Find the IP address with `ipconfig` on Windows, or
-`hostname -I` on Ubuntu.)
+and sign in with the access password. (Find the IP address with `ipconfig` on Windows,
+`hostname -I` on Ubuntu, or `ipconfig getifaddr en0` on macOS.)
 
 <img src="docs/images/sign-in.png" alt="The Dalker sign-in page in a browser" width="420">
 
@@ -230,10 +236,12 @@ Ubuntu's standard GNOME desktop (Wayland or Xorg) and Xorg sessions. Other Wayla
 one is shown.
 
 **Where are the logs?**
-Windows: `C:\ProgramData\Dalker\logs`. Ubuntu: `journalctl -u dalker`.
+Windows: `C:\ProgramData\Dalker\logs`. Ubuntu: `journalctl -u dalker`. macOS:
+`~/Library/Logs/Dalker`.
 
 **How do I uninstall?**
-Windows: **Settings → Apps → Dalker → Uninstall**. Ubuntu: `sudo apt remove dalker`.
+Windows: **Settings → Apps → Dalker → Uninstall**. Ubuntu: `sudo apt remove dalker`. macOS: see
+[How the host runs → macOS](docs/DEVELOPMENT.md#macos).
 
 ## For developers
 

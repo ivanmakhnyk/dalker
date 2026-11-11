@@ -101,6 +101,8 @@ client's settings, within these host limits.
     window's web view. The X11 and uinput code is pure Rust, so no `libx11-dev` or
     `libxtst-dev` is needed. At runtime the agent needs read/write access to `/dev/uinput`, and
     GNOME on Wayland capture needs `gstreamer1.0-tools` and `gstreamer1.0-pipewire`.
+  - **macOS** (14 or later, Apple silicon): Xcode Command Line Tools (`xcode-select --install`)
+    and `brew install nasm`. No Apple Developer account is needed.
 
 ### Build
 
@@ -127,6 +129,7 @@ DALKER_PASSWORD=dev cargo run --release -p dalker-agent
 ```bash
 sh packaging/linux/build-deb.sh target/release/dalkerd dist   # -> dist/dalker_<version>_amd64.deb
 pwsh packaging/windows/build-msi.ps1                            # -> dist/Dalker-<version>-x64.msi
+sh packaging/macos/build-pkg.sh target/release/dalkerd dist     # -> dist/Dalker-<version>.pkg
 ```
 
 ### CI and releases
@@ -138,6 +141,14 @@ linted (clippy) and tested on Windows and Ubuntu by [`ci.yml`](../.github/workfl
 of `Cargo.toml`; the crates, the `.deb`, the MSI and the web client (connection details → Version) all
 take it from there. Pushing a `vX.Y.Z` tag builds both installers and publishes a GitHub Release
 ([`release.yml`](../.github/workflows/release.yml)). See [RELEASING.md](../RELEASING.md).
+
+macOS has its own two workflows, so a Mac failure never blocks the Windows and Linux ones:
+[`macos.yml`](../.github/workflows/macos.yml) builds, lints and tests on Apple silicon whenever
+shared code or the macOS parts change (check name `macOS`), and
+[`release-macos.yml`](../.github/workflows/release-macos.yml) builds `Dalker-<version>.pkg` for the
+same tag and adds it to the release that `release.yml` creates. If it fails, fix it and run it again
+for that tag from the Actions tab. It signs the app with the project's self-signed certificate from
+the `MACOS_CERT_P12` and `MACOS_CERT_PASSWORD` secrets (ad hoc when they're missing).
 
 ## How the host runs
 
@@ -208,6 +219,43 @@ It runs as the systemd service `dalker`, starts at boot and restarts on failure.
 
 Manual run (X11 only): set `DISPLAY`/`XAUTHORITY`, give yourself `/dev/uinput` access, then run
 `dalkerd`.
+
+### macOS
+
+macOS 14 Sonoma or later. The `.pkg` installs `Dalker.app` in `/Applications` and a LaunchAgent
+(`/Library/LaunchAgents/io.github.ivanmakhnyk.Dalker.plist`) that starts it in each user's
+session at login; the installer starts it for whoever is signed in right away.
+
+| Piece | How |
+|-------|-----|
+| Capture | ScreenCaptureKit (`SCStream`) on the main display, at physical (Retina) resolution |
+| Input | `CGEventPost` at the HID level; Insert = Help, PrintScreen = F13, ScrollLock = F14 |
+| Border | four click-through AppKit windows above everything, on every Space, kept out of the stream |
+| Clipboard | `NSPasteboard` text |
+| Runs as | the signed-in user; the main thread runs the AppKit loop (`dalker_platform::run_app`) |
+
+- **Permissions.** macOS asks the user to allow Dalker under System Settings › Privacy & Security
+  › **Screen & System Audio Recording** and › **Accessibility**. Until both are on, the agent
+  serves no picture or ignores input, and says why in its log. Screen Recording only applies to a
+  newly started process: quit Dalker from the menu bar after allowing it (launchd starts it
+  again at next login, or run `open /Applications/Dalker.app`).
+- **Signing without an Apple Developer account.** Releases are signed with a self-signed
+  certificate, not notarized. macOS ties both permissions to that signature, so they stay
+  granted across updates. The first install is blocked by Gatekeeper: open System Settings ›
+  Privacy & Security and click **Open Anyway**. On macOS 15 and later, macOS also asks every
+  so often whether Dalker may keep recording the screen.
+- **Config and logs** are per user: `~/Library/Application Support/Dalker/dalker.conf` and
+  `~/Library/Logs/Dalker`. Dalker Settings opens from the menu bar icon and needs no
+  administrator password.
+- **Limits:** the login window and FileVault unlock screen can't be reached (the agent only runs
+  inside a signed-in session; viewers see a "locked" notice while the screen is locked), Ctrl+Alt+Del
+  does nothing, and with several monitors only the main one is captured.
+- **Uninstall:** `launchctl bootout gui/$(id -u)/io.github.ivanmakhnyk.Dalker`, then
+  `sudo rm -rf /Applications/Dalker.app /Library/LaunchAgents/io.github.ivanmakhnyk.Dalker.plist`.
+
+Manual run: `cargo run -p dalker-agent` from Terminal, after allowing Terminal (not Dalker) under
+Screen Recording and Accessibility: macOS gives a program started from Terminal Terminal's
+permissions.
 
 ## AI agents (MCP) reference
 
