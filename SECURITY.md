@@ -22,7 +22,8 @@ Report it privately through GitHub:
 
 Please include:
 
-- the Dalker version, host OS and session type (Windows, Ubuntu Xorg, Ubuntu Wayland);
+- the Dalker version, host OS and session type (Windows; Linux with GNOME on Wayland, KDE Plasma,
+  sway or another Wayland desktop, or Xorg; macOS);
 - what an attacker can do, and what access they need first (same LAN, internet, a viewer
   password, an MCP token, a local account on the host);
 - steps or a proof of concept to reproduce it;
@@ -43,6 +44,8 @@ publicly.
 In scope: the `dalkerd` agent, the web client in `web-ui/`, the MCP server, Dalker Settings, and
 the installers and packages in `packaging/`.
 
-Out of scope: problems that need an administrator or root account on the host, a host exposed to
+Out of scope: problems that need an administrator or root account on the host (on macOS, where
+Dalker's settings belong to the signed-in user, problems that need that user's account are in
+scope if they get around macOS's own permissions), a host exposed to
 the internet without a password or TLS against the documented setup, and denial of service by
 flooding the network.
