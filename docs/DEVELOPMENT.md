@@ -325,9 +325,10 @@ its session at once. Requests carry
 
 - *Claude Code:*
   ```bash
-  claude mcp add --transport http dalker http://127.0.0.1:8743/mcp --header "Authorization: Bearer dkmcp_..."
+  claude mcp add --scope user --transport http dalker http://127.0.0.1:8743/mcp --header "Authorization: Bearer dkmcp_..."
   ```
-  or in `.mcp.json`, with the token in an environment variable:
+  or in a project's `.mcp.json`, with the token in an environment variable (never the token itself,
+  since that file is usually committed):
   ```json
   {
     "mcpServers": {
