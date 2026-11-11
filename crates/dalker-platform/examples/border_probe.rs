@@ -36,8 +36,10 @@ fn wait_for(
 
 fn main() {
     dalker_platform::init_process();
-    let indicator = dalker_platform::create_indicator().expect("create indicator");
-    let mut cap = dalker_platform::create_capturer().expect("create capturer");
+    let indicator = dalker_platform::create_indicator(dalker_platform::Desktop::detect())
+        .expect("create indicator");
+    let mut cap = dalker_platform::create_capturer(dalker_platform::Desktop::detect())
+        .expect("create capturer");
     let (w, h) = (cap.display().width, cap.display().height);
     println!(
         "indicator: {}  capture: {} {}x{}",
