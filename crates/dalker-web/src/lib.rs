@@ -272,6 +272,13 @@ async fn asset(Path(path): Path<String>) -> Response {
     serve_asset(&path)
 }
 
+/// Everything the web client and Dalker Settings load comes from the agent itself. Frames only
+/// from the same origin: the viewer shows the settings page in its "AI agents" panel.
+pub const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; \
+     style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; \
+     frame-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'; \
+     object-src 'none'";
+
 fn serve_asset(path: &str) -> Response {
     match Assets::get(path) {
         Some(file) => {
@@ -281,6 +288,12 @@ fn serve_asset(path: &str) -> Response {
                     (header::CONTENT_TYPE, mime.as_ref().to_owned()),
                     (header::CACHE_CONTROL, "no-cache".to_owned()),
                     (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+                    (
+                        header::CONTENT_SECURITY_POLICY,
+                        CONTENT_SECURITY_POLICY.to_owned(),
+                    ),
+                    (header::X_FRAME_OPTIONS, "SAMEORIGIN".to_owned()),
+                    (header::REFERRER_POLICY, "no-referrer".to_owned()),
                 ],
                 file.data.into_owned(),
             )
@@ -483,6 +496,12 @@ mod tests {
             .to_str()
             .unwrap()
             .starts_with("text/html"));
+        let csp = r.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap();
+        assert!(csp.contains("frame-ancestors 'self'") && csp.contains("script-src 'self'"));
+        assert_eq!(r.headers()[header::X_FRAME_OPTIONS], "SAMEORIGIN");
+        assert_eq!(r.headers()[header::REFERRER_POLICY], "no-referrer");
         let r = app()
             .oneshot(Request::get("/app.js").body(Body::empty()).unwrap())
             .await
