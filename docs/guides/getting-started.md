@@ -77,6 +77,11 @@ find it, run `ipconfig` on Windows (the "IPv4 Address" line), `hostname -I` on U
 > Nobody can connect until a password is set. Changing the password later signs out everyone who
 > is connected.
 
+On KDE Plasma, sway, Hyprland and other Wayland desktops besides GNOME, **Web Remote Access** also
+shows **Allow screen sharing now**. Click it while you are at the computer, pick the screen and
+click **Share** (keep "Allow restoring on future sessions" ticked). Otherwise the desktop asks when
+the first viewer connects, and that viewer sees a black screen until somebody here answers.
+
 ## Step 4. Connect from another device
 
 1. On the viewer, open the host's address in the browser, for example `http://192.168.1.20:8742`:
