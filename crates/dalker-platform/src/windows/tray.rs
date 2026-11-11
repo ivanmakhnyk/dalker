@@ -153,7 +153,7 @@ fn icon_pixels(look: crate::icon::Look) -> Vec<u8> {
 unsafe fn make_icon(look: crate::icon::Look) -> Result<HICON, String> {
     let px = icon_pixels(look);
     let color = CreateBitmap(32, 32, 1, 32, Some(px.as_ptr() as *const _));
-    let mask_bits = vec![0u8; 32 * 4]; // 1 bpp, 32 rows of 4 bytes; alpha channel does the work
+    let mask_bits = [0u8; 32 * 4]; // 1 bpp, 32 rows of 4 bytes; alpha channel does the work
     let mask = CreateBitmap(32, 32, 1, 1, Some(mask_bits.as_ptr() as *const _));
     let info = ICONINFO {
         fIcon: true.into(),

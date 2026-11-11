@@ -456,7 +456,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                     None
                 }
             };
-            (Box::new(|| dalker_platform::create_capturer()), injector)
+            (Box::new(dalker_platform::create_capturer), injector)
         }
     };
     let (frame_tx, _) = watch::channel::<Option<Arc<RawFrame>>>(None);
@@ -1401,7 +1401,7 @@ fn spawn_clipboard_thread(
                     }
                 };
                 let first = seen.is_none();
-                let changed = seen.as_ref().map_or(true, |(_, t)| *t != text);
+                let changed = seen.as_ref().is_none_or(|(_, t)| *t != text);
                 seen = Some((marker, text.clone()));
                 if first || !changed {
                     continue;
