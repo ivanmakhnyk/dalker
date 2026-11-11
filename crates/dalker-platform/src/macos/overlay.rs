@@ -109,6 +109,8 @@ fn show_edges(mtm: MainThreadMarker, active: bool) -> bool {
 /// Red frame around the main screen while viewers are connected.
 pub struct BorderOverlay {
     healthy: Arc<AtomicBool>,
+    /// All four edge windows are ordered in and visible.
+    shown: Arc<AtomicBool>,
 }
 
 impl BorderOverlay {
@@ -118,6 +120,7 @@ impl BorderOverlay {
         on_main(create_edges)??;
         Ok(Self {
             healthy: Arc::new(AtomicBool::new(true)),
+            shown: Arc::new(AtomicBool::new(false)),
         })
     }
 }
@@ -128,18 +131,27 @@ impl ViewerIndicator for BorderOverlay {
     }
 
     fn set_active(&self, active: bool) {
+        if !active {
+            self.shown.store(false, Ordering::SeqCst);
+        }
         let healthy = Arc::clone(&self.healthy);
+        let shown = Arc::clone(&self.shown);
         on_main_async(move |mtm| {
             let ok = show_edges(mtm, active);
             if !ok {
                 tracing::warn!(active, "red border windows did not change as asked");
             }
             healthy.store(ok, Ordering::SeqCst);
+            shown.store(ok && active, Ordering::SeqCst);
         });
     }
 
     fn healthy(&self) -> bool {
         self.healthy.load(Ordering::SeqCst)
+    }
+
+    fn shown(&self) -> bool {
+        self.shown.load(Ordering::SeqCst)
     }
 }
 

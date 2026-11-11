@@ -69,6 +69,10 @@ impl<T: InputInjector + ?Sized> InputInjector for Box<T> {
 pub trait ViewerIndicator: Send + Sync {
     fn name(&self) -> &str;
     fn set_active(&self, active: bool);
+    /// True once the border asked for with `set_active(true)` is actually on the screen (drawn
+    /// by the compositor, or acknowledged by the shell that draws it), false while it is off or
+    /// still being shown. The agent serves frames only while this is true.
+    fn shown(&self) -> bool;
     /// False if the indicator can no longer be shown (e.g. the compositor extension that
     /// draws it went away). The agent then stops serving frames until it is back.
     fn healthy(&self) -> bool {
