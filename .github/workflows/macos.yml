@@ -1,0 +1,74 @@
+name: macOS
+
+# The macOS host builds and tests on its own, so a Mac failure never blocks the Linux and
+# Windows checks in ci.yml. Runs when shared code or the macOS parts change.
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'crates/**'
+      - 'web-ui/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'packaging/macos/**'
+      - 'scripts/**'
+      - '.github/workflows/macos.yml'
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'web-ui/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'packaging/macos/**'
+      - 'scripts/**'
+      - '.github/workflows/macos.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # OpenH264 without its assembly encodes several times slower; fail instead (see dalker-webrtc/build.rs).
+  DALKER_REQUIRE_NASM: 1
+
+jobs:
+  check:
+    # Fixed name, because required checks are matched by name.
+    name: macOS
+    # Apple silicon, macOS 14 or later.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: openh264-asm
+
+      - name: NASM (OpenH264 assembly)
+        run: brew install nasm
+
+      - name: Version is consistent
+        run: sh scripts/version.sh check
+
+      - name: Build
+        run: cargo build --workspace --all-targets --locked
+
+      # Warnings are reported but don't fail the build yet; deny-level lints do (as in ci.yml).
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: App bundle and package
+        run: sh packaging/macos/build-pkg.sh target/debug/dalkerd dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos-debug-pkg
+          path: dist/*.pkg
+          if-no-files-found: error
