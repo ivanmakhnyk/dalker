@@ -6,10 +6,11 @@
 //! |---------|-----------------------------------------|-------------------------------|
 //! | Windows | DXGI Desktop Duplication (primary output)| `SendInput` (scancodes, absolute mouse) |
 //! | Linux   | X11 root window via MIT-SHM (falls back to `GetImage`) | `/dev/uinput` virtual devices |
-//! | macOS   | not implemented yet                     | not implemented yet           |
+//! | macOS   | ScreenCaptureKit (main display)          | `CGEventPost` (HID level)     |
 //!
 //! Use [`create_capturer`] / [`create_injector`] to get the backend for the
-//! current OS without any `cfg` at the call site.
+//! current OS without any `cfg` at the call site. On macOS the agent must also run inside
+//! [`run_app`], which keeps the main thread for AppKit.
 
 use dalker_core::{
     CaptureError, Clipboard, FileAccess, InputError, InputInjector, ScreenCapturer, ViewerIndicator,
@@ -29,6 +30,20 @@ pub mod windows;
 pub fn init_process() {
     #[cfg(target_os = "windows")]
     windows::init_process();
+}
+
+/// Runs `f` (the whole agent) and returns its result. On macOS `f` runs on another thread
+/// while the main thread runs the AppKit event loop that the red border and the menu bar
+/// icon need; elsewhere it just calls `f`.
+pub fn run_app<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> R {
+    #[cfg(target_os = "macos")]
+    {
+        macos::run_app(f)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        f()
+    }
 }
 
 /// Creates the native screen capturer for this OS.
@@ -62,7 +77,7 @@ pub fn create_capturer() -> Result<Box<dyn ScreenCapturer>, CaptureError> {
     }
     #[cfg(target_os = "macos")]
     {
-        return Ok(Box::new(macos::MacCapturer::new()?));
+        return Ok(Box::new(macos::SckCapturer::new()?));
     }
     #[allow(unreachable_code)]
     Err(CaptureError::Unsupported(std::env::consts::OS.to_string()))
@@ -80,7 +95,7 @@ pub fn create_injector() -> Result<Box<dyn InputInjector>, InputError> {
     }
     #[cfg(target_os = "macos")]
     {
-        return Ok(Box::new(macos::MacInjector::new()?));
+        return Ok(Box::new(macos::CgInjector::new()?));
     }
     #[allow(unreachable_code)]
     Err(InputError::Unsupported(std::env::consts::OS.to_string()))
@@ -100,6 +115,10 @@ pub fn create_clipboard() -> Result<Box<dyn Clipboard>, String> {
     {
         return Ok(Box::new(linux::gnome::GnomeClipboard::new()?));
     }
+    #[cfg(target_os = "macos")]
+    {
+        return Ok(Box::new(macos::MacClipboard::new()?));
+    }
     #[allow(unreachable_code)]
     Err(format!("no clipboard support for {}", std::env::consts::OS))
 }
@@ -117,6 +136,10 @@ pub fn open_file_access() -> Result<FileAccess, String> {
     #[cfg(target_os = "linux")]
     {
         return linux::files::open_file_access();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return macos::files::open_file_access();
     }
     #[allow(unreachable_code)]
     Err(format!(
@@ -143,6 +166,10 @@ pub fn create_indicator() -> Result<Box<dyn ViewerIndicator>, String> {
         }
         return Ok(Box::new(linux::BorderOverlay::new()?));
     }
+    #[cfg(target_os = "macos")]
+    {
+        return Ok(Box::new(macos::BorderOverlay::new()?));
+    }
     #[allow(unreachable_code)]
     Err(format!(
         "no on-screen indicator for {}",
@@ -151,11 +178,18 @@ pub fn create_indicator() -> Result<Box<dyn ViewerIndicator>, String> {
 }
 
 /// True while the host's lock screen is up and its picture is withheld from viewers,
-/// who then show a "locked" notice. Every backend streams the lock screen now (Windows:
-/// lock and sign-in screens; GNOME: the border extension stays on there), so this is
-/// always false.
+/// who then show a "locked" notice. Windows and GNOME stream the lock screen (Windows:
+/// lock and sign-in screens; GNOME: the border extension stays on there), so there it is
+/// always false. macOS doesn't let a user's agent capture or type into the lock screen.
 pub fn screen_locked() -> bool {
-    false
+    #[cfg(target_os = "macos")]
+    {
+        macos::screen_locked()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
 }
 
 /// For GUI-subsystem Windows builds: reconnect to the launching terminal (if any) so command
@@ -178,13 +212,18 @@ pub fn outlive_console_ctrl_c() {
 }
 
 /// Whether standard error goes anywhere. A GUI-subsystem Windows build started by the task
-/// scheduler has no console, so the agent logs to a file instead. Always true elsewhere.
+/// scheduler has no console, and launchd points a macOS LaunchAgent's at `/dev/null`, so the
+/// agent logs to a file instead. Always true on Linux (systemd keeps the journal).
 pub fn has_std_error() -> bool {
     #[cfg(target_os = "windows")]
     {
         windows::has_std_error()
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::has_std_error()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         true
     }

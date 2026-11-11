@@ -188,20 +188,27 @@ fn main() -> Result<()> {
         pinned,
     };
     dalker_platform::init_process();
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(run(cli, startup))
+    // On macOS the main thread stays with AppKit (red border, menu bar icon).
+    dalker_platform::run_app(move || {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?
+            .block_on(run(cli, startup))
+    })
 }
 
 /// Overrides where log files go (set by the service for itself and the agent it starts).
 const LOG_DIR_ENV: &str = "DALKER_LOG_DIR";
 
 /// Folder for the agent's own files (log): `DALKER_LOG_DIR`, else per user
-/// (`%LOCALAPPDATA%\\Dalker` on Windows).
+/// (`%LOCALAPPDATA%\\Dalker` on Windows, `~/Library/Logs/Dalker` on macOS).
 fn local_data_dir() -> Option<std::path::PathBuf> {
     if let Some(dir) = std::env::var_os(LOG_DIR_ENV) {
         return Some(dir.into());
+    }
+    if cfg!(target_os = "macos") {
+        return std::env::var_os("HOME")
+            .map(|h| std::path::PathBuf::from(h).join("Library/Logs/Dalker"));
     }
     std::env::var_os("LOCALAPPDATA").map(|d| std::path::PathBuf::from(d).join("Dalker"))
 }
@@ -267,6 +274,62 @@ fn init_logging(file_name: &str) {
     }
 }
 
+/// The viewer's address on this host right now, if the web server runs.
+#[cfg(any(windows, target_os = "macos"))]
+fn web_url(status: &listeners::Status) -> Option<String> {
+    let addr = (*status.web.lock().unwrap())?;
+    let host = if addr.ip().is_unspecified() {
+        "127.0.0.1".to_owned()
+    } else {
+        addr.ip().to_string()
+    };
+    let host = if addr.is_ipv6() && !addr.ip().is_unspecified() {
+        format!("[{host}]")
+    } else {
+        host
+    };
+    Some(format!("http://{host}:{}/", addr.port()))
+}
+
+/// Opens the host's settings window, a process of its own (on Windows it asks for
+/// administrator rights itself).
+#[cfg(any(windows, target_os = "macos"))]
+fn open_settings_window() {
+    match std::env::current_exe() {
+        Ok(exe) => {
+            if let Err(e) = std::process::Command::new(exe).arg("settings").spawn() {
+                tracing::warn!("could not open settings: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("could not open settings: {e}"),
+    }
+}
+
+/// The menu bar icon (macOS): open the viewer, Dalker Settings, quit.
+#[cfg(target_os = "macos")]
+fn start_menu_bar(
+    status: &Arc<listeners::Status>,
+    exit: &Arc<tokio::sync::Notify>,
+) -> Option<dalker_platform::macos::MenuBar> {
+    let web = Arc::clone(status);
+    let exit = Arc::clone(exit);
+    let cfg = dalker_platform::macos::MenuBarConfig {
+        open_url: Box::new(move || web_url(&web)),
+        on_settings: Box::new(open_settings_window),
+        on_exit: Box::new(move || exit.notify_one()),
+    };
+    match dalker_platform::macos::MenuBar::start(cfg) {
+        Ok(m) => {
+            tracing::info!("menu bar icon ready");
+            Some(m)
+        }
+        Err(e) => {
+            tracing::warn!("no menu bar icon: {e}");
+            None
+        }
+    }
+}
+
 #[cfg(windows)]
 fn start_tray(
     status: &Arc<listeners::Status>,
@@ -289,31 +352,8 @@ fn start_tray(
     let web = Arc::clone(status);
     let cfg = dalker_platform::windows::TrayConfig {
         // Wherever the web server is now (the settings window can move it or turn it off).
-        open_url: Box::new(move || {
-            let addr = (*web.web.lock().unwrap())?;
-            let host = if addr.ip().is_unspecified() {
-                "127.0.0.1".to_owned()
-            } else {
-                addr.ip().to_string()
-            };
-            let host = if addr.is_ipv6() && !addr.ip().is_unspecified() {
-                format!("[{host}]")
-            } else {
-                host
-            };
-            Some(format!("http://{host}:{}/", addr.port()))
-        }),
-        on_settings: Box::new(|| {
-            // Opens the host's settings window (it asks for administrator rights itself).
-            match std::env::current_exe() {
-                Ok(exe) => {
-                    if let Err(e) = std::process::Command::new(exe).arg("settings").spawn() {
-                        tracing::warn!("could not open settings: {e}");
-                    }
-                }
-                Err(e) => tracing::warn!("could not open settings: {e}"),
-            }
-        }),
+        open_url: Box::new(move || web_url(&web)),
+        on_settings: Box::new(open_settings_window),
         log_dir: local_data_dir().map(|d| d.display().to_string()),
         viewers: Arc::clone(viewers),
         ai_agents: Some(ai_agents),
@@ -553,6 +593,12 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
         None
     } else {
         start_tray(&status, &signaling.active, &mcp, &exit)
+    };
+    #[cfg(target_os = "macos")]
+    let _menu_bar = if cli.no_tray {
+        None
+    } else {
+        start_menu_bar(&status, &exit)
     };
 
     let config_file = followed_config_file();

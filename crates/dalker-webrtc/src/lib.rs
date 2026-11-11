@@ -131,6 +131,76 @@ pub struct WebRtcConfig {
     pub connect_timeout: Option<Duration>,
 }
 
+/// How long to wait for each STUN server's answer in [`discover_public_ip`].
+const STUN_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Asks the first answering `stun:` server in `urls` for this host's public IPv4 address.
+/// `None` (logged) when there is no STUN server or none answers.
+async fn discover_public_ip(urls: &[String]) -> Option<std::net::IpAddr> {
+    let hosts: Vec<&str> = urls
+        .iter()
+        .filter_map(|u| u.strip_prefix("stun:"))
+        .map(|h| h.split('?').next().unwrap_or(h))
+        .collect();
+    if hosts.is_empty() {
+        return None;
+    }
+    for host in hosts {
+        match tokio::time::timeout(STUN_TIMEOUT, stun_binding(host)).await {
+            Ok(Ok(ip)) => {
+                tracing::info!(stun = host, %ip, "discovered public IP");
+                return Some(ip);
+            }
+            Ok(Err(e)) => tracing::warn!(stun = host, "STUN request failed: {e:#}"),
+            Err(_) => tracing::warn!(stun = host, "STUN server did not answer"),
+        }
+    }
+    tracing::warn!("no public IP discovered; pass --public-ip for viewers outside the LAN");
+    None
+}
+
+/// Sends one STUN binding request to `host` (`name:port`, port 3478 when left out) and
+/// returns the mapped address it reports.
+async fn stun_binding(host: &str) -> Result<std::net::IpAddr> {
+    use webrtc::stun::agent::TransactionId;
+    use webrtc::stun::message::{Getter, Message, BINDING_REQUEST};
+    use webrtc::stun::xoraddr::XorMappedAddress;
+
+    let target = if host
+        .rsplit_once(':')
+        .is_some_and(|(_, p)| p.parse::<u16>().is_ok())
+    {
+        host.to_owned()
+    } else {
+        format!("{host}:3478")
+    };
+    let addr = tokio::net::lookup_host(&target)
+        .await
+        .with_context(|| format!("resolve {target}"))?
+        .find(|a| a.is_ipv4())
+        .with_context(|| format!("{target} has no IPv4 address"))?;
+    let socket = tokio::net::UdpSocket::bind(("0.0.0.0", 0)).await?;
+    let mut request = Message::new();
+    request.build(&[Box::new(TransactionId::new()), Box::new(BINDING_REQUEST)])?;
+    socket.send_to(&request.raw, addr).await?;
+    let mut buf = [0u8; 1500];
+    loop {
+        let (n, from) = socket.recv_from(&mut buf).await?;
+        if from != addr {
+            continue;
+        }
+        let mut response = Message::new();
+        response.raw = buf[..n].to_vec();
+        response.decode()?;
+        if response.transaction_id != request.transaction_id {
+            continue;
+        }
+        let mut mapped = XorMappedAddress::default();
+        mapped.get_from(&response)?;
+        return Ok(mapped.ip);
+    }
+}
+
 /// Shared WebRTC API object; one per process.
 pub struct WebRtcEngine {
     api: API,
@@ -160,15 +230,24 @@ impl WebRtcEngine {
             ))));
             settings.set_network_types(vec![NetworkType::Udp4]);
         }
-        if !config.public_ips.is_empty() {
-            settings.set_nat_1to1_ips(config.public_ips.clone(), RTCIceCandidateType::Host);
+        // With a single UDP port webrtc-ice gathers no server-reflexive candidates, so the
+        // STUN servers would go unused: ask one for the public IP here and advertise it as
+        // the host candidate instead, as if it had been given with --public-ip.
+        let mut public_ips = config.public_ips.clone();
+        if config.udp_port.is_some() && public_ips.is_empty() {
+            if let Some(ip) = discover_public_ip(&config.ice_servers).await {
+                public_ips.push(ip.to_string());
+            }
+        }
+        if !public_ips.is_empty() {
+            settings.set_nat_1to1_ips(public_ips.clone(), RTCIceCandidateType::Host);
             if config.udp_port.is_some() {
                 // With a mux every local IP maps to the same public ip:port, and
                 // webrtc-ice drops the duplicates by closing them — which closes
                 // the shared muxed conn. Gather from a single local IPv4 only:
                 // the first one offered (loopback is never offered).
                 let chosen = std::sync::Mutex::new(None::<std::net::IpAddr>);
-                tracing::info!(public = ?config.public_ips, "advertising NAT 1:1 host candidate");
+                tracing::info!(public = ?public_ips, "advertising NAT 1:1 host candidate");
                 settings.set_ip_filter(Box::new(move |ip| {
                     if !ip.is_ipv4() {
                         return false;

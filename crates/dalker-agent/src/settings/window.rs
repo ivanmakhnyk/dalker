@@ -262,7 +262,7 @@ fn constant_eq(a: &str, b: &str) -> bool {
             == 0
 }
 
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn open_window(url: &str) -> Result<(), String> {
     use tao::dpi::LogicalSize;
     use tao::event::{Event, WindowEvent};
@@ -312,7 +312,7 @@ fn open_window(url: &str) -> Result<(), String> {
         .with_url(url)
         .with_background_color((6, 9, 14, 255))
         .with_devtools(cfg!(debug_assertions));
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let webview = builder.build(&window).map_err(|e| e.to_string())?;
     #[cfg(target_os = "linux")]
     let webview = {
@@ -344,7 +344,7 @@ fn open_window(url: &str) -> Result<(), String> {
 }
 
 /// Brings the window to the front, restored if it was minimized.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn raise(window: &tao::window::Window, _token: Option<String>) {
     window.set_minimized(false);
     window.set_visible(true);
@@ -366,7 +366,7 @@ fn raise(window: &tao::window::Window, token: Option<String>) {
     gtk_window.present();
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 fn open_window(_url: &str) -> Result<(), String> {
     Err("no settings window on this OS".into())
 }

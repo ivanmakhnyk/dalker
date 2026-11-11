@@ -1,0 +1,12 @@
+#!/bin/sh
+# Starts (or restarts) Dalker for whoever is signed in now, so nobody has to log out first.
+# Everyone else gets it at their next login from /Library/LaunchAgents.
+PLIST=/Library/LaunchAgents/io.github.ivanmakhnyk.Dalker.plist
+chown root:wheel "$PLIST"
+chmod 644 "$PLIST"
+uid=$(stat -f %u /dev/console)
+if [ "$uid" != 0 ]; then
+    launchctl bootout "gui/$uid/io.github.ivanmakhnyk.Dalker" 2>/dev/null || true
+    launchctl bootstrap "gui/$uid" "$PLIST" || true
+fi
+exit 0

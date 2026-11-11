@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+# `cargo run -p dalker-agent` starts the agent, not the Windows console front end.
+default-run = "dalkerd"
 
 [[bin]]
 name = "dalkerd"
@@ -34,8 +36,9 @@ rand.workspace = true
 if-addrs.workspace = true
 
 # The host's settings window (`dalkerd settings`): web-ui/settings.html in a native web view
-# (WebView2 on Windows, WebKitGTK on Linux), served by the window's own process.
-[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+# (WebView2 on Windows, WebKitGTK on Linux, WKWebView on macOS), served by the window's own
+# process.
+[target.'cfg(any(windows, target_os = "linux", target_os = "macos"))'.dependencies]
 wry = { version = "0.57", default-features = false, features = ["os-webview"] }
 tao = { version = "0.37", default-features = false, features = ["rwh_06"] }
 
