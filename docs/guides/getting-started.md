@@ -5,8 +5,9 @@ minutes.
 
 You need:
 
-- the computer you want to reach (the **host**): Windows 10 or 11, or Ubuntu with the standard
-  GNOME desktop;
+- the computer you want to reach (the **host**): Windows 10 or 11, Linux (Ubuntu's standard
+  GNOME desktop is the tested one; see [Platform support](../../README.md#platform-support)), or
+  macOS 14 or later on Apple silicon;
 - a device to connect from (the **viewer**): any laptop, PC or tablet with Chrome, Edge, Firefox
   or Safari, on the same network as the host.
 
@@ -16,7 +17,8 @@ On the host, open [the latest release](https://github.com/ivanmakhnyk/dalker/rel
 and download:
 
 - **Windows:** `Dalker-<version>-x64.msi`
-- **Ubuntu:** `dalker_<version>_amd64.deb`
+- **Ubuntu or Debian:** `dalker_<version>_amd64.deb`
+- **macOS:** `Dalker-<version>.pkg`
 
 ## Step 2. Install
 
@@ -42,6 +44,16 @@ can also reach the Windows sign-in screen.
 
 Dalker now runs as the `dalker` system service and starts with the computer.
 
+### macOS
+
+1. Open the `.pkg`. The first time, macOS blocks it because it isn't notarized: open
+   **System Settings → Privacy & Security** and click **Open Anyway**.
+2. When Dalker starts, allow it under **Screen & System Audio Recording** and **Accessibility**
+   on the same settings page.
+3. Choose **Quit Dalker** in its menu bar icon and open **Dalker** from Applications again.
+
+Dalker now runs in the background and starts when you sign in.
+
 ## Step 3. Choose an access password
 
 The access password is the only thing a viewer needs to connect, so pick a strong one (at least 8
@@ -49,15 +61,18 @@ characters).
 
 1. Open **Dalker Settings**:
    - Windows: Start menu → **Dalker Settings** (it opens by itself after installing);
-   - Ubuntu: open the app grid and search for **Dalker Settings**.
-2. Confirm the administrator prompt (UAC on Windows, your password on Ubuntu).
+   - Ubuntu: open the app grid and search for **Dalker Settings**;
+   - macOS: click the Dalker icon in the menu bar.
+2. On Windows and Ubuntu, confirm the administrator prompt (UAC on Windows, your password on
+   Ubuntu).
 3. In **Web Remote Access**, type the password under **New password** and again under **Repeat
    password**, then click **Apply**.
 
 ![Web Remote Access in Dalker Settings](../images/settings-web.png)
 
 Viewers open `http://<this computer>:8742`, where *this computer* is the host's IP address. To
-find it, run `ipconfig` on Windows (the "IPv4 Address" line) or `hostname -I` on Ubuntu.
+find it, run `ipconfig` on Windows (the "IPv4 Address" line), `hostname -I` on Ubuntu, or
+`ipconfig getifaddr en0` on macOS.
 
 > Nobody can connect until a password is set. Changing the password later signs out everyone who
 > is connected.
@@ -152,6 +167,7 @@ Changes apply within a few seconds without a restart.
 | Letters come out wrong | Switch **Keyboard mode** to **Direct text**. |
 | The host goes to sleep while I watch | Gear → **Prevent host sleep (keep-alive jiggler)**. |
 
-Logs are in `C:\ProgramData\Dalker\logs` (Windows) or `journalctl -u dalker` (Ubuntu).
+Logs are in `C:\ProgramData\Dalker\logs` (Windows), `journalctl -u dalker` (Ubuntu) or
+`~/Library/Logs/Dalker` (macOS).
 
 Next: [let an AI assistant use the computer](ai-agents.md).
