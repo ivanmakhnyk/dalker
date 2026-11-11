@@ -1,8 +1,9 @@
 #!/bin/sh
 # Runs dalkerd where the screen is, and restarts it when that changes:
 #
-#   1. GNOME on Wayland (Ubuntu 26.04+): the agent runs AS THE LOGGED-IN USER, because
-#      the screen-cast service lives on that user's session bus. /dev/uinput is opened
+#   1. A Wayland session (GNOME on Ubuntu 26.04+, KDE Plasma, sway...): the agent runs AS
+#      THE LOGGED-IN USER, because the screen cast (GNOME's, or the xdg-desktop-portal one)
+#      lives on that user's session bus. /dev/uinput is opened
 #      to that user with an ACL (for input), and the config (root-only, holds the
 #      password hash) is handed over as a copy only that user can read, refreshed when
 #      the config changes, so changes made in "Dalker Settings" apply without a restart.
@@ -37,15 +38,26 @@ sync_user_conf() {
     chown "$1" "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$USER_CONF"
 }
 
-# Prints "wayland|<user>|<uid>" for a graphical GNOME Wayland session on seat0, if any.
+# Prints the Wayland socket name (wayland-0...) of user $1's compositor, if one is up.
+find_wayland_socket() {
+    for sock in /run/user/"$1"/wayland-*; do
+        case "$sock" in *.lock) continue ;; esac
+        [ -S "$sock" ] && { basename "$sock"; return 0; }
+    done
+    return 1
+}
+
+# Prints "wayland|<user>|<uid>|<socket>" for a graphical Wayland session on seat0, if any,
+# once its compositor is up: GNOME Shell, or any compositor with a Wayland socket.
 find_wayland_session() {
     loginctl list-sessions --no-legend 2>/dev/null | while read -r sid uid user seat _rest; do
         [ "$seat" = seat0 ] || continue
         [ "$(loginctl show-session "$sid" -p Class --value 2>/dev/null)" = user ] || continue
         [ "$(loginctl show-session "$sid" -p Type --value 2>/dev/null)" = wayland ] || continue
-        pgrep -u "$uid" -x gnome-shell >/dev/null 2>&1 || continue
         [ -S "/run/user/$uid/bus" ] || continue
-        echo "wayland|$user|$uid"
+        sock=$(find_wayland_socket "$uid") || sock=
+        [ -n "$sock" ] || pgrep -u "$uid" -x gnome-shell >/dev/null 2>&1 || continue
+        echo "wayland|$user|$uid|${sock:-wayland-0}"
         break
     done
 }
@@ -81,19 +93,21 @@ start_agent() {
     case "$kind" in
         wayland)
             user=${rest%%|*}
-            uid=${rest#*|}
+            rest=${rest#*|}
+            uid=${rest%%|*}
+            sock=${rest#*|}
             home=$(getent passwd "$user" | cut -d: -f6)
             modprobe uinput 2>/dev/null
             setfacl -m "u:$user:rw" /dev/uinput 2>/dev/null \
                 || log "WARNING: cannot give $user access to /dev/uinput (install the 'acl' package); input will be view-only"
-            log "GNOME Wayland session of $user: starting the agent as $user"
+            log "Wayland session of $user ($sock): starting the agent as $user"
             sync_user_conf "$user" || log "WARNING: cannot copy $CONF for $user"
             "$AGENT" settings-helper --config "$CONF" --listen "$SETTINGS_SOCK" --owner "$user" &
             HELPER_PID=$!
             runuser -u "$user" -- env \
                 HOME="$home" XDG_RUNTIME_DIR="/run/user/$uid" \
                 DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
-                XDG_SESSION_TYPE=wayland DALKER_CONFIG="$USER_CONF" \
+                XDG_SESSION_TYPE=wayland WAYLAND_DISPLAY="$sock" DALKER_CONFIG="$USER_CONF" \
                 DALKER_SETTINGS_SOCKET="$SETTINGS_SOCK" \
                 "$AGENT" &
             ;;

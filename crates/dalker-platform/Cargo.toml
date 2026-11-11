@@ -16,6 +16,9 @@ x11rb.workspace = true
 libc.workspace = true
 evdev.workspace = true
 zbus.workspace = true
+wayland-client.workspace = true
+wayland-protocols.workspace = true
+wayland-protocols-wlr.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc.workspace = true

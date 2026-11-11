@@ -4,13 +4,14 @@ Section: net
 Priority: optional
 Architecture: amd64
 Depends: libc6 (>= 2.34), systemd, procps, debconf (>= 1.5), acl, dconf-cli, libglib2.0-bin, gstreamer1.0-tools, gstreamer1.0-pipewire, pkexec | policykit-1, libwebkit2gtk-4.1-0, libgtk-3-0
-Recommends: xserver-xorg-core
+Recommends: xserver-xorg-core, xdg-desktop-portal
 Maintainer: Dalker <dalker@localhost>
 Description: Remote desktop agent (WebRTC) with browser client
  Dalker streams the desktop to a web browser over WebRTC and accepts remote
  mouse and keyboard input. It runs as a background service, follows the login
- screen and the user session (Xorg, or GNOME on Wayland through its screen-cast
- service), and draws a red border around the screen whenever someone is connected
- (a GNOME Shell extension on Wayland). Web access, the web client password and
+ screen and the user session (Xorg, GNOME on Wayland through its screen-cast
+ service, or KDE Plasma, sway and other Wayland desktops through xdg-desktop-portal),
+ and draws a red border around the screen whenever someone is connected (a GNOME
+ Shell extension on GNOME, a layer-shell overlay on other Wayland desktops). Web access, the web client password and
  the MCP server for AI agents (with its access tokens) are set on the host only,
  with the "Dalker Settings" app.

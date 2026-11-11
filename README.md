@@ -233,9 +233,13 @@ Open Dalker Settings on that computer and set a new one. From a terminal you can
 `"C:\Program Files\Dalker\dalkerd" set-password` (without `.exe`, so the prompt waits for it).
 
 **Which Linux desktops work?**
-Ubuntu's standard GNOME desktop (Wayland or Xorg) and Xorg sessions. Other Wayland desktops
-(KDE, sway) and the Ubuntu login screen are not supported yet. With several monitors, the main
-one is shown.
+Ubuntu's standard GNOME desktop (Wayland or Xorg), Xorg sessions, and KDE Plasma, sway and other
+Wayland desktops that have xdg-desktop-portal screen sharing and the layer-shell protocol. On
+those, the first time someone connects, a "share your screen" dialog opens on the host: someone
+at the computer has to pick the screen and click **Share** once (keep "Allow restoring on future
+sessions" ticked), and later connections start without asking. The Ubuntu login screen is not
+supported yet. With several monitors, the main one is shown (on KDE and sway, the one picked in
+that dialog).
 
 **Where are the logs?**
 Windows: `C:\ProgramData\Dalker\logs`. Ubuntu: `journalctl -u dalker`. macOS:
