@@ -25,7 +25,8 @@ DALKER_BIND=0.0.0.0:8742
 # Login. Store only a hash: `dalkerd set-password` writes it for you.
 DALKER_PASSWORD_HASH=$argon2id$v=19$m=19456,t=2,p=1$...
 
-# Pin all WebRTC traffic to ONE UDP port (open/forward just this port in your firewall/NAT)
+# Pin all WebRTC traffic to ONE UDP port (open/forward just this port in your firewall/NAT).
+# New Linux installs set 8443; Windows and macOS use random ports unless this is set.
 DALKER_UDP_PORT=8443
 
 # Extra address(es) to advertise as ICE host candidates (NAT 1:1, port forwards), comma-separated

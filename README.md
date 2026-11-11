@@ -73,6 +73,10 @@ Get the installer for the computer you want to reach from
 | Ubuntu or Debian, 64-bit | `dalker_<version>_amd64.deb` |
 | macOS 14 or later, Apple silicon (preview) | `Dalker-<version>.pkg` |
 
+Only Ubuntu and Debian are packaged for Linux so far. The release's
+`dalker-agent-linux-x86_64.tar.gz` holds just the `dalkerd` program, for running by hand or for
+packaging; it has no service, launcher, GNOME extension or Dalker Settings app.
+
 The computer you connect *from* needs only a web browser.
 
 ## Get started
@@ -232,9 +236,17 @@ The picture and your input are always encrypted (WebRTC). The sign-in page uses 
 Dalker on a network you trust, over a VPN, or behind an HTTPS reverse proxy.
 
 **The page opens but the picture stays black.**
-Check that a firewall allows Dalker (the Windows installer adds the rule itself). On Ubuntu,
-make sure you logged out and back in after installing; `journalctl -u dalker` says what's
-missing.
+Check that a firewall allows Dalker (the Windows installer adds the rule itself). On Linux the
+picture uses UDP port 8443 next to the page's TCP port 8742, so a firewall needs both open:
+
+```bash
+sudo ufw allow 8742/tcp && sudo ufw allow 8443/udp                     # Ubuntu (ufw)
+sudo firewall-cmd --permanent --add-port=8742/tcp --add-port=8443/udp \
+  && sudo firewall-cmd --reload                                          # firewalld
+```
+
+On Ubuntu, also make sure you logged out and back in after installing; `journalctl -u dalker`
+says what's missing.
 
 **I forgot the access password.**
 Open Dalker Settings on that computer and set a new one. From a terminal you can also run
