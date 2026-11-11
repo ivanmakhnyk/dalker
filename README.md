@@ -7,7 +7,7 @@
 
 # Dalker
 
-**See and control your Windows or Ubuntu computer from any web browser.**
+**See and control your Windows, Linux or macOS computer from any web browser.**
 
 Install Dalker on the computer you want to reach, open its address in a browser on another
 device, and you are on its desktop. No account, no cloud service, no app on the viewing side.
@@ -16,6 +16,7 @@ device, and you are on its desktop. No account, no cloud service, no app on the 
 [![CI](https://github.com/ivanmakhnyk/dalker/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ivanmakhnyk/dalker/actions/workflows/ci.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](#license)
 
+[Platforms](#platform-support) ·
 [Download](#download) ·
 [Guides](#guides) ·
 [Get started](#get-started) ·
@@ -46,6 +47,14 @@ device, and you are on its desktop. No account, no cloud service, no app on the 
 <br><sub>The remote computer while someone is connected: the red frame shows it.</sub>
 </div>
 
+## Platform support
+
+| Computer | Status |
+|---|---|
+| Windows 10 or 11, 64-bit | Supported. |
+| Linux, 64-bit | Xorg desktops and GNOME on Wayland (Ubuntu's standard desktop) are tested. KDE Plasma, sway, Hyprland and other Wayland desktops, through xdg-desktop-portal, are experimental until they are tested in real sessions ([#27](https://github.com/ivanmakhnyk/dalker/issues/27)). |
+| macOS 14 Sonoma or later | Preview, Apple silicon only. The installer is not notarized, so macOS asks you to click **Open Anyway** the first time. |
+
 ## Guides
 
 - **[Getting started](docs/guides/getting-started.md):** install Dalker, choose the password,
@@ -61,7 +70,7 @@ Get the installer for the computer you want to reach from
 | Computer | Download |
 |---|---|
 | Windows 10 or 11 (64-bit) | `Dalker-<version>-x64.msi` |
-| Ubuntu (GNOME desktop) or Debian, 64-bit | `dalker_<version>_amd64.deb` |
+| Ubuntu or Debian, 64-bit | `dalker_<version>_amd64.deb` |
 | macOS 14 or later, Apple silicon (preview) | `Dalker-<version>.pkg` |
 
 The computer you connect *from* needs only a web browser.
@@ -233,8 +242,9 @@ Open Dalker Settings on that computer and set a new one. From a terminal you can
 `"C:\Program Files\Dalker\dalkerd" set-password` (without `.exe`, so the prompt waits for it).
 
 **Which Linux desktops work?**
-Ubuntu's standard GNOME desktop (Wayland or Xorg), Xorg sessions, and KDE Plasma, sway and other
-Wayland desktops that have xdg-desktop-portal screen sharing and the layer-shell protocol. On
+Ubuntu's standard GNOME desktop (Wayland or Xorg) and Xorg sessions are tested. KDE Plasma, sway,
+Hyprland and other Wayland desktops that have xdg-desktop-portal screen sharing and the
+layer-shell protocol are experimental for now ([#27](https://github.com/ivanmakhnyk/dalker/issues/27)). On
 those, the first time someone connects, a "share your screen" dialog opens on the host: someone
 at the computer has to pick the screen and click **Share** once (keep "Allow restoring on future
 sessions" ticked), and later connections start without asking. The Ubuntu login screen is not
