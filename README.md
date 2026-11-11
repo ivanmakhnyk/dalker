@@ -214,7 +214,9 @@ disconnects it at once. The [AI agents guide](docs/guides/ai-agents.md) walks th
 
 **Can I connect over the internet?**
 Dalker is made for your home or office network. To reach it from outside, connect to that network
-first with a VPN (for example WireGuard or Tailscale), then use the same address.
+first with a VPN (for example WireGuard or Tailscale), then use the same address. If you run a
+reverse proxy and can forward a UDP port on your router, see
+[Behind a reverse proxy](docs/guides/reverse-proxy.md).
 
 **Is the connection encrypted?**
 The picture and your input are always encrypted (WebRTC). The sign-in page uses plain HTTP, so use

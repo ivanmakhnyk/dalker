@@ -108,7 +108,7 @@ pub struct Cli {
     pub public_ip: Vec<String>,
 
     /// STUN/TURN server URL, e.g. stun:stun.l.google.com:19302. Repeatable.
-    #[arg(long, value_delimiter = ',')]
+    #[arg(long, env = "DALKER_STUN", value_delimiter = ',')]
     pub stun: Vec<String>,
 
     /// Do not show the notification-area (tray) icon (Windows) or menu bar icon (macOS).
