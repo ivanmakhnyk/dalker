@@ -90,6 +90,10 @@ pub enum EndReason {
     WebOff,
     /// The agent is shutting down (service stop or restart, host shutdown).
     HostShutdown,
+    /// The viewer's sign-in was signed out (from another tab, for example).
+    SignedOut,
+    /// The viewer's sign-in reached its lifetime.
+    SessionExpired,
 }
 
 impl EndReason {
@@ -99,6 +103,8 @@ impl EndReason {
             EndReason::PasswordChanged => "password_changed",
             EndReason::WebOff => "web_off",
             EndReason::HostShutdown => "host_shutdown",
+            EndReason::SignedOut => "signed_out",
+            EndReason::SessionExpired => "session_expired",
         }
     }
 

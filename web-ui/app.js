@@ -411,6 +411,11 @@ function sessionEnded(reason) {
     showLogin("The password was changed on the host. Sign in again.");
     return;
   }
+  if (reason === "signed_out" || reason === "session_expired") {
+    setStatus("signed out", "idle");
+    showLogin(reason === "signed_out" ? "You signed out of this host. Sign in again." : "Your sign-in expired. Sign in again.");
+    return;
+  }
   if (reason === "web_off") {
     setStatus("remote access was turned off on the host", "error");
     return;

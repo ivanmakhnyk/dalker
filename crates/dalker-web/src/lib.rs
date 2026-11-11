@@ -33,14 +33,16 @@ use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
-pub use auth::{hash_password, Authenticator, CookieSecure, Credentials};
+pub use auth::{hash_password, Authenticator, CookieSecure, Credentials, SignIn, SignOut};
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 /// Implemented by the agent to plug WebRTC into the HTTP API.
 pub trait SignalingHandler: Send + Sync + 'static {
-    /// Accepts a complete SDP offer and returns a complete SDP answer.
-    fn handle_offer(&self, offer_sdp: String) -> BoxFuture<Result<String, String>>;
+    /// Accepts a complete SDP offer and returns a complete SDP answer. The stream should end
+    /// when `sign_in` does (sign-out, expiry, new password).
+    fn handle_offer(&self, offer_sdp: String, sign_in: SignIn)
+        -> BoxFuture<Result<String, String>>;
     /// Arbitrary JSON shown by the UI (hostname, OS, capture backend...).
     fn info(&self) -> serde_json::Value;
 }
@@ -252,10 +254,11 @@ async fn offer(
     headers: HeaderMap,
     Json(req): Json<SdpMessage>,
 ) -> Response {
-    if let Err(r) = require_auth(&state, &headers) {
-        return r;
-    }
-    match state.signaling.handle_offer(req.sdp).await {
+    let sign_in = match session_token(&headers).and_then(|t| state.auth.sign_in(&t)) {
+        Some(s) => s,
+        None => return error(StatusCode::UNAUTHORIZED, "not logged in"),
+    };
+    match state.signaling.handle_offer(req.sdp, sign_in).await {
         Ok(sdp) => Json(SdpMessage { sdp }).into_response(),
         Err(e) => {
             tracing::warn!("offer rejected: {e}");
@@ -300,7 +303,11 @@ mod tests {
 
     struct EchoSignaling;
     impl SignalingHandler for EchoSignaling {
-        fn handle_offer(&self, offer_sdp: String) -> BoxFuture<Result<String, String>> {
+        fn handle_offer(
+            &self,
+            offer_sdp: String,
+            _sign_in: SignIn,
+        ) -> BoxFuture<Result<String, String>> {
             Box::pin(async move { Ok(format!("answer-to:{offer_sdp}")) })
         }
         fn info(&self) -> serde_json::Value {
