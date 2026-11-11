@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+# `cargo run -p dalker-agent` starts the agent, not the Windows console front end.
+default-run = "dalkerd"
 
 [[bin]]
 name = "dalkerd"
