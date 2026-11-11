@@ -44,7 +44,7 @@ fn backend<E: std::fmt::Display>(ctx: &'static str) -> impl FnOnce(E) -> Capture
 impl X11Capturer {
     /// Connects to `$DISPLAY` and prepares capture of the default screen.
     pub fn new() -> Result<Self, CaptureError> {
-        if super::pipewire::PipeWireCapturer::session_is_wayland() {
+        if super::is_wayland_session() {
             tracing::warn!(
                 "Wayland session detected: X11 capture will only see XWayland windows. \
                  Log in with an Xorg session for full-desktop capture."

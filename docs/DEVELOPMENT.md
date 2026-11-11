@@ -100,7 +100,10 @@ client's settings, within these host limits.
   - **Linux:** `build-essential`, plus `libwebkit2gtk-4.1-dev` and `libgtk-3-dev` for the settings
     window's web view. The X11 and uinput code is pure Rust, so no `libx11-dev` or
     `libxtst-dev` is needed. At runtime the agent needs read/write access to `/dev/uinput`, and
-    GNOME on Wayland capture needs `gstreamer1.0-tools` and `gstreamer1.0-pipewire`.
+    Wayland capture (GNOME, KDE, sway...) needs `gstreamer1.0-tools` and
+    `gstreamer1.0-pipewire`; other Wayland desktops than GNOME also need `xdg-desktop-portal` with
+    their desktop's backend (`xdg-desktop-portal-kde`, `xdg-desktop-portal-wlr`...). The Wayland
+    client code is pure Rust too, so no `libwayland-dev` is needed.
   - **macOS** (14 or later, Apple silicon): Xcode Command Line Tools (`xcode-select --install`)
     and `brew install nasm`. No Apple Developer account is needed.
 
@@ -196,6 +199,7 @@ It runs as the systemd service `dalker`, starts at boot and restarts on failure.
 | Session | Capture | Border | Runs as |
 |---------|---------|--------|---------|
 | **GNOME on Wayland** | `org.gnome.Mutter.ScreenCast` + PipeWire (via `gst-launch-1.0 pipewiresrc`), no prompt | GNOME Shell extension `dalker-border@ivanmakhnyk.github.io` | the logged-in user |
+| **Other Wayland desktops** (KDE Plasma, sway, Hyprland…) | `org.freedesktop.portal.ScreenCast` + PipeWire (same `gst-launch-1.0` reader), asks once | `wlr-layer-shell` surfaces on the overlay layer | the logged-in user |
 | Xorg (login screen or session) | X11 root window via MIT-SHM | override-redirect X11 window | root |
 | none yet | the agent still answers, but serves no desktop | – | root |
 
@@ -214,8 +218,18 @@ It runs as the systemd service `dalker`, starts at boot and restarts on failure.
   `/run/dalker/settings.sock` (owned by that user; MCP token lines only).
 - Configs from before the settings window keep their `DALKER_BIND` (port 8080); new installs use
   8742.
-- Limits: the Wayland login screen (GDM) is not captured; other Wayland compositors (KDE, sway…)
-  are not supported yet; with several monitors only the primary one is captured.
+- **Other Wayland desktops** go through xdg-desktop-portal. The first screen cast opens the
+  desktop's "share your screen" dialog on the host, so someone there has to accept it once. The
+  session asks to be remembered (`persist_mode` 2): the portal returns a restore token, saved in
+  `~/.local/state/dalker/screencast-restore-token` and replaced on every start, so later casts
+  start silently. A declined (or unanswered, after 3 minutes) dialog is not shown again for a
+  minute. The agent doesn't start a cast at startup to probe it, only when a viewer connects.
+  The pointer is mapped onto the streamed monitor using the portal's stream position and the
+  compositor's `xdg-output` layout. The clipboard comes from Klipper on KDE (`org.kde.klipper`);
+  other compositors have none yet. Text that isn't plain ASCII can't be typed there (US-layout
+  keys only).
+- Limits: the Wayland login screen (GDM, SDDM) is not captured; with several monitors only one is
+  captured (GNOME: the primary one; elsewhere: the one picked in the portal dialog).
 
 Manual run (X11 only): set `DISPLAY`/`XAUTHORITY`, give yourself `/dev/uinput` access, then run
 `dalkerd`.
@@ -369,8 +383,9 @@ by hand.
   HTTPS or localhost it is written to the local clipboard at once; on plain HTTP at the next click or
   key on the remote screen (Ctrl+C in the viewer counts).
 - **Hosts:** Windows uses the session's clipboard (also on the sign-in and lock screens). Under GNOME
-  (Wayland or Xorg) the border extension hands the agent the shell's clipboard. Other Linux desktops
-  have no clipboard sync yet.
+  (Wayland or Xorg) the border extension hands the agent the shell's clipboard, and under KDE
+  Plasma on Wayland Klipper does (`org.kde.klipper`, so not when the clipboard applet is turned
+  off). Other Linux desktops have no clipboard sync yet.
 
 The upload button opens the File Transfers panel. Transfers share the picture's WebRTC connection
 (a second DataChannel, `"files"`), so no extra port is opened, and show progress, speed and time

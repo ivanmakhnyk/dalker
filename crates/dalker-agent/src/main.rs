@@ -398,7 +398,8 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
     let mut capture_name = match cli.capture {
         CaptureMode::Mock => "mock",
         CaptureMode::Native if cfg!(windows) => "dxgi",
-        // Under Wayland only the GNOME screen cast can serve (it may not be up yet at start).
+        // Under Wayland only a screen cast can serve (it may not be up yet at start); the
+        // probe below names the one in use.
         CaptureMode::Native if std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t == "wayland") => {
             "gnome-screencast"
         }
@@ -424,12 +425,24 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
             // The service must be ready immediately, even before a display exists
             // (login screen not up yet, Wayland session...). Capture is retried in the
             // background, so a failed probe only logs.
-            match dalker_platform::create_capturer() {
-                Ok(probe) => {
+            let probe = match dalker_platform::capture_backend_without_probe() {
+                Some(name) => {
+                    tracing::info!(
+                        backend = name,
+                        "capture starts when a viewer connects (the host may be asked to allow screen sharing)"
+                    );
+                    capture_name = name.to_string();
+                    None
+                }
+                None => Some(dalker_platform::create_capturer()),
+            };
+            match probe {
+                None => {}
+                Some(Ok(probe)) => {
                     tracing::info!(backend = probe.name(), display = ?probe.display(), "capture backend ready");
                     capture_name = probe.name().to_string();
                 }
-                Err(e) => {
+                Some(Err(e)) => {
                     tracing::warn!("no screen to capture yet ({e}); serving anyway and retrying")
                 }
             }
