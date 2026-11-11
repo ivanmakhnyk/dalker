@@ -1,6 +1,6 @@
 [package]
 name = "dalker-platform"
-description = "Platform screen capture and input injection for Dalker (Windows DXGI/SendInput, Linux X11/uinput)."
+description = "Platform screen capture and input injection for Dalker (Windows DXGI/SendInput, Linux X11/uinput, macOS ScreenCaptureKit/CGEvent)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -16,6 +16,19 @@ x11rb.workspace = true
 libc.workspace = true
 evdev.workspace = true
 zbus.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc.workspace = true
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+objc2-core-foundation = "0.3"
+objc2-core-graphics = "0.3"
+objc2-core-media = "0.3"
+objc2-core-video = "0.3"
+objc2-screen-capture-kit = "0.3"
+block2 = "0.6"
+dispatch2 = "0.3"
 
 [target.'cfg(target_os = "windows")'.dependencies.windows]
 workspace = true
