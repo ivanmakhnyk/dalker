@@ -40,6 +40,24 @@ async fn mock_stream_roundtrip_udp_mux_nat1to1() {
     roundtrip(config, false).await;
 }
 
+/// An offer that can't be applied is refused with an error (and its peer connection closed).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bad_offer_is_refused() {
+    let engine = WebRtcEngine::new(WebRtcConfig::default()).await.unwrap();
+    let (frame_tx, _) = watch::channel::<Option<Arc<RawFrame>>>(None);
+    let (_clip_tx, clip_rx) = watch::channel(ClipboardState::default());
+    let (control_tx, _control_rx) = mpsc::unbounded_channel();
+    let result = engine
+        .accept_offer(
+            "v=0 this is not SDP".into(),
+            frame_tx.subscribe(),
+            clip_rx,
+            control_tx,
+        )
+        .await;
+    assert!(result.is_err());
+}
+
 /// The host ends the session (password changed): the viewer is told why before it closes,
 /// and the agent still hears that the session closed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
