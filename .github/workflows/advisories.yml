@@ -1,0 +1,21 @@
+name: Advisories
+
+# Checks the locked dependencies against the RustSec advisory database every week, so a new
+# advisory is noticed even when nobody pushes. ci.yml runs the same check on every push.
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    name: advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories

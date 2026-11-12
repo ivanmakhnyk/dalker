@@ -180,7 +180,6 @@ async function watchMcp() {
     const s = await api("/api/settings");
     on = !s.blocked && s.mcp && s.mcp.enabled;
   } catch (err) {
-    if (pc !== peer) return;
     if (err.status === 401) return;
   }
   $("btn-ai").hidden = !on;
@@ -1597,7 +1596,6 @@ async function start() {
   try {
     info = await api("/api/info");
   } catch (err) {
-    if (pc !== peer) return;
     if (err.status === 401) { showLogin(); return; }
     setStatus(`error: ${err.message}`, "error");
     return;
