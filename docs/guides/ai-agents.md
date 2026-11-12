@@ -60,17 +60,18 @@ window says where to paste it.
 
 ![Ready-made MCP configuration for Claude Desktop](../images/mcp-config.png)
 
-| App | Where the configuration goes |
+| App | What to do with it |
 |---|---|
-| **Claude Code** | `.mcp.json` in your project, or `~/.claude.json` |
+| **Claude Code** | Run the `claude mcp add --scope user ...` command in a terminal. It keeps the token in your own `~/.claude.json`, out of your projects. |
+| **Claude Code (project)** | Paste it into `.mcp.json` in your project. That file only says `Bearer ${DALKER_MCP_TOKEN}`: set the `DALKER_MCP_TOKEN` environment variable to the token where Claude Code starts. |
 | **Claude Desktop** | Settings → Developer → **Edit Config** (`claude_desktop_config.json`). Needs [Node.js](https://nodejs.org), because Claude Desktop reaches Dalker through the `mcp-remote` bridge. |
 | **Cursor, LM Studio, Windsurf** | the app's `mcp.json` (LM Studio: Program → Edit mcp.json) |
 
-Restart or reload the app. Claude Code users can also add the server in one command:
+Restart or reload the app.
 
-```bash
-claude mcp add --transport http dalker http://127.0.0.1:8743/mcp --header "Authorization: Bearer dkmcp_..."
-```
+> **Keep tokens out of Git.** A token in a project's `.mcp.json` or `mcp.json` is easily
+> committed and pushed. Use the user-wide Claude Code command or the environment variable, and
+> revoke a token that was ever committed.
 
 Then try a first request, for example *"Take a screenshot of my computer and tell me which windows
 are open."*
