@@ -167,7 +167,7 @@ Changes apply within a few seconds without a restart.
 |---|---|
 | The page doesn't open | Check the address and that both devices are on the same network. Is **Allow browser remote access** on in Dalker Settings? |
 | "Wrong password" | Set a new one in Dalker Settings on the host. |
-| The page opens, the picture stays black | Make sure a firewall isn't blocking Dalker. On Ubuntu, log out and back in after installing; `journalctl -u dalker` shows what's missing. |
+| The page opens, the picture stays black | Make sure a firewall isn't blocking Dalker. On Linux open TCP 8742 and UDP 8443 (`sudo ufw allow 8742/tcp && sudo ufw allow 8443/udp`). On Ubuntu, log out and back in after installing; `journalctl -u dalker` shows what's missing. |
 | Letters come out wrong | Switch **Keyboard mode** to **Direct text**. |
 | The host goes to sleep while I watch | Gear → **Prevent host sleep (keep-alive jiggler)**. |
 
