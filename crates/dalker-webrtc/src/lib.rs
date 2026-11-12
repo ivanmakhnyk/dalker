@@ -324,21 +324,31 @@ pub struct WebRtcEngine {
 
 impl WebRtcEngine {
     pub async fn new(config: WebRtcConfig) -> Result<Self> {
+        // A port another program holds must not take the whole agent down (the sign-in page
+        // too): fall back to ephemeral ports, which still work on the LAN, and say so loudly.
         let mut mux = None;
         if let Some(port) = config.udp_port {
-            let socket = tokio::net::UdpSocket::bind(("0.0.0.0", port))
-                .await
-                .with_context(|| format!("bind ICE UDP port {port}"))?;
-            tracing::info!("ICE UDP mux listening on 0.0.0.0:{port}");
-            mux = Some(UDPMuxDefault::new(UDPMuxParams::new(socket)));
+            match tokio::net::UdpSocket::bind(("0.0.0.0", port)).await {
+                Ok(socket) => {
+                    tracing::info!("ICE UDP mux listening on 0.0.0.0:{port}");
+                    mux = Some(UDPMuxDefault::new(UDPMuxParams::new(socket)));
+                }
+                Err(e) => tracing::error!(
+                    "can't use UDP port {port} for WebRTC ({e}); another program may be using it. \
+                     Using random UDP ports instead: viewers on this network can still connect, \
+                     but a port forward to {port} won't work. Free the port or change \
+                     DALKER_UDP_PORT, then restart Dalker."
+                ),
+            }
         }
+        let muxed = mux.is_some();
         let settings = ApiSettings { mux };
         // With a single UDP port webrtc-ice gathers no server-reflexive candidates, so the
         // STUN servers would go unused: ask one for the public IP here and advertise it as
         // the host candidate instead, as if it had been given with --public-ip.
         let mut public_ips = config.public_ips.clone();
         let mut stun = None;
-        if config.udp_port.is_some() && public_ips.is_empty() && has_stun(&config.ice_servers) {
+        if muxed && public_ips.is_empty() && has_stun(&config.ice_servers) {
             let ip = discover_public_ip(&config.ice_servers).await;
             if let Some(ip) = ip {
                 public_ips.push(ip.to_string());
