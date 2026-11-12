@@ -25,6 +25,7 @@ const TICK: Duration = Duration::from_millis(100);
 /// events pass straight through to the windows below.
 pub struct BorderOverlay {
     active: Arc<AtomicBool>,
+    shown: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -32,16 +33,18 @@ pub struct BorderOverlay {
 impl BorderOverlay {
     pub fn new() -> Result<Self, String> {
         let active = Arc::new(AtomicBool::new(false));
+        let shown = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
-        let (a, s) = (Arc::clone(&active), Arc::clone(&stop));
+        let (a, v, s) = (Arc::clone(&active), Arc::clone(&shown), Arc::clone(&stop));
         let thread = std::thread::Builder::new()
             .name("dalker-border".into())
-            .spawn(move || run(a, s, ready_tx))
+            .spawn(move || run(a, v, s, ready_tx))
             .map_err(|e| format!("spawn overlay thread: {e}"))?;
         match ready_rx.recv_timeout(Duration::from_secs(5)) {
             Ok(Ok(())) => Ok(Self {
                 active,
+                shown,
                 stop,
                 thread: Some(thread),
             }),
@@ -58,6 +61,10 @@ impl ViewerIndicator for BorderOverlay {
 
     fn set_active(&self, active: bool) {
         self.active.store(active, Ordering::SeqCst);
+    }
+
+    fn shown(&self) -> bool {
+        self.shown.load(Ordering::SeqCst)
     }
 }
 
@@ -176,7 +183,12 @@ fn setup() -> Result<Setup, String> {
     })
 }
 
-fn run(active: Arc<AtomicBool>, stop: Arc<AtomicBool>, ready: mpsc::Sender<Result<(), String>>) {
+fn run(
+    active: Arc<AtomicBool>,
+    visible: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+    ready: mpsc::Sender<Result<(), String>>,
+) {
     let Setup {
         conn,
         win,
@@ -201,9 +213,20 @@ fn run(active: Arc<AtomicBool>, stop: Arc<AtomicBool>, ready: mpsc::Sender<Resul
             let _ = if want {
                 conn.map_window(win)
             } else {
+                visible.store(false, Ordering::SeqCst);
                 conn.unmap_window(win)
             };
             shown = want;
+        } else if shown && !visible.load(Ordering::SeqCst) {
+            // Mapped on the previous tick and the request went out with that flush: count it as
+            // visible once the X server has answered a round trip after it.
+            if conn
+                .get_input_focus()
+                .map(|c| c.reply().is_ok())
+                .unwrap_or(false)
+            {
+                visible.store(true, Ordering::SeqCst);
+            }
         }
         if shown {
             // Stay above everything, including other override-redirect windows.
@@ -229,6 +252,7 @@ fn run(active: Arc<AtomicBool>, stop: Arc<AtomicBool>, ready: mpsc::Sender<Resul
         let _ = conn.flush();
         std::thread::sleep(TICK);
     }
+    visible.store(false, Ordering::SeqCst);
     let _ = conn.destroy_window(win);
     let _ = conn.flush();
 }

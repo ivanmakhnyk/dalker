@@ -40,6 +40,8 @@ const TICK: Duration = Duration::from_millis(100);
 /// only publishes frames of the desktop the border is currently visible on.
 pub struct BorderOverlay {
     active: Arc<AtomicBool>,
+    /// The window is on screen on the input desktop (set a tick after ShowWindow).
+    shown: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -47,16 +49,18 @@ pub struct BorderOverlay {
 impl BorderOverlay {
     pub fn new() -> Result<Self, String> {
         let active = Arc::new(AtomicBool::new(false));
+        let shown = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
-        let (a, s) = (Arc::clone(&active), Arc::clone(&stop));
+        let (a, v, s) = (Arc::clone(&active), Arc::clone(&shown), Arc::clone(&stop));
         let thread = std::thread::Builder::new()
             .name("dalker-border".into())
-            .spawn(move || unsafe { run(a, s, ready_tx) })
+            .spawn(move || unsafe { run(a, v, s, ready_tx) })
             .map_err(|e| format!("spawn overlay thread: {e}"))?;
         match ready_rx.recv_timeout(Duration::from_secs(5)) {
             Ok(Ok(())) => Ok(Self {
                 active,
+                shown,
                 stop,
                 thread: Some(thread),
             }),
@@ -73,6 +77,10 @@ impl ViewerIndicator for BorderOverlay {
 
     fn set_active(&self, active: bool) {
         self.active.store(active, Ordering::SeqCst);
+    }
+
+    fn shown(&self) -> bool {
+        self.shown.load(Ordering::SeqCst)
     }
 }
 
@@ -155,6 +163,7 @@ unsafe fn create_window() -> windows::core::Result<(HWND, i32, i32)> {
 
 unsafe fn run(
     active: Arc<AtomicBool>,
+    visible: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     ready: mpsc::Sender<Result<(), String>>,
 ) {
@@ -181,6 +190,7 @@ unsafe fn run(
         if input.is_some() && input != desk {
             // A thread cannot switch desktops while it owns windows.
             desktop::set_border_desktop(None);
+            visible.store(false, Ordering::SeqCst);
             announced = false;
             shown = false;
             let _ = DestroyWindow(hwnd);
@@ -222,12 +232,14 @@ unsafe fn run(
         if want != shown {
             if !want {
                 desktop::set_border_desktop(None);
+                visible.store(false, Ordering::SeqCst);
                 announced = false;
             }
             let _ = ShowWindow(hwnd, if want { SW_SHOWNOACTIVATE } else { SW_HIDE });
             shown = want;
         } else if shown && !announced {
             desktop::set_border_desktop(desktop::thread_desktop_name());
+            visible.store(true, Ordering::SeqCst);
             announced = true;
         }
         if shown {
@@ -245,6 +257,7 @@ unsafe fn run(
         std::thread::sleep(TICK);
     }
     desktop::set_border_desktop(None);
+    visible.store(false, Ordering::SeqCst);
     let _ = DestroyWindow(hwnd);
 }
 
