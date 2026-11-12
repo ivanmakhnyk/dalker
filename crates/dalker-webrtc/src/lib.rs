@@ -220,28 +220,39 @@ impl WebRtcEngine {
         // its host candidates and shows up as peer-reflexive), and the mDNS socket logs a
         // warning for every LAN packet it cannot parse.
         settings.set_ice_multicast_dns_mode(MulticastDnsMode::Disabled);
+        // A port another program holds must not take the whole agent down (the sign-in page
+        // too): fall back to ephemeral ports, which still work on the LAN, and say so loudly.
+        let mut udp_port = None;
         if let Some(port) = config.udp_port {
-            let socket = tokio::net::UdpSocket::bind(("0.0.0.0", port))
-                .await
-                .with_context(|| format!("bind ICE UDP port {port}"))?;
-            tracing::info!("ICE UDP mux listening on 0.0.0.0:{port}");
-            settings.set_udp_network(UDPNetwork::Muxed(UDPMuxDefault::new(UDPMuxParams::new(
-                socket,
-            ))));
-            settings.set_network_types(vec![NetworkType::Udp4]);
+            match tokio::net::UdpSocket::bind(("0.0.0.0", port)).await {
+                Ok(socket) => {
+                    tracing::info!("ICE UDP mux listening on 0.0.0.0:{port}");
+                    settings.set_udp_network(UDPNetwork::Muxed(UDPMuxDefault::new(
+                        UDPMuxParams::new(socket),
+                    )));
+                    settings.set_network_types(vec![NetworkType::Udp4]);
+                    udp_port = Some(port);
+                }
+                Err(e) => tracing::error!(
+                    "can't use UDP port {port} for WebRTC ({e}); another program may be using it. \
+                     Using random UDP ports instead: viewers on this network can still connect, \
+                     but a port forward to {port} won't work. Free the port or change \
+                     DALKER_UDP_PORT, then restart Dalker."
+                ),
+            }
         }
         // With a single UDP port webrtc-ice gathers no server-reflexive candidates, so the
         // STUN servers would go unused: ask one for the public IP here and advertise it as
         // the host candidate instead, as if it had been given with --public-ip.
         let mut public_ips = config.public_ips.clone();
-        if config.udp_port.is_some() && public_ips.is_empty() {
+        if udp_port.is_some() && public_ips.is_empty() {
             if let Some(ip) = discover_public_ip(&config.ice_servers).await {
                 public_ips.push(ip.to_string());
             }
         }
         if !public_ips.is_empty() {
             settings.set_nat_1to1_ips(public_ips.clone(), RTCIceCandidateType::Host);
-            if config.udp_port.is_some() {
+            if udp_port.is_some() {
                 // With a mux every local IP maps to the same public ip:port, and
                 // webrtc-ice drops the duplicates by closing them — which closes
                 // the shared muxed conn. Gather from a single local IPv4 only:

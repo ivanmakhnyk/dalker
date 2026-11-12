@@ -22,7 +22,8 @@ Report it privately through GitHub:
 
 Please include:
 
-- the Dalker version, host OS and session type (Windows, Ubuntu Xorg, Ubuntu Wayland);
+- the Dalker version, host OS and session type (Windows; Linux with GNOME on Wayland, KDE Plasma,
+  sway or another Wayland desktop, or Xorg; macOS);
 - what an attacker can do, and what access they need first (same LAN, internet, a viewer
   password, an MCP token, a local account on the host);
 - steps or a proof of concept to reproduce it;
@@ -43,6 +44,16 @@ publicly.
 In scope: the `dalkerd` agent, the web client in `web-ui/`, the MCP server, Dalker Settings, and
 the installers and packages in `packaging/`.
 
-Out of scope: problems that need an administrator or root account on the host, a host exposed to
+Out of scope: problems that need an administrator or root account on the host (on macOS, where
+Dalker's settings belong to the signed-in user, problems that need that user's account are in
+scope if they get around macOS's own permissions), a host exposed to
 the internet without a password or TLS against the documented setup, and denial of service by
 flooding the network.
+
+## Current privilege model
+
+The installed agent runs as SYSTEM on Windows and as root on Linux under Xorg, and that one
+process also runs the web server, WebRTC and the video encoder. A memory-safety bug in that code
+can therefore give full control of the host, so reports of one are in scope. On Wayland and macOS
+the agent runs as the signed-in user. Details and the plan to split the agent:
+[What rights the agent runs with](docs/DEVELOPMENT.md#what-rights-the-agent-runs-with).

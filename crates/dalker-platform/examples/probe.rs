@@ -27,7 +27,9 @@ fn main() {
                 got += 1;
                 let lit = f
                     .data
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .filter(|p| p[0] | p[1] | p[2] != 0)
                     .count();
                 let total = (f.width * f.height) as usize;

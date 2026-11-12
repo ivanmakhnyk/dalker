@@ -532,11 +532,18 @@ $("revoke-go").addEventListener("click", async () => {
   }
 });
 
-// MCP client configurations, in the field order each client's documentation uses.
+// MCP client configurations, in the field order each client's documentation uses. `text` gives
+// what to copy; by default the client's JSON with the token written out.
+//
+// Claude Code reads `.mcp.json` from the project, which usually ends up in Git: its default is
+// a command that keeps the token in the user's own config instead, and its project option reads
+// the token from an environment variable.
 const CLIENTS = [
-  { id: "code", label: "Claude Code", where: "Paste it into .mcp.json in your project, or ~/.claude.json.",
-    server: (url, auth) => ({ type: "http", url, headers: { Authorization: auth } }) },
-  { id: "cursor", label: "Cursor, LM Studio, Windsurf", where: "Paste it into the client's mcp.json (LM Studio: Program › Edit mcp.json).",
+  { id: "code", label: "Claude Code", where: "Run this in a terminal. It adds Dalker for your user only (in ~/.claude.json), so the token stays out of your projects.",
+    text: (url, auth) => `claude mcp add --scope user --transport http dalker ${url} --header "Authorization: ${auth}"` },
+  { id: "code-project", label: "Claude Code (project)", where: "Paste it into .mcp.json in your project. The token stays out of the file: set DALKER_MCP_TOKEN to the token (its copy button in the token list) where Claude Code starts, for example in your shell profile.",
+    server: (url) => ({ type: "http", url, headers: { Authorization: "Bearer ${DALKER_MCP_TOKEN}" } }) },
+  { id: "cursor", label: "Cursor, LM Studio, Windsurf", where: "Paste it into the client's mcp.json (LM Studio: Program › Edit mcp.json). It contains the token: keep that file out of Git.",
     server: (url, auth) => ({ url, headers: { Authorization: auth } }) },
   { id: "desktop", label: "Claude Desktop", where: "Paste it into claude_desktop_config.json (Settings › Developer › Edit Config). Needs Node.js: the mcp-remote bridge runs through npx.",
     // mcp-remote refuses plain http to anything but localhost unless told to allow it.
@@ -544,16 +551,18 @@ const CLIENTS = [
 ];
 let config = null;
 
-function configJson() {
+function configText() {
   const c = CLIENTS.find((x) => x.id === config.client);
-  return JSON.stringify({ mcpServers: { dalker: c.server(mcpUrl(), `Bearer ${config.token}`) } }, null, 2);
+  const auth = `Bearer ${config.token}`;
+  if (c.text) return c.text(mcpUrl(), auth);
+  return JSON.stringify({ mcpServers: { dalker: c.server(mcpUrl(), auth) } }, null, 2);
 }
 
 function renderConfig() {
   $("config-clients").innerHTML = CLIENTS.map((c) =>
     `<button role="radio" aria-checked="${c.id === config.client}" data-client="${c.id}">${esc(c.label)}</button>`).join("");
   $("config-where").textContent = CLIENTS.find((x) => x.id === config.client).where;
-  $("config-json").textContent = configJson();
+  $("config-json").textContent = configText();
   $("config-off").hidden = state.mcp.enabled;
 }
 
@@ -570,7 +579,7 @@ $("config-clients").addEventListener("click", (e) => {
   renderConfig();
 });
 $("config-copy").addEventListener("click", async () => {
-  await copyText(configJson());
+  await copyText(configText());
   toast("The configuration is on the clipboard.");
 });
 
