@@ -113,6 +113,11 @@ icon). On Windows and Ubuntu it asks for administrator rights. Under **Web Remot
 
 Until a password is set, nobody can connect.
 
+On KDE Plasma, sway, Hyprland and other Wayland desktops besides GNOME, also click **Allow screen
+sharing now** on the same tab, pick the screen and click **Share** (keep "Allow restoring on
+future sessions" ticked). Otherwise that dialog first opens when a viewer connects, and the viewer
+waits until somebody at the computer answers it.
+
 ### 3. Connect
 
 On the other device, open
@@ -268,9 +273,10 @@ On macOS, Dalker Settings opens from the menu bar icon without an administrator 
 Ubuntu's standard GNOME desktop (Wayland or Xorg) and Xorg sessions are tested. KDE Plasma, sway,
 Hyprland and other Wayland desktops that have xdg-desktop-portal screen sharing and the
 layer-shell protocol are experimental for now ([#27](https://github.com/ivanmakhnyk/dalker/issues/27)). On
-those, the first time someone connects, a "share your screen" dialog opens on the host: someone
-at the computer has to pick the screen and click **Share** once (keep "Allow restoring on future
-sessions" ticked), and later connections start without asking. The Ubuntu login screen is not
+those, the desktop asks once to allow screen sharing: click **Allow screen sharing now** in Dalker
+Settings, pick the screen and click **Share** (keep "Allow restoring on future sessions" ticked).
+If nobody does, the dialog opens when the first viewer connects, and that viewer waits until
+somebody at the computer answers it. Later connections start without asking. The Ubuntu login screen is not
 supported yet. With several monitors, the main one is shown (on KDE and sway, the one picked in
 that dialog).
 

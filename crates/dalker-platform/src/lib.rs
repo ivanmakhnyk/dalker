@@ -162,6 +162,36 @@ pub fn capture_backend_without_probe(desktop: Desktop) -> Option<&'static str> {
     None
 }
 
+/// True on desktops that capture through the xdg-desktop-portal screen cast (KDE Plasma,
+/// sway, Hyprland...), where the person at the host is asked to allow screen sharing. Asks
+/// the session bus, so call it once rather than on every redraw.
+pub fn screen_sharing_needs_permission() -> bool {
+    capture_backend_without_probe(Desktop::detect()).is_some()
+}
+
+/// Whether screen sharing was allowed ahead of time with [`allow_screen_sharing_now`] (or by
+/// an earlier connection): the portal's restore token is saved for this user.
+pub fn screen_sharing_allowed() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        return linux::portal::sharing_allowed();
+    }
+    #[allow(unreachable_code)]
+    false
+}
+
+/// Shows the portal's "share your screen" dialog now, while someone is at the computer,
+/// and remembers the answer, so viewers later connect without it. `Ok(false)` when it was
+/// declined or not answered. Must run in the desktop user's session.
+pub fn allow_screen_sharing_now() -> Result<bool, String> {
+    #[cfg(target_os = "linux")]
+    {
+        return linux::portal::allow_sharing_now();
+    }
+    #[allow(unreachable_code)]
+    Err("only needed on Linux desktops that share the screen through xdg-desktop-portal".into())
+}
+
 /// Creates the native input injector for this OS.
 pub fn create_injector() -> Result<Box<dyn InputInjector>, InputError> {
     #[cfg(target_os = "windows")]

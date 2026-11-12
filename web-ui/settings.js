@@ -98,6 +98,7 @@ function render(s) {
       : `${ICON.alert}<span>No password: nobody can sign in</span>`;
     $("pw-hint").textContent =
       `At least ${s.min_password} characters. Changing it signs out everyone who is connected.`;
+    renderSharing(s.screen_sharing);
   }
 
   // AI agents.
@@ -206,6 +207,35 @@ function pickAddress(urls) {
 function isLocal(host) {
   return host === "127.0.0.1" || host === "::1";
 }
+
+// KDE Plasma, sway and other portal desktops ask the person at the computer to allow
+// screen sharing. Doing it here, ahead of time, spares a remote viewer a black screen.
+function renderSharing(share) {
+  $("share-box").hidden = !share;
+  if (!share) return;
+  const badge = $("share-badge");
+  badge.className = "badge " + (share.allowed ? "ok" : "bad");
+  badge.innerHTML = share.allowed
+    ? `${ICON.shield}<span>Screen sharing allowed</span>`
+    : `${ICON.alert}<span>Will ask on first connection</span>`;
+  $("share-hint").textContent = share.allowed
+    ? "Viewers see the screen without anyone clicking Share here. Allow it again if you chose another monitor or revoked it."
+    : "The first viewer waits until somebody here clicks Share. Allow it now, while you are at this computer.";
+}
+
+$("share-allow").addEventListener("click", async () => {
+  const b = $("share-allow");
+  b.disabled = true;
+  try {
+    const r = await api("POST", "/api/settings/screen-sharing");
+    applyResult(r);
+    toast(r.allowed ? "Screen sharing is allowed." : "Screen sharing was not allowed.", !r.allowed);
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    b.disabled = false;
+  }
+});
 
 function renderAddress(kind, urls) {
   const chosen = pickAddress(urls);
