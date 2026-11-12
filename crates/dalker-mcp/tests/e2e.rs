@@ -701,8 +701,9 @@ async fn an_agent_that_goes_away_gives_its_slot_back() {
     assert_eq!(host.server.session_count(), 1);
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert_eq!(host.server.session_count(), 1, "kept between calls");
+    // The session is marked closed before its viewer slot is handed back, so wait for both.
     let waited = wait_until("released when quiet", Duration::from_secs(10), || {
-        host.server.session_count() == 0
+        host.server.session_count() == 0 && host.desktop.viewers.load(Ordering::SeqCst) == 0
     })
     .await;
     assert!(waited >= Duration::from_millis(500), "{waited:?}");
