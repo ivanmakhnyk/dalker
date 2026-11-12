@@ -180,7 +180,6 @@ async function watchMcp() {
     const s = await api("/api/settings");
     on = !s.blocked && s.mcp && s.mcp.enabled;
   } catch (err) {
-    if (pc !== peer) return;
     if (err.status === 401) return;
   }
   $("btn-ai").hidden = !on;
@@ -413,6 +412,11 @@ function sessionEnded(reason) {
   }
   if (reason === "host_disconnected") {
     setStatus("the person at the host disconnected everyone", "error");
+    return;
+  }
+  if (reason === "signed_out" || reason === "session_expired") {
+    setStatus("signed out", "idle");
+    showLogin(reason === "signed_out" ? "You signed out of this host. Sign in again." : "Your sign-in expired. Sign in again.");
     return;
   }
   if (reason === "web_off") {
@@ -1596,7 +1600,6 @@ async function start() {
   try {
     info = await api("/api/info");
   } catch (err) {
-    if (pc !== peer) return;
     if (err.status === 401) { showLogin(); return; }
     setStatus(`error: ${err.message}`, "error");
     return;

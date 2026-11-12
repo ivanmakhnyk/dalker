@@ -195,7 +195,7 @@ pub fn monitor_layout(conn: &Connection) -> Option<MonitorLayout> {
     let logical_pixels = props
         .get("layout-mode")
         .and_then(|v| u32::try_from(v.clone()).ok())
-        .map_or(true, |m| m == 1);
+        .is_none_or(|m| m == 1);
     let current_mode = |spec: &MonitorSpec| -> Option<(i32, i32)> {
         let (_, modes, _) = monitors.iter().find(|(s, _, _)| s == spec)?;
         modes
@@ -385,10 +385,11 @@ impl GnomeBorder {
                         .into(),
                 );
             }
-            return Err(format!(
+            return Err(
                 "GNOME Shell extension dalker-border@ivanmakhnyk.github.io is not running \
                  (it is loaded at login: log out and back in after installing)"
-            ));
+                    .to_string(),
+            );
         }
         let active = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));

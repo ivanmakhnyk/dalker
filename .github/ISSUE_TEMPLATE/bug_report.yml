@@ -24,7 +24,10 @@ body:
         - Windows 10
         - Ubuntu, GNOME on Wayland
         - Ubuntu, GNOME on Xorg
+        - KDE Plasma on Wayland
+        - sway, Hyprland or another Wayland desktop
         - Other Linux (describe below)
+        - macOS 14 or later
     validations:
       required: true
   - type: dropdown
@@ -34,6 +37,7 @@ body:
       options:
         - MSI installer
         - .deb package
+        - .pkg installer (macOS)
         - tar.gz / zip archive
         - Built from source
     validations:

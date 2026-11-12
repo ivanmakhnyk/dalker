@@ -26,6 +26,17 @@ jobs:
         with:
           command: check licenses
 
+  # Known vulnerabilities (RustSec) in dependencies. Its own job, so a new advisory shows up as
+  # one red check instead of hiding the build results; it also runs weekly (advisories.yml).
+  advisories:
+    name: advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+
   fmt:
     name: fmt
     runs-on: ubuntu-latest
@@ -74,10 +85,8 @@ jobs:
       - name: Build
         run: cargo build --workspace --all-targets --locked
 
-      # Warnings are reported but don't fail the build yet; deny-level lints do.
-      # Tighten with `-- -D warnings` once the existing warnings are cleaned up.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Test
         run: cargo test --workspace --locked
