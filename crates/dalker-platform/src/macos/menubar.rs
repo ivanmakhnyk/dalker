@@ -166,6 +166,9 @@ struct SetupItems {
     accessibility: Retained<NSMenuItem>,
     restart: Retained<NSMenuItem>,
     separator: Retained<NSMenuItem>,
+    /// Screen Recording was off when Dalker started. Capture in this process won't work even
+    /// once it is turned on, so Restart stays in the menu.
+    restart_needed: bool,
 }
 
 thread_local! {
@@ -208,6 +211,7 @@ fn install(mtm: MainThreadMarker, cfg: MenuBarConfig) {
             menu.addItem(&item);
             item
         },
+        restart_needed: !permissions::screen_recording(false),
     };
     entry("Open Dalker in Browser", Some(sel!(openViewer:)));
     entry("Dalker Settings…", Some(sel!(openSettings:)));
@@ -229,21 +233,23 @@ fn install(mtm: MainThreadMarker, cfg: MenuBarConfig) {
 /// Shows the icon and the setup items for these permissions.
 fn show(mtm: MainThreadMarker, installed: &Installed, now: Permissions) {
     let s = &installed.setup;
-    s.heading.setHidden(now.all());
-    s.separator.setHidden(now.all());
+    let restart = s.restart_needed || !now.screen_recording;
+    let setup = !now.all() || restart;
+    s.heading.setHidden(!setup);
+    s.separator.setHidden(!setup);
     s.screen_recording.setHidden(now.screen_recording);
-    s.restart.setHidden(now.screen_recording);
+    s.restart.setHidden(!restart);
     s.accessibility.setHidden(now.accessibility);
 
     let Some(button) = installed.item.button(mtm) else {
         return;
     };
-    let (symbol, tip) = if now.all() {
+    let (symbol, tip) = if !setup {
         ("display", "Dalker")
     } else {
         (
             "exclamationmark.triangle",
-            "Dalker needs Screen Recording and Accessibility permission",
+            "Dalker needs a permission, or a restart to use it",
         )
     };
     let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
@@ -255,10 +261,10 @@ fn show(mtm: MainThreadMarker, installed: &Installed, now: Permissions) {
             image.setTemplate(true);
             button.setImage(Some(&image));
         }
-        None => button.setTitle(&NSString::from_str(if now.all() {
-            "Dalker"
-        } else {
+        None => button.setTitle(&NSString::from_str(if setup {
             "Dalker ⚠"
+        } else {
+            "Dalker"
         })),
     }
     button.setToolTip(Some(&NSString::from_str(tip)));
