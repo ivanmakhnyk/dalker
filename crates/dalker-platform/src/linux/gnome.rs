@@ -369,6 +369,8 @@ pub struct GnomeBorder {
     conn: Connection,
     active: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
+    /// The person at the host chose "Disconnect everyone" in the extension's panel menu.
+    disconnect: Arc<AtomicBool>,
     heartbeat: Option<JoinHandle<()>>,
 }
 
@@ -390,7 +392,9 @@ impl GnomeBorder {
         }
         let active = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
+        let disconnect = Arc::new(AtomicBool::new(false));
         let (c, a, s) = (conn.clone(), Arc::clone(&active), Arc::clone(&stop));
+        let d = Arc::clone(&disconnect);
         // Ping every second while active; the extension hides the frame ~3 s after the
         // last ping, so a crashed agent can never leave a stale "recording" border (or,
         // more importantly, stream without one).
@@ -405,6 +409,16 @@ impl GnomeBorder {
                         if now || last {
                             let _ = p.call_method("SetActive", &(now,));
                         }
+                        // "Disconnect everyone" in the panel menu. An extension from before
+                        // this method answers with an error, which counts as no.
+                        if now {
+                            let asked = p
+                                .call::<_, _, bool>("TakeDisconnectRequest", &())
+                                .unwrap_or(false);
+                            if asked {
+                                d.store(true, Ordering::SeqCst);
+                            }
+                        }
                     }
                     last = now;
                     std::thread::sleep(Duration::from_millis(if now { 1000 } else { 200 }));
@@ -418,6 +432,7 @@ impl GnomeBorder {
             conn,
             active,
             stop,
+            disconnect,
             heartbeat: Some(heartbeat),
         })
     }
@@ -434,6 +449,10 @@ impl ViewerIndicator for GnomeBorder {
 
     fn healthy(&self) -> bool {
         name_has_owner(&self.conn, BUS_NAME)
+    }
+
+    fn take_disconnect_request(&self) -> bool {
+        self.disconnect.swap(false, Ordering::SeqCst)
     }
 }
 

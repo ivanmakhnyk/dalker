@@ -411,6 +411,10 @@ function sessionEnded(reason) {
     showLogin("The password was changed on the host. Sign in again.");
     return;
   }
+  if (reason === "host_disconnected") {
+    setStatus("the person at the host disconnected everyone", "error");
+    return;
+  }
   if (reason === "web_off") {
     setStatus("remote access was turned off on the host", "error");
     return;

@@ -310,12 +310,14 @@ fn open_settings_window() {
 fn start_menu_bar(
     status: &Arc<listeners::Status>,
     exit: &Arc<tokio::sync::Notify>,
+    disconnect_all: Arc<dyn Fn() + Send + Sync>,
 ) -> Option<dalker_platform::macos::MenuBar> {
     let web = Arc::clone(status);
     let exit = Arc::clone(exit);
     let cfg = dalker_platform::macos::MenuBarConfig {
         open_url: Box::new(move || web_url(&web)),
         on_settings: Box::new(open_settings_window),
+        on_disconnect: Box::new(move || disconnect_all()),
         on_exit: Box::new(move || exit.notify_one()),
     };
     match dalker_platform::macos::MenuBar::start(cfg) {
@@ -531,11 +533,17 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
             },
         }),
         border_ready: Arc::clone(&border_ready),
+        refused_until: std::sync::Mutex::new(None),
         input_available,
         clipboard_requests,
         next_mcp_id: AtomicU64::new(1),
     });
     let mcp = mcp_server(&cli, &signaling);
+    // "Disconnect everyone" from the border's own controls (GNOME panel, macOS menu bar).
+    let disconnect_all: Arc<dyn Fn() + Send + Sync> = {
+        let (agent, mcp) = (Arc::clone(&signaling), mcp.clone());
+        Arc::new(move || disconnect_everyone(&agent, &mcp))
+    };
     let status = Arc::new(listeners::Status::default());
 
     // No indicator, no remote access: the red border is what tells people at the
@@ -547,6 +555,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
     if cli.capture == CaptureMode::Native {
         let active = Arc::clone(&signaling.active);
         let ready = Arc::clone(&border_ready);
+        let disconnect_all = Arc::clone(&disconnect_all);
         tokio::spawn(async move {
             let mut indicator: Option<Box<dyn dalker_core::ViewerIndicator>> = None;
             let mut last_err = String::new();
@@ -584,6 +593,9 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                         i.set_active(on);
                         last_on = on;
                     }
+                    if on && i.take_disconnect_request() {
+                        disconnect_all();
+                    }
                 }
                 let pause = if indicator.is_some() { 100 } else { 1000 };
                 tokio::time::sleep(Duration::from_millis(pause)).await;
@@ -611,7 +623,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
     let _menu_bar = if cli.no_tray {
         None
     } else {
-        start_menu_bar(&status, &exit)
+        start_menu_bar(&status, &exit, Arc::clone(&disconnect_all))
     };
 
     let config_file = followed_config_file();
@@ -1036,6 +1048,8 @@ struct Agent {
     info: serde_json::Value,
     /// False while the border can't be shown (capture is off then).
     border_ready: Arc<AtomicBool>,
+    /// After "Disconnect everyone": new viewers are refused until then.
+    refused_until: std::sync::Mutex<Option<Instant>>,
     input_available: bool,
     clipboard_requests: std::sync::mpsc::Sender<ClipboardRequest>,
     next_mcp_id: AtomicU64,
@@ -1046,10 +1060,56 @@ impl Agent {
     fn end_streams(&self, reason: EndReason) {
         self.sign_out.send_replace(Some(reason));
     }
+
+    /// Why a new viewer is refused right now, if it is.
+    fn refused(&self) -> Option<String> {
+        let until = (*self.refused_until.lock().unwrap())?;
+        let left = until.checked_duration_since(Instant::now())?;
+        Some(format!(
+            "the person at the host disconnected everyone; try again in {} min",
+            left.as_secs().div_ceil(60).max(1)
+        ))
+    }
+}
+
+/// How long "Disconnect everyone" keeps viewers and AI agents out.
+const DISCONNECT_PAUSE: Duration = Duration::from_secs(10 * 60);
+
+/// "Disconnect everyone", chosen by the person at the host (no password needed): ends every
+/// viewer's stream and every AI agent's session, and keeps both out for [`DISCONNECT_PAUSE`].
+/// Callable from any thread.
+fn disconnect_everyone(agent: &Arc<Agent>, mcp: &McpServer) {
+    let until = Instant::now() + DISCONNECT_PAUSE;
+    *agent.refused_until.lock().unwrap() = Some(until);
+    tracing::info!(
+        minutes = DISCONNECT_PAUSE.as_secs() / 60,
+        "the person at the host disconnected everyone"
+    );
+    agent.end_streams(EndReason::HostDisconnected);
+    // AI agents blocked by hand (Windows tray) stay blocked after the pause.
+    let was_blocked = mcp.is_blocked();
+    mcp.set_blocked(true);
+    let (agent, mcp) = (Arc::clone(agent), mcp.clone());
+    let _ = std::thread::Builder::new()
+        .name("dalker-disconnect-pause".into())
+        .spawn(move || {
+            std::thread::sleep(DISCONNECT_PAUSE);
+            let mut refused = agent.refused_until.lock().unwrap();
+            // A later "Disconnect everyone" starts its own pause.
+            if *refused == Some(until) {
+                *refused = None;
+                if !was_blocked {
+                    mcp.set_blocked(false);
+                }
+            }
+        });
 }
 
 impl SignalingHandler for Agent {
     fn handle_offer(&self, offer_sdp: String) -> BoxFuture<Result<String, String>> {
+        if let Some(why) = self.refused() {
+            return Box::pin(async move { Err(why) });
+        }
         // Reserve a slot up front so concurrent offers can't exceed the limit.
         let active = Arc::clone(&self.active);
         let reserved = active

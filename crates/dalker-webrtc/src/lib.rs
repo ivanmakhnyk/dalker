@@ -90,6 +90,8 @@ pub enum EndReason {
     WebOff,
     /// The agent is shutting down (service stop or restart, host shutdown).
     HostShutdown,
+    /// The person at the host chose "Disconnect everyone".
+    HostDisconnected,
 }
 
 impl EndReason {
@@ -99,6 +101,7 @@ impl EndReason {
             EndReason::PasswordChanged => "password_changed",
             EndReason::WebOff => "web_off",
             EndReason::HostShutdown => "host_shutdown",
+            EndReason::HostDisconnected => "host_disconnected",
         }
     }
 

@@ -74,4 +74,9 @@ pub trait ViewerIndicator: Send + Sync {
     fn healthy(&self) -> bool {
         true
     }
+    /// True once after the person at the host asked, through the indicator itself, to
+    /// disconnect everyone (for example from the GNOME panel menu). Polled while it is on.
+    fn take_disconnect_request(&self) -> bool {
+        false
+    }
 }

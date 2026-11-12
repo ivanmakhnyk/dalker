@@ -470,7 +470,8 @@ channel opens and whenever that changes.
 
 When the host ends a session it first sends `{"type":"session_end","reason":"..."}`, so the viewer
 can say why: `password_changed` (the access password was changed on the host; sign in again),
-`web_off` (web remote access was turned off) or `host_shutdown` (the agent is stopping or
+`web_off` (web remote access was turned off), `host_disconnected` (the person at the host chose
+**Disconnect everyone**; new connections are refused for 10 minutes) or `host_shutdown` (the agent is stopping or
 restarting; the viewer reconnects when it is back). A session that closes without one lost its
 network; the viewer reconnects by itself while the host can be reached.
 
