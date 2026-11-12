@@ -46,3 +46,11 @@ the installers and packages in `packaging/`.
 Out of scope: problems that need an administrator or root account on the host, a host exposed to
 the internet without a password or TLS against the documented setup, and denial of service by
 flooding the network.
+
+## Current privilege model
+
+The installed agent runs as SYSTEM on Windows and as root on Linux under Xorg, and that one
+process also runs the web server, WebRTC and the video encoder. A memory-safety bug in that code
+can therefore give full control of the host, so reports of one are in scope. On Wayland and macOS
+the agent runs as the signed-in user. Details and the plan to split the agent:
+[What rights the agent runs with](docs/DEVELOPMENT.md#what-rights-the-agent-runs-with).
