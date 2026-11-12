@@ -217,11 +217,22 @@ pub fn token_from_cookie_header(header: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::LazyLock;
+
+    /// Made at run time, so no password sits in the source.
+    fn random_password() -> String {
+        let mut bytes = [0u8; 12];
+        rand::rngs::SysRng.try_fill_bytes(&mut bytes).unwrap();
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    static PASSWORD: LazyLock<String> = LazyLock::new(random_password);
+    static NEW_PASSWORD: LazyLock<String> = LazyLock::new(random_password);
 
     fn auth() -> Authenticator {
         Authenticator::new(
             Credentials {
-                password_hash: hash_password("s3cret").unwrap(),
+                password_hash: hash_password(&PASSWORD).unwrap(),
             },
             Duration::from_secs(60),
         )
@@ -233,7 +244,7 @@ mod tests {
         let a = auth();
         assert!(a.login("wrong").is_none());
         assert!(a.login("").is_none());
-        let t = a.login("s3cret").expect("valid login");
+        let t = a.login(&PASSWORD).expect("valid login");
         assert_eq!(t.len(), 64);
         assert!(a.is_valid(&t));
         a.logout(&t);
@@ -267,7 +278,7 @@ mod tests {
     #[test]
     fn new_hash_from_the_host_signs_everyone_out() {
         let a = auth();
-        let old_session = a.login("s3cret").unwrap();
+        let old_session = a.login(&PASSWORD).unwrap();
         assert!(a.set_password_hash("plaintext").is_err());
         let none = Authenticator::new(
             Credentials {
@@ -285,22 +296,22 @@ mod tests {
         assert!(none.has_password() && none.login("chosen-later").is_some());
         assert!(a.is_valid(&old_session), "a bad hash changes nothing");
 
-        a.set_password_hash(&hash_password("brand-new-pw1").unwrap())
+        a.set_password_hash(&hash_password(&NEW_PASSWORD).unwrap())
             .unwrap();
         assert!(!a.is_valid(&old_session), "sessions are signed out");
-        assert!(a.login("s3cret").is_none());
-        assert!(a.login("brand-new-pw1").is_some());
+        assert!(a.login(&PASSWORD).is_none());
+        assert!(a.login(&NEW_PASSWORD).is_some());
     }
 
     #[tokio::test]
     async fn a_sign_in_reports_how_it_ended() {
         let a = auth();
-        let t = a.login("s3cret").unwrap();
-        let other = a.login("s3cret").unwrap();
+        let t = a.login(&PASSWORD).unwrap();
+        let other = a.login(&PASSWORD).unwrap();
         let (mine, theirs) = (a.sign_in(&t).unwrap(), a.sign_in(&other).unwrap());
         a.logout(&t);
         assert_eq!(mine.ended().await, SignOut::LoggedOut);
-        a.set_password_hash(&hash_password("brand-new-pw1").unwrap())
+        a.set_password_hash(&hash_password(&NEW_PASSWORD).unwrap())
             .unwrap();
         assert_eq!(theirs.ended().await, SignOut::PasswordChanged);
         assert!(a.sign_in(&t).is_none());
@@ -309,7 +320,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_sign_in_ends_when_it_expires() {
         let a = auth();
-        let t = a.login("s3cret").unwrap();
+        let t = a.login(&PASSWORD).unwrap();
         let s = a.sign_in(&t).unwrap();
         let ended = tokio::spawn(s.ended());
         tokio::time::advance(Duration::from_secs(59)).await;
