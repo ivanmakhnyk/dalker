@@ -51,7 +51,7 @@ openh264 = "0.9"
 x11rb = { version = "0.14", features = ["shm", "shape"] }
 libc = "0.2"
 evdev = "0.13"
-zbus = "5"
+zbus = "6"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
