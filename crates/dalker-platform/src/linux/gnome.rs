@@ -371,6 +371,8 @@ pub struct GnomeBorder {
     /// The extension answered the last `SetActive(true)`.
     shown: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
+    /// The person at the host chose "Disconnect everyone" in the extension's panel menu.
+    disconnect: Arc<AtomicBool>,
     heartbeat: Option<JoinHandle<()>>,
 }
 
@@ -394,12 +396,14 @@ impl GnomeBorder {
         let active = Arc::new(AtomicBool::new(false));
         let shown = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
+        let disconnect = Arc::new(AtomicBool::new(false));
         let (c, a, v, s) = (
             conn.clone(),
             Arc::clone(&active),
             Arc::clone(&shown),
             Arc::clone(&stop),
         );
+        let d = Arc::clone(&disconnect);
         // Ping every second while active; the extension hides the frame ~3 s after the
         // last ping, so a crashed agent can never leave a stale "recording" border (or,
         // more importantly, stream without one).
@@ -418,6 +422,16 @@ impl GnomeBorder {
                             // The extension draws the frame before it answers.
                             let ok = p.call_method("SetActive", &(now,)).is_ok();
                             v.store(now && ok, Ordering::SeqCst);
+                        }
+                        // "Disconnect everyone" in the panel menu. An extension from before
+                        // this method answers with an error, which counts as no.
+                        if now {
+                            let asked = p
+                                .call::<_, _, bool>("TakeDisconnectRequest", &())
+                                .unwrap_or(false);
+                            if asked {
+                                d.store(true, Ordering::SeqCst);
+                            }
                         }
                     }
                     last = now;
@@ -444,6 +458,7 @@ impl GnomeBorder {
             active,
             shown,
             stop,
+            disconnect,
             heartbeat: Some(heartbeat),
         })
     }
@@ -464,6 +479,10 @@ impl ViewerIndicator for GnomeBorder {
 
     fn healthy(&self) -> bool {
         name_has_owner(&self.conn, BUS_NAME)
+    }
+
+    fn take_disconnect_request(&self) -> bool {
+        self.disconnect.swap(false, Ordering::SeqCst)
     }
 }
 

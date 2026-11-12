@@ -410,6 +410,10 @@ function sessionEnded(reason) {
     showLogin("The password was changed on the host. Sign in again.");
     return;
   }
+  if (reason === "host_disconnected") {
+    setStatus("the person at the host disconnected everyone", "error");
+    return;
+  }
   if (reason === "signed_out" || reason === "session_expired") {
     setStatus("signed out", "idle");
     showLogin(reason === "signed_out" ? "You signed out of this host. Sign in again." : "Your sign-in expired. Sign in again.");
