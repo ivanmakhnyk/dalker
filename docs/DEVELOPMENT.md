@@ -278,6 +278,32 @@ Manual run: `cargo run -p dalker-agent` from Terminal, after allowing Terminal (
 Screen Recording and Accessibility: macOS gives a program started from Terminal Terminal's
 permissions.
 
+### What rights the agent runs with
+
+One `dalkerd` process does everything: the web server (axum), WebRTC (SDP, ICE, DTLS, SCTP,
+SRTP in webrtc-rs), DataChannel messages, the OpenH264 encoder, the MCP server, capture, input
+and the border. All of it runs with the rights of that one process:
+
+| Host | Runs as |
+|------|---------|
+| Windows (installed service) | **SYSTEM**, in the console session |
+| Linux, Xorg (login screen or session) | **root** |
+| Linux, no desktop yet | **root** (serves no desktop) |
+| Linux, Wayland (GNOME, KDE Plasma, sway…) | the signed-in user |
+| macOS | the signed-in user |
+
+So on Windows and on Xorg, a memory-safety bug in the network-facing code (some of it is C or
+`unsafe`) would give an attacker full control of the computer, not only of the desktop. File
+transfers on Windows already impersonate the signed-in user (`WTSQueryUserToken`), and the
+Wayland agent changes MCP tokens through a small root helper instead of running as root, but the
+rest has no separation yet.
+
+The plan (#93) is to split the agent into a small privileged broker that only captures, injects
+input, follows the secure desktop and draws the border, and an unprivileged process that runs
+HTTP, WebRTC, the encoder and MCP, talking over a local pipe or socket. Until then, keep the host
+off networks you don't trust, or put it behind a VPN (see the README's
+[Is the connection encrypted?](../README.md#questions)).
+
 ## AI agents (MCP) reference
 
 `dalkerd` can serve a [Model Context Protocol](https://modelcontextprotocol.io) endpoint, so an
