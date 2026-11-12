@@ -60,9 +60,8 @@ jobs:
       - name: Build
         run: cargo build --workspace --all-targets --locked
 
-      # Warnings are reported but don't fail the build yet; deny-level lints do (as in ci.yml).
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Test
         run: cargo test --workspace --locked

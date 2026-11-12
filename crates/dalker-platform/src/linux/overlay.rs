@@ -235,7 +235,7 @@ fn run(
         }
         // Follow resolution changes about once a second.
         tick = tick.wrapping_add(1);
-        if tick % 10 == 0 {
+        if tick.is_multiple_of(10) {
             if let Ok(Ok(g)) = conn.get_geometry(root).map(|c| c.reply()) {
                 if (g.width, g.height) != size && g.width > 0 && g.height > 0 {
                     size = (g.width, g.height);

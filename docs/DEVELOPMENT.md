@@ -12,6 +12,7 @@ config file of `KEY=VALUE` lines (`#` comments allowed, real environment variabl
 |---|---|
 | Windows | `C:\ProgramData\Dalker\dalker.conf` |
 | Linux | `/etc/dalker/dalker.conf` (mode `0600`) |
+| macOS | `~/Library/Application Support/Dalker/dalker.conf` (per user; the agent runs as the signed-in user) |
 
 Set `DALKER_CONFIG` to use a different file.
 
@@ -25,13 +26,15 @@ DALKER_BIND=0.0.0.0:8742
 # Login. Store only a hash: `dalkerd set-password` writes it for you.
 DALKER_PASSWORD_HASH=$argon2id$v=19$m=19456,t=2,p=1$...
 
-# Pin all WebRTC traffic to ONE UDP port (open/forward just this port in your firewall/NAT)
+# Pin all WebRTC traffic to ONE UDP port (open/forward just this port in your firewall/NAT).
+# New Linux installs set 8443; Windows and macOS use random ports unless this is set.
 DALKER_UDP_PORT=8443
 
 # Extra address(es) to advertise as ICE host candidates (NAT 1:1, port forwards), comma-separated
 DALKER_PUBLIC_IP=203.0.113.10
 
-# Capture backend: native (DXGI / Mutter ScreenCast / X11) or mock (test pattern)
+# Capture backend: native (Windows: DXGI; Linux: GNOME screen cast, the xdg-desktop-portal screen
+# cast on other Wayland desktops, or X11; macOS: ScreenCaptureKit) or mock (test pattern)
 DALKER_CAPTURE=native
 ```
 
@@ -43,9 +46,11 @@ environment variables can't be changed that way; other keys need a service resta
 
 ### Dalker Settings (host)
 
-`dalkerd settings` opens the settings window: **Dalker Settings** in the Windows Start menu and
-the tray menu, or in the Ubuntu app grid. It asks for administrator rights (UAC on Windows, a polkit
-password prompt on Ubuntu), because the config file belongs to the administrators.
+`dalkerd settings` opens the settings window: **Dalker Settings** in the Windows Start menu (and
+the tray menu when `dalkerd` runs by hand; the service has no tray), in the Linux app grid, or in the
+macOS menu bar icon. On Windows and Linux it asks for administrator rights (UAC, or a polkit
+password prompt), because the config file belongs to the administrators; on macOS the config is the
+user's own and no password is asked.
 
 The window is one web page, `web-ui/settings.html`, shown in a native web view (WebView2 on Windows,
 WebKitGTK on Ubuntu) and served by the window's own process on a loopback port behind a key made at
@@ -138,12 +143,14 @@ sh packaging/macos/build-pkg.sh target/release/dalkerd dist     # -> dist/Dalker
 ### CI and releases
 
 Every push to `main` and `develop` and every pull request is checked for formatting (rustfmt), built,
-linted (clippy) and tested on Windows and Ubuntu by [`ci.yml`](../.github/workflows/ci.yml), and
+linted (clippy) and tested on Windows and Ubuntu by [`ci.yml`](../.github/workflows/ci.yml) (macOS:
+see below), and
 [`pr-rules.yml`](../.github/workflows/pr-rules.yml) checks each pull request against the rules in
 [CONTRIBUTING.md](../CONTRIBUTING.md). The version is set once, in `[workspace.package]`
 of `Cargo.toml`; the crates, the `.deb`, the MSI and the web client (connection details → Version) all
-take it from there. Pushing a `vX.Y.Z` tag builds both installers and publishes a GitHub Release
-([`release.yml`](../.github/workflows/release.yml)). See [RELEASING.md](../RELEASING.md).
+take it from there. Pushing a `vX.Y.Z` tag builds the MSI and the `.deb` and publishes a GitHub
+Release ([`release.yml`](../.github/workflows/release.yml)); the macOS `.pkg` follows from its own
+workflow. See [RELEASING.md](../RELEASING.md).
 
 macOS has its own two workflows, so a Mac failure never blocks the Windows and Linux ones:
 [`macos.yml`](../.github/workflows/macos.yml) builds, lints and tests on Apple silicon whenever
@@ -183,14 +190,14 @@ For development, `dalkerd.exe` can also run by hand in the logged-in user's sess
 sees that user's desktop (no secure desktop) and can't control elevated windows unless it runs
 elevated itself.
 
-### Ubuntu
+### Linux (Ubuntu and Debian)
 
 Install the package, choose the access password in the **Dalker Settings** app (only an Argon2
 hash is stored, in `/etc/dalker/dalker.conf`), then **log out and back in once** so GNOME loads
 the border extension:
 
 ```bash
-sudo apt install ./dalker_0.1.0_amd64.deb
+sudo apt install ./dalker_*_amd64.deb
 ```
 
 It runs as the systemd service `dalker`, starts at boot and restarts on failure. The launcher
@@ -271,6 +278,32 @@ Manual run: `cargo run -p dalker-agent` from Terminal, after allowing Terminal (
 Screen Recording and Accessibility: macOS gives a program started from Terminal Terminal's
 permissions.
 
+### What rights the agent runs with
+
+One `dalkerd` process does everything: the web server (axum), WebRTC (SDP, ICE, DTLS, SCTP,
+SRTP in webrtc-rs), DataChannel messages, the OpenH264 encoder, the MCP server, capture, input
+and the border. All of it runs with the rights of that one process:
+
+| Host | Runs as |
+|------|---------|
+| Windows (installed service) | **SYSTEM**, in the console session |
+| Linux, Xorg (login screen or session) | **root** |
+| Linux, no desktop yet | **root** (serves no desktop) |
+| Linux, Wayland (GNOME, KDE Plasma, sway…) | the signed-in user |
+| macOS | the signed-in user |
+
+So on Windows and on Xorg, a memory-safety bug in the network-facing code (some of it is C or
+`unsafe`) would give an attacker full control of the computer, not only of the desktop. File
+transfers on Windows already impersonate the signed-in user (`WTSQueryUserToken`), and the
+Wayland agent changes MCP tokens through a small root helper instead of running as root, but the
+rest has no separation yet.
+
+The plan (#93) is to split the agent into a small privileged broker that only captures, injects
+input, follows the secure desktop and draws the border, and an unprivileged process that runs
+HTTP, WebRTC, the encoder and MCP, talking over a local pipe or socket. Until then, keep the host
+off networks you don't trust, or put it behind a VPN (see the README's
+[Is the connection encrypted?](../README.md#questions)).
+
 ## AI agents (MCP) reference
 
 `dalkerd` can serve a [Model Context Protocol](https://modelcontextprotocol.io) endpoint, so an
@@ -284,7 +317,8 @@ PNG), `wait`, `mouse_move`, `click`, `drag`, `scroll`, `type_text`, `press_keys`
 last screenshot. Input tools can return a fresh screenshot (`screenshot_after`).
 
 **1. Turn it on** in **Dalker Settings** (AI Agents section), or in the config file
-(`C:\ProgramData\Dalker\dalker.conf` or `/etc/dalker/dalker.conf`, as administrator/root).
+(`C:\ProgramData\Dalker\dalker.conf` or `/etc/dalker/dalker.conf` as administrator/root, or
+`~/Library/Application Support/Dalker/dalker.conf` on macOS).
 The running agent starts it within seconds:
 
 ```ini
@@ -298,7 +332,8 @@ DALKER_MCP_MAX_SESSIONS=1
 ```
 
 With other computers allowed, tokens cross the network as plain HTTP, like the web client's
-password. On a network you don't trust, leave the switch off and use an SSH tunnel, VPN or TLS
+password. (Viewers signed in with that password can also copy every token from the web client's AI
+agents panel, so the web password protects the tokens too.) On a network you don't trust, leave the switch off and use an SSH tunnel, VPN or TLS
 reverse proxy; `DALKER_MCP_ALLOW_PLAINTEXT=0` refuses any network address outright.
 
 **2. Create a token** on the host, in **Dalker Settings** ("Generate new token") or on the
@@ -315,7 +350,9 @@ dalkerd mcp-token list
 sudo dalkerd mcp-token revoke claude-laptop
 ```
 
-(On Windows run `dalkerd.exe mcp-token ...` from an administrator terminal.) The agent picks up
+(On Windows run `dalkerd.exe mcp-token ...` from an administrator terminal. On macOS no `sudo` is
+needed, and the program is `/Applications/Dalker.app/Contents/MacOS/dalkerd`, which isn't on
+`PATH`.) The agent picks up
 new, changed and revoked tokens within seconds; revoking a token or changing its permissions ends
 its session at once. Requests carry
 `Authorization: Bearer <token>`; requests from web pages (any `Origin` header) are refused.
@@ -325,9 +362,10 @@ its session at once. Requests carry
 
 - *Claude Code:*
   ```bash
-  claude mcp add --transport http dalker http://127.0.0.1:8743/mcp --header "Authorization: Bearer dkmcp_..."
+  claude mcp add --scope user --transport http dalker http://127.0.0.1:8743/mcp --header "Authorization: Bearer dkmcp_..."
   ```
-  or in `.mcp.json`, with the token in an environment variable:
+  or in a project's `.mcp.json`, with the token in an environment variable (never the token itself,
+  since that file is usually committed):
   ```json
   {
     "mcpServers": {
@@ -353,9 +391,10 @@ its session at once. Requests carry
   }
   ```
 
-**Stopping it at the host.** The Windows tray menu has **Disconnect AI agents**: it ends their
-sessions and keeps them out until you choose **Allow AI agents again** (the service runs without a
-tray; there, turn the MCP server off in Dalker Settings or revoke the token). Idle agents are disconnected after 10
+**Stopping it at the host.** Turn the MCP server off in Dalker Settings, or revoke the token. When
+`dalkerd` runs by hand on Windows (not as the service, which has no tray), its tray menu also has
+**Disconnect AI agents**: it ends their sessions and keeps them out until you choose **Allow AI
+agents again**. On macOS, **Quit Dalker** in the menu bar ends every session. Idle agents are disconnected after 10
 minutes; an agent that goes away without closing its session gives its slot back within seconds of
 its connection closing, or after 2 minutes without any request open. When every slot is taken, a
 new agent's `initialize` is refused. Each agent is rate limited. Every tool call is logged with the token name and a short
@@ -407,9 +446,12 @@ dalker/
 │   ├── dalker-core       RawFrame, InputEvent (normalized 0..1 coords), ScreenCapturer /
 │   │                       InputInjector traits, MockCapturer, keymap, clipboard types
 │   ├── dalker-platform   Windows: DXGI capture, SendInput, service, tray, border overlay
-│   │                       Linux:   Mutter ScreenCast/PipeWire + X11 MIT-SHM capture, uinput,
-│   │                                GNOME extension bridge (D-Bus), X11 border overlay
-│   │                       macOS:   stub
+│   │                       Linux:   Mutter ScreenCast or xdg-desktop-portal ScreenCast via
+│   │                                PipeWire, X11 MIT-SHM capture, uinput, GNOME extension
+│   │                                bridge (D-Bus), wlr-layer-shell and X11 border overlays,
+│   │                                Klipper clipboard (KDE)
+│   │                       macOS:   ScreenCaptureKit, CGEventPost, AppKit border and menu
+│   │                                bar, NSPasteboard
 │   ├── dalker-webrtc     webrtc-rs pipeline: BGRA→I420 + OpenH264 encoder, H.264 track,
 │   │                       "control" and "files" DataChannels, clipboard sync
 │   ├── dalker-web        axum server: Argon2 login, session cookies, /api/offer signaling,
@@ -420,7 +462,8 @@ dalker/
 ├── web-ui/                 plain HTML/CSS/JS browser client (no build step)
 └── packaging/
     ├── windows/            WiX MSI
-    └── linux/              .deb, systemd unit, launcher, GNOME border extension
+    ├── linux/              .deb, systemd unit, launcher, GNOME border extension
+    └── macos/              .pkg, Dalker.app, LaunchAgent
 ```
 
 ```text
@@ -470,8 +513,10 @@ channel opens and whenever that changes.
 
 When the host ends a session it first sends `{"type":"session_end","reason":"..."}`, so the viewer
 can say why: `password_changed` (the access password was changed on the host; sign in again),
-`web_off` (web remote access was turned off) or `host_shutdown` (the agent is stopping or
-restarting; the viewer reconnects when it is back). A session that closes without one lost its
+`signed_out` (the sign-in that started the stream was signed out, from another tab for
+example), `session_expired` (that sign-in reached its lifetime), `web_off` (web remote access
+was turned off) or `host_shutdown` (the agent is stopping or restarting; the viewer reconnects
+when it is back). A session that closes without one lost its
 network; the viewer reconnects by itself while the host can be reached.
 
 File transfers use the `"files"` channel: JSON requests and replies (`hello`, `list`, `put`, `end`,

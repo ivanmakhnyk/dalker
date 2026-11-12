@@ -74,6 +74,7 @@ fn main() -> Result<()> {
         );
     }
     init_logging(if service { "service.log" } else { "dalker.log" });
+    install_panic_hook();
 
     if service {
         return run_service();
@@ -241,6 +242,41 @@ fn run_service() -> Result<()> {
     bail!("`service` is only available on Windows")
 }
 
+/// Threads the agent can't work without: if one of them panics, the process ends so the service
+/// (systemd, the Windows service, launchd) starts a fresh one, instead of serving a black screen
+/// or ignoring input.
+const ESSENTIAL_THREADS: [&str; 3] = ["dalker-capture", "dalker-input", "dalker-clipboard"];
+
+/// Logs every panic where the agent's log goes (stderr may go nowhere on Windows and macOS), and
+/// aborts when an essential thread panicked.
+fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        let name = thread.name().unwrap_or("unnamed").to_owned();
+        let message = panic_message(info.payload());
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_default();
+        tracing::error!(thread = %name, %location, "panic: {message}");
+        default(info);
+        if ESSENTIAL_THREADS.contains(&name.as_str()) {
+            tracing::error!(thread = %name, "an essential thread panicked; stopping so Dalker is restarted");
+            std::process::abort();
+        }
+    }));
+}
+
+/// The text a panic was raised with (`panic!("...")` gives a `&str` or a `String`).
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "(no message)".to_owned())
+}
+
 fn init_logging(file_name: &str) {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         "info,rmcp=warn,webrtc=warn,webrtc_ice=warn,webrtc_mdns=warn,webrtc_dtls=warn,webrtc_sctp=warn,webrtc_srtp=warn".into()
@@ -394,16 +430,12 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
         )?
         .with_cookie_secure(cli.cookie_secure),
     );
-    // Shown to viewers; the probe below names the real backend (GNOME screen cast or X11).
+    // Shown to viewers: the backend of the detected desktop, or the one the probe below
+    // actually started.
+    let desktop = dalker_platform::Desktop::detect();
     let mut capture_name = match cli.capture {
         CaptureMode::Mock => "mock",
-        CaptureMode::Native if cfg!(windows) => "dxgi",
-        // Under Wayland only a screen cast can serve (it may not be up yet at start); the
-        // probe below names the one in use.
-        CaptureMode::Native if std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t == "wayland") => {
-            "gnome-screencast"
-        }
-        CaptureMode::Native => "x11",
+        CaptureMode::Native => desktop.capture_name(),
     }
     .to_string();
     // Backends. Mock capture pairs with a mock injector so input is visible on screen.
@@ -425,7 +457,8 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
             // The service must be ready immediately, even before a display exists
             // (login screen not up yet, Wayland session...). Capture is retried in the
             // background, so a failed probe only logs.
-            let probe = match dalker_platform::capture_backend_without_probe() {
+            tracing::info!(?desktop, "desktop detected");
+            let probe = match dalker_platform::capture_backend_without_probe(desktop) {
                 Some(name) => {
                     tracing::info!(
                         backend = name,
@@ -434,7 +467,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                     capture_name = name.to_string();
                     None
                 }
-                None => Some(dalker_platform::create_capturer()),
+                None => Some(dalker_platform::create_capturer(desktop)),
             };
             match probe {
                 None => {}
@@ -456,7 +489,11 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                     None
                 }
             };
-            (Box::new(|| dalker_platform::create_capturer()), injector)
+            // Detected again on every attempt: GNOME may come up after the agent.
+            (
+                Box::new(|| dalker_platform::create_capturer(dalker_platform::Desktop::detect())),
+                injector,
+            )
         }
     };
     let (frame_tx, _) = watch::channel::<Option<Arc<RawFrame>>>(None);
@@ -481,7 +518,9 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
             let clip = MockClipboard::new();
             Box::new(move || Ok(Box::new(clip.clone()) as _))
         }
-        CaptureMode::Native => Box::new(dalker_platform::create_clipboard),
+        CaptureMode::Native => {
+            Box::new(|| dalker_platform::create_clipboard(dalker_platform::Desktop::detect()))
+        }
     };
     let (clipboard_tx, clipboard_rx) = watch::channel(ClipboardState::default());
     let clipboard_requests =
@@ -557,7 +596,9 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
             let mut last_on = false;
             loop {
                 if indicator.is_none() {
-                    match tokio::task::spawn_blocking(dalker_platform::create_indicator).await {
+                    let create =
+                        || dalker_platform::create_indicator(dalker_platform::Desktop::detect());
+                    match tokio::task::spawn_blocking(create).await {
                         Ok(Ok(i)) => {
                             tracing::info!(backend = i.name(), "remote-session border ready");
                             indicator = Some(i);
@@ -573,7 +614,15 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                                 last_err = e;
                             }
                         }
-                        Err(_) => {}
+                        Err(e) => {
+                            let e = format!("the border backend failed: {e}");
+                            if e != last_err {
+                                tracing::error!(
+                                    "{e}; the desktop is not served until the border can be shown"
+                                );
+                                last_err = e;
+                            }
+                        }
                     }
                 }
                 if indicator.as_ref().is_some_and(|i| !i.healthy()) {
@@ -973,11 +1022,12 @@ impl dalker_mcp::DesktopHandle for Agent {
 
     fn open_viewer(&self) -> Result<u64, String> {
         // Shares the viewer limit (and the border) with WebRTC viewers.
-        self.active
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                (n < self.max_sessions).then_some(n + 1)
-            })
-            .map_err(|_| format!("too many viewers connected (max {})", self.max_sessions))?;
+        if !reserve_slot(&self.active, self.max_sessions) {
+            return Err(format!(
+                "too many viewers connected (max {})",
+                self.max_sessions
+            ));
+        }
         Ok(MCP_SESSION_BASE + self.next_mcp_id.fetch_add(1, Ordering::SeqCst))
     }
 
@@ -1055,16 +1105,36 @@ impl Agent {
     }
 }
 
+/// The stream's end reason when the viewer's sign-in ends.
+fn end_reason(why: dalker_web::SignOut) -> EndReason {
+    match why {
+        dalker_web::SignOut::LoggedOut => EndReason::SignedOut,
+        dalker_web::SignOut::Expired => EndReason::SessionExpired,
+        dalker_web::SignOut::PasswordChanged => EndReason::PasswordChanged,
+    }
+}
+
+/// Takes one of `max` viewer slots, or returns false when they are all in use.
+fn reserve_slot(active: &AtomicUsize, max: usize) -> bool {
+    let mut n = active.load(Ordering::SeqCst);
+    while n < max {
+        match active.compare_exchange_weak(n, n + 1, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return true,
+            Err(now) => n = now,
+        }
+    }
+    false
+}
+
 impl SignalingHandler for Agent {
-    fn handle_offer(&self, offer_sdp: String) -> BoxFuture<Result<String, String>> {
+    fn handle_offer(
+        &self,
+        offer_sdp: String,
+        sign_in: dalker_web::SignIn,
+    ) -> BoxFuture<Result<String, String>> {
         // Reserve a slot up front so concurrent offers can't exceed the limit.
         let active = Arc::clone(&self.active);
-        let reserved = active
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                (n < self.max_sessions).then_some(n + 1)
-            })
-            .is_ok();
-        if !reserved {
+        if !reserve_slot(&active, self.max_sessions) {
             let max = self.max_sessions;
             return Box::pin(async move { Err(format!("too many viewers (max {max})")) });
         }
@@ -1082,13 +1152,20 @@ impl SignalingHandler for Agent {
                 Ok((answer, mut session)) => {
                     streams.fetch_add(1, Ordering::SeqCst);
                     tokio::spawn(async move {
-                        tokio::select! {
-                            _ = session.wait_closed() => {}
+                        let reason = tokio::select! {
+                            _ = session.wait_closed() => None,
                             Ok(()) = sign_out.changed() => {
-                                let reason = sign_out.borrow_and_update().unwrap_or(EndReason::HostShutdown);
-                                tracing::info!(session = session.id, reason = reason.as_str(), "the host ends the stream");
-                                session.end(reason).await;
+                                Some(sign_out.borrow_and_update().unwrap_or(EndReason::HostShutdown))
                             }
+                            why = sign_in.ended() => Some(end_reason(why)),
+                        };
+                        if let Some(reason) = reason {
+                            tracing::info!(
+                                session = session.id,
+                                reason = reason.as_str(),
+                                "the host ends the stream"
+                            );
+                            session.end(reason).await;
                         }
                         streams.fetch_sub(1, Ordering::SeqCst);
                         let n = active.fetch_sub(1, Ordering::SeqCst) - 1;
@@ -1423,7 +1500,7 @@ fn spawn_clipboard_thread(
                     }
                 };
                 let first = seen.is_none();
-                let changed = seen.as_ref().map_or(true, |(_, t)| *t != text);
+                let changed = seen.as_ref().is_none_or(|(_, t)| *t != text);
                 seen = Some((marker, text.clone()));
                 if first || !changed {
                     continue;
@@ -1518,6 +1595,17 @@ mod tests {
         viewers.store(0, Ordering::SeqCst);
         assert!(!may_capture(&frames, &viewers, &shown), "viewer left");
         drop(rx);
+    }
+
+    #[test]
+    fn panic_messages_are_read_from_both_payload_kinds() {
+        let fixed = std::panic::catch_unwind(|| panic!("fixed text")).unwrap_err();
+        assert_eq!(panic_message(fixed.as_ref()), "fixed text");
+        let n = 3;
+        let formatted = std::panic::catch_unwind(|| panic!("formatted {n}")).unwrap_err();
+        assert_eq!(panic_message(formatted.as_ref()), "formatted 3");
+        let other = std::panic::catch_unwind(|| std::panic::panic_any(42u8)).unwrap_err();
+        assert_eq!(panic_message(other.as_ref()), "(no message)");
     }
 
     #[test]

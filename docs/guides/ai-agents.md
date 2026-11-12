@@ -12,7 +12,7 @@ Before you start, install Dalker on the host (see [Getting started](getting-star
 
 ## Step 1. Turn on the MCP server
 
-1. On the host, open **Dalker Settings** and confirm the administrator prompt.
+1. On the host, open **Dalker Settings** (on Windows and Linux, confirm the administrator prompt).
 2. Open the **AI Agents (MCP)** tab.
 3. Switch on **Enable MCP server**.
 
@@ -43,7 +43,9 @@ To use a different port, type it under **MCP Port** and click **Apply** (8743 by
 3. Choose what it may do:
    - **Allow screen capture & remote control:** see the screen, move and click the mouse, type.
      Almost every assistant needs this. (A token that may only look, not touch, can be made on
-     the command line: `dalkerd mcp-token create --scopes view`.)
+     the command line: `dalkerd mcp-token create --name <name> --scopes view`, as administrator on
+     Windows, with `sudo` on Linux, and on macOS as
+     `/Applications/Dalker.app/Contents/MacOS/dalkerd`.)
    - **Allow clipboard access:** read and write the host's clipboard. Leave it off unless needed.
 4. Click **Generate**.
 
@@ -58,17 +60,18 @@ window says where to paste it.
 
 ![Ready-made MCP configuration for Claude Desktop](../images/mcp-config.png)
 
-| App | Where the configuration goes |
+| App | What to do with it |
 |---|---|
-| **Claude Code** | `.mcp.json` in your project, or `~/.claude.json` |
+| **Claude Code** | Run the `claude mcp add --scope user ...` command in a terminal. It keeps the token in your own `~/.claude.json`, out of your projects. |
+| **Claude Code (project)** | Paste it into `.mcp.json` in your project. That file only says `Bearer ${DALKER_MCP_TOKEN}`: set the `DALKER_MCP_TOKEN` environment variable to the token where Claude Code starts. |
 | **Claude Desktop** | Settings → Developer → **Edit Config** (`claude_desktop_config.json`). Needs [Node.js](https://nodejs.org), because Claude Desktop reaches Dalker through the `mcp-remote` bridge. |
 | **Cursor, LM Studio, Windsurf** | the app's `mcp.json` (LM Studio: Program → Edit mcp.json) |
 
-Restart or reload the app. Claude Code users can also add the server in one command:
+Restart or reload the app.
 
-```bash
-claude mcp add --transport http dalker http://127.0.0.1:8743/mcp --header "Authorization: Bearer dkmcp_..."
-```
+> **Keep tokens out of Git.** A token in a project's `.mcp.json` or `mcp.json` is easily
+> committed and pushed. Use the user-wide Claude Code command or the environment variable, and
+> revoke a token that was ever committed.
 
 Then try a first request, for example *"Take a screenshot of my computer and tell me which windows
 are open."*
