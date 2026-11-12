@@ -78,7 +78,7 @@ The stream and session options are flags only:
 | `--bitrate-kbps` | `6000` | H.264 target bitrate |
 | `--max-width` | `1920` | downscale wider screens; `0` = always native |
 | `--udp-port` | ephemeral | single UDP port for all WebRTC traffic |
-| `--public-ip` | – | extra host ICE candidate (repeatable); with `--udp-port` and no `--public-ip`, a `stun:` server is asked for it at startup |
+| `--public-ip` | – | extra host ICE candidate (repeatable); with `--udp-port` and no `--public-ip`, a `stun:` server is asked for it at startup, every 10 minutes and after a viewer fails to connect |
 | `--stun` | – | STUN/TURN server URL for non-LAN use (repeatable) |
 | `--max-sessions` | `2` | concurrent viewers |
 | `--session-hours` | `12` | how long a login stays valid |
