@@ -456,7 +456,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                     None
                 }
             };
-            (Box::new(|| dalker_platform::create_capturer()), injector)
+            (Box::new(dalker_platform::create_capturer), injector)
         }
     };
     let (frame_tx, _) = watch::channel::<Option<Arc<RawFrame>>>(None);
@@ -966,11 +966,12 @@ impl dalker_mcp::DesktopHandle for Agent {
 
     fn open_viewer(&self) -> Result<u64, String> {
         // Shares the viewer limit (and the border) with WebRTC viewers.
-        self.active
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                (n < self.max_sessions).then_some(n + 1)
-            })
-            .map_err(|_| format!("too many viewers connected (max {})", self.max_sessions))?;
+        if !reserve_slot(&self.active, self.max_sessions) {
+            return Err(format!(
+                "too many viewers connected (max {})",
+                self.max_sessions
+            ));
+        }
         Ok(MCP_SESSION_BASE + self.next_mcp_id.fetch_add(1, Ordering::SeqCst))
     }
 
@@ -1048,16 +1049,23 @@ impl Agent {
     }
 }
 
+/// Takes one of `max` viewer slots, or returns false when they are all in use.
+fn reserve_slot(active: &AtomicUsize, max: usize) -> bool {
+    let mut n = active.load(Ordering::SeqCst);
+    while n < max {
+        match active.compare_exchange_weak(n, n + 1, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return true,
+            Err(now) => n = now,
+        }
+    }
+    false
+}
+
 impl SignalingHandler for Agent {
     fn handle_offer(&self, offer_sdp: String) -> BoxFuture<Result<String, String>> {
         // Reserve a slot up front so concurrent offers can't exceed the limit.
         let active = Arc::clone(&self.active);
-        let reserved = active
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                (n < self.max_sessions).then_some(n + 1)
-            })
-            .is_ok();
-        if !reserved {
+        if !reserve_slot(&active, self.max_sessions) {
             let max = self.max_sessions;
             return Box::pin(async move { Err(format!("too many viewers (max {max})")) });
         }
@@ -1401,7 +1409,7 @@ fn spawn_clipboard_thread(
                     }
                 };
                 let first = seen.is_none();
-                let changed = seen.as_ref().map_or(true, |(_, t)| *t != text);
+                let changed = seen.as_ref().is_none_or(|(_, t)| *t != text);
                 seen = Some((marker, text.clone()));
                 if first || !changed {
                     continue;
