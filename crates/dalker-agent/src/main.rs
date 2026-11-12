@@ -430,16 +430,12 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
         )?
         .with_cookie_secure(cli.cookie_secure),
     );
-    // Shown to viewers; the probe below names the real backend (GNOME screen cast or X11).
+    // Shown to viewers: the backend of the detected desktop, or the one the probe below
+    // actually started.
+    let desktop = dalker_platform::Desktop::detect();
     let mut capture_name = match cli.capture {
         CaptureMode::Mock => "mock",
-        CaptureMode::Native if cfg!(windows) => "dxgi",
-        // Under Wayland only a screen cast can serve (it may not be up yet at start); the
-        // probe below names the one in use.
-        CaptureMode::Native if std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t == "wayland") => {
-            "gnome-screencast"
-        }
-        CaptureMode::Native => "x11",
+        CaptureMode::Native => desktop.capture_name(),
     }
     .to_string();
     // Backends. Mock capture pairs with a mock injector so input is visible on screen.
@@ -461,7 +457,8 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
             // The service must be ready immediately, even before a display exists
             // (login screen not up yet, Wayland session...). Capture is retried in the
             // background, so a failed probe only logs.
-            let probe = match dalker_platform::capture_backend_without_probe() {
+            tracing::info!(?desktop, "desktop detected");
+            let probe = match dalker_platform::capture_backend_without_probe(desktop) {
                 Some(name) => {
                     tracing::info!(
                         backend = name,
@@ -470,7 +467,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                     capture_name = name.to_string();
                     None
                 }
-                None => Some(dalker_platform::create_capturer()),
+                None => Some(dalker_platform::create_capturer(desktop)),
             };
             match probe {
                 None => {}
@@ -492,7 +489,11 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                     None
                 }
             };
-            (Box::new(dalker_platform::create_capturer), injector)
+            // Detected again on every attempt: GNOME may come up after the agent.
+            (
+                Box::new(|| dalker_platform::create_capturer(dalker_platform::Desktop::detect())),
+                injector,
+            )
         }
     };
     let (frame_tx, _) = watch::channel::<Option<Arc<RawFrame>>>(None);
@@ -514,7 +515,9 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
             let clip = MockClipboard::new();
             Box::new(move || Ok(Box::new(clip.clone()) as _))
         }
-        CaptureMode::Native => Box::new(dalker_platform::create_clipboard),
+        CaptureMode::Native => {
+            Box::new(|| dalker_platform::create_clipboard(dalker_platform::Desktop::detect()))
+        }
     };
     let (clipboard_tx, clipboard_rx) = watch::channel(ClipboardState::default());
     let clipboard_requests =
@@ -589,7 +592,9 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
             let mut last_on = false;
             loop {
                 if indicator.is_none() {
-                    match tokio::task::spawn_blocking(dalker_platform::create_indicator).await {
+                    let create =
+                        || dalker_platform::create_indicator(dalker_platform::Desktop::detect());
+                    match tokio::task::spawn_blocking(create).await {
                         Ok(Ok(i)) => {
                             tracing::info!(backend = i.name(), "remote-session border ready");
                             indicator = Some(i);
