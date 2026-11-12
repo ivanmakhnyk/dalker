@@ -9,6 +9,7 @@ use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 use rand::TryRng;
+use tokio::sync::watch;
 
 pub const COOKIE_NAME: &str = "dalker_session";
 
@@ -49,9 +50,52 @@ pub struct Credentials {
     pub password_hash: String,
 }
 
+/// Why a sign-in ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignOut {
+    /// `POST /api/logout` with this session (another tab, for example).
+    LoggedOut,
+    /// The session reached its lifetime (`--session-hours`).
+    Expired,
+    /// The access password was changed on the host.
+    PasswordChanged,
+}
+
+struct Session {
+    expires: Instant,
+    ended: watch::Sender<Option<SignOut>>,
+}
+
+impl Session {
+    fn end(self, why: SignOut) {
+        self.ended.send_replace(Some(why));
+    }
+}
+
+/// Follows one signed-in session, so whatever it started (a stream) can end with it.
+pub struct SignIn {
+    expires: Instant,
+    ended: watch::Receiver<Option<SignOut>>,
+}
+
+impl SignIn {
+    /// Resolves when the session is signed out, its password changes, or it expires.
+    pub async fn ended(mut self) -> SignOut {
+        let expiry = tokio::time::sleep_until(tokio::time::Instant::from_std(self.expires));
+        tokio::select! {
+            r = self.ended.wait_for(Option::is_some) => match r {
+                Ok(why) => why.unwrap_or(SignOut::Expired),
+                // Dropped without a word: only expired sessions are pruned that way.
+                Err(_) => SignOut::Expired,
+            },
+            _ = expiry => SignOut::Expired,
+        }
+    }
+}
+
 pub struct Authenticator {
     creds: Mutex<Credentials>,
-    sessions: Mutex<HashMap<String, Instant>>,
+    sessions: Mutex<HashMap<String, Session>>,
     ttl: Duration,
     cookie_secure: CookieSecure,
 }
@@ -92,7 +136,9 @@ impl Authenticator {
         PasswordHash::new(password_hash)
             .map_err(|e| anyhow::anyhow!("invalid password hash: {e}"))?;
         self.creds.lock().unwrap().password_hash = password_hash.to_owned();
-        self.sessions.lock().unwrap().clear();
+        for (_, s) in self.sessions.lock().unwrap().drain() {
+            s.end(SignOut::PasswordChanged);
+        }
         Ok(())
     }
 
@@ -119,25 +165,43 @@ impl Authenticator {
         let token: String = raw.iter().map(|b| format!("{b:02x}")).collect();
         let mut sessions = self.sessions.lock().unwrap();
         let now = Instant::now();
-        sessions.retain(|_, exp| *exp > now);
-        sessions.insert(token.clone(), now + self.ttl);
+        sessions.retain(|_, s| s.expires > now);
+        sessions.insert(
+            token.clone(),
+            Session {
+                expires: now + self.ttl,
+                ended: watch::channel(None).0,
+            },
+        );
         Some(token)
     }
 
     pub fn is_valid(&self, token: &str) -> bool {
+        self.sign_in(token).is_some()
+    }
+
+    /// The session behind a valid token, to follow until it ends.
+    pub fn sign_in(&self, token: &str) -> Option<SignIn> {
         let mut sessions = self.sessions.lock().unwrap();
         match sessions.get(token) {
-            Some(exp) if *exp > Instant::now() => true,
+            Some(s) if s.expires > Instant::now() => Some(SignIn {
+                expires: s.expires,
+                ended: s.ended.subscribe(),
+            }),
             Some(_) => {
-                sessions.remove(token);
-                false
+                if let Some(s) = sessions.remove(token) {
+                    s.end(SignOut::Expired);
+                }
+                None
             }
-            None => false,
+            None => None,
         }
     }
 
     pub fn logout(&self, token: &str) {
-        self.sessions.lock().unwrap().remove(token);
+        if let Some(s) = self.sessions.lock().unwrap().remove(token) {
+            s.end(SignOut::LoggedOut);
+        }
     }
 }
 
@@ -153,11 +217,22 @@ pub fn token_from_cookie_header(header: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::LazyLock;
+
+    /// Made at run time, so no password sits in the source.
+    fn random_password() -> String {
+        let mut bytes = [0u8; 12];
+        rand::rngs::SysRng.try_fill_bytes(&mut bytes).unwrap();
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    static PASSWORD: LazyLock<String> = LazyLock::new(random_password);
+    static NEW_PASSWORD: LazyLock<String> = LazyLock::new(random_password);
 
     fn auth() -> Authenticator {
         Authenticator::new(
             Credentials {
-                password_hash: hash_password("s3cret").unwrap(),
+                password_hash: hash_password(&PASSWORD).unwrap(),
             },
             Duration::from_secs(60),
         )
@@ -169,7 +244,7 @@ mod tests {
         let a = auth();
         assert!(a.login("wrong").is_none());
         assert!(a.login("").is_none());
-        let t = a.login("s3cret").expect("valid login");
+        let t = a.login(&PASSWORD).expect("valid login");
         assert_eq!(t.len(), 64);
         assert!(a.is_valid(&t));
         a.logout(&t);
@@ -203,7 +278,7 @@ mod tests {
     #[test]
     fn new_hash_from_the_host_signs_everyone_out() {
         let a = auth();
-        let old_session = a.login("s3cret").unwrap();
+        let old_session = a.login(&PASSWORD).unwrap();
         assert!(a.set_password_hash("plaintext").is_err());
         let none = Authenticator::new(
             Credentials {
@@ -221,11 +296,37 @@ mod tests {
         assert!(none.has_password() && none.login("chosen-later").is_some());
         assert!(a.is_valid(&old_session), "a bad hash changes nothing");
 
-        a.set_password_hash(&hash_password("brand-new-pw1").unwrap())
+        a.set_password_hash(&hash_password(&NEW_PASSWORD).unwrap())
             .unwrap();
         assert!(!a.is_valid(&old_session), "sessions are signed out");
-        assert!(a.login("s3cret").is_none());
-        assert!(a.login("brand-new-pw1").is_some());
+        assert!(a.login(&PASSWORD).is_none());
+        assert!(a.login(&NEW_PASSWORD).is_some());
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_reports_how_it_ended() {
+        let a = auth();
+        let t = a.login(&PASSWORD).unwrap();
+        let other = a.login(&PASSWORD).unwrap();
+        let (mine, theirs) = (a.sign_in(&t).unwrap(), a.sign_in(&other).unwrap());
+        a.logout(&t);
+        assert_eq!(mine.ended().await, SignOut::LoggedOut);
+        a.set_password_hash(&hash_password(&NEW_PASSWORD).unwrap())
+            .unwrap();
+        assert_eq!(theirs.ended().await, SignOut::PasswordChanged);
+        assert!(a.sign_in(&t).is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_sign_in_ends_when_it_expires() {
+        let a = auth();
+        let t = a.login(&PASSWORD).unwrap();
+        let s = a.sign_in(&t).unwrap();
+        let ended = tokio::spawn(s.ended());
+        tokio::time::advance(Duration::from_secs(59)).await;
+        assert!(!ended.is_finished());
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert_eq!(ended.await.unwrap(), SignOut::Expired);
     }
 
     #[test]

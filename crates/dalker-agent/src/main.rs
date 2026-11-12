@@ -430,16 +430,12 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
         )?
         .with_cookie_secure(cli.cookie_secure),
     );
-    // Shown to viewers; the probe below names the real backend (GNOME screen cast or X11).
+    // Shown to viewers: the backend of the detected desktop, or the one the probe below
+    // actually started.
+    let desktop = dalker_platform::Desktop::detect();
     let mut capture_name = match cli.capture {
         CaptureMode::Mock => "mock",
-        CaptureMode::Native if cfg!(windows) => "dxgi",
-        // Under Wayland only a screen cast can serve (it may not be up yet at start); the
-        // probe below names the one in use.
-        CaptureMode::Native if std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t == "wayland") => {
-            "gnome-screencast"
-        }
-        CaptureMode::Native => "x11",
+        CaptureMode::Native => desktop.capture_name(),
     }
     .to_string();
     // Backends. Mock capture pairs with a mock injector so input is visible on screen.
@@ -461,7 +457,8 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
             // The service must be ready immediately, even before a display exists
             // (login screen not up yet, Wayland session...). Capture is retried in the
             // background, so a failed probe only logs.
-            let probe = match dalker_platform::capture_backend_without_probe() {
+            tracing::info!(?desktop, "desktop detected");
+            let probe = match dalker_platform::capture_backend_without_probe(desktop) {
                 Some(name) => {
                     tracing::info!(
                         backend = name,
@@ -470,7 +467,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                     capture_name = name.to_string();
                     None
                 }
-                None => Some(dalker_platform::create_capturer()),
+                None => Some(dalker_platform::create_capturer(desktop)),
             };
             match probe {
                 None => {}
@@ -492,7 +489,11 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                     None
                 }
             };
-            (Box::new(dalker_platform::create_capturer), injector)
+            // Detected again on every attempt: GNOME may come up after the agent.
+            (
+                Box::new(|| dalker_platform::create_capturer(dalker_platform::Desktop::detect())),
+                injector,
+            )
         }
     };
     let (frame_tx, _) = watch::channel::<Option<Arc<RawFrame>>>(None);
@@ -514,7 +515,9 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
             let clip = MockClipboard::new();
             Box::new(move || Ok(Box::new(clip.clone()) as _))
         }
-        CaptureMode::Native => Box::new(dalker_platform::create_clipboard),
+        CaptureMode::Native => {
+            Box::new(|| dalker_platform::create_clipboard(dalker_platform::Desktop::detect()))
+        }
     };
     let (clipboard_tx, clipboard_rx) = watch::channel(ClipboardState::default());
     let clipboard_requests =
@@ -589,7 +592,9 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
             let mut last_on = false;
             loop {
                 if indicator.is_none() {
-                    match tokio::task::spawn_blocking(dalker_platform::create_indicator).await {
+                    let create =
+                        || dalker_platform::create_indicator(dalker_platform::Desktop::detect());
+                    match tokio::task::spawn_blocking(create).await {
                         Ok(Ok(i)) => {
                             tracing::info!(backend = i.name(), "remote-session border ready");
                             indicator = Some(i);
@@ -1093,6 +1098,15 @@ impl Agent {
     }
 }
 
+/// The stream's end reason when the viewer's sign-in ends.
+fn end_reason(why: dalker_web::SignOut) -> EndReason {
+    match why {
+        dalker_web::SignOut::LoggedOut => EndReason::SignedOut,
+        dalker_web::SignOut::Expired => EndReason::SessionExpired,
+        dalker_web::SignOut::PasswordChanged => EndReason::PasswordChanged,
+    }
+}
+
 /// Takes one of `max` viewer slots, or returns false when they are all in use.
 fn reserve_slot(active: &AtomicUsize, max: usize) -> bool {
     let mut n = active.load(Ordering::SeqCst);
@@ -1106,7 +1120,11 @@ fn reserve_slot(active: &AtomicUsize, max: usize) -> bool {
 }
 
 impl SignalingHandler for Agent {
-    fn handle_offer(&self, offer_sdp: String) -> BoxFuture<Result<String, String>> {
+    fn handle_offer(
+        &self,
+        offer_sdp: String,
+        sign_in: dalker_web::SignIn,
+    ) -> BoxFuture<Result<String, String>> {
         // Reserve a slot up front so concurrent offers can't exceed the limit.
         let active = Arc::clone(&self.active);
         if !reserve_slot(&active, self.max_sessions) {
@@ -1127,13 +1145,20 @@ impl SignalingHandler for Agent {
                 Ok((answer, mut session)) => {
                     streams.fetch_add(1, Ordering::SeqCst);
                     tokio::spawn(async move {
-                        tokio::select! {
-                            _ = session.wait_closed() => {}
+                        let reason = tokio::select! {
+                            _ = session.wait_closed() => None,
                             Ok(()) = sign_out.changed() => {
-                                let reason = sign_out.borrow_and_update().unwrap_or(EndReason::HostShutdown);
-                                tracing::info!(session = session.id, reason = reason.as_str(), "the host ends the stream");
-                                session.end(reason).await;
+                                Some(sign_out.borrow_and_update().unwrap_or(EndReason::HostShutdown))
                             }
+                            why = sign_in.ended() => Some(end_reason(why)),
+                        };
+                        if let Some(reason) = reason {
+                            tracing::info!(
+                                session = session.id,
+                                reason = reason.as_str(),
+                                "the host ends the stream"
+                            );
+                            session.end(reason).await;
                         }
                         streams.fetch_sub(1, Ordering::SeqCst);
                         let n = active.fetch_sub(1, Ordering::SeqCst) - 1;

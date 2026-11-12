@@ -90,6 +90,10 @@ pub enum EndReason {
     WebOff,
     /// The agent is shutting down (service stop or restart, host shutdown).
     HostShutdown,
+    /// The viewer's sign-in was signed out (from another tab, for example).
+    SignedOut,
+    /// The viewer's sign-in reached its lifetime.
+    SessionExpired,
 }
 
 impl EndReason {
@@ -99,6 +103,8 @@ impl EndReason {
             EndReason::PasswordChanged => "password_changed",
             EndReason::WebOff => "web_off",
             EndReason::HostShutdown => "host_shutdown",
+            EndReason::SignedOut => "signed_out",
+            EndReason::SessionExpired => "session_expired",
         }
     }
 
@@ -129,6 +135,38 @@ pub struct WebRtcConfig {
     /// dropped, so a browser that can never complete ICE does not hold a viewer slot (and the
     /// on-screen border) until the ICE agent finally gives up. `None` = 20 s.
     pub connect_timeout: Option<Duration>,
+    /// How long a viewer whose connection dropped (`Disconnected`) may take to get back to
+    /// `Connected` before the session ends. `None` = 5 s.
+    pub disconnect_grace: Option<Duration>,
+}
+
+const DEFAULT_DISCONNECT_GRACE: Duration = Duration::from_secs(5);
+
+/// Ends a session once, whichever way it ended: stops the encoder, tells the agent (held keys
+/// and buttons are released), wakes [`Session::wait_closed`] and closes the peer connection.
+struct SessionEnd {
+    id: SessionId,
+    ended: AtomicBool,
+    stop: Arc<AtomicBool>,
+    control: mpsc::UnboundedSender<(SessionId, ControlMessage)>,
+    closed: watch::Sender<bool>,
+    pc: std::sync::Weak<RTCPeerConnection>,
+}
+
+impl SessionEnd {
+    fn end(&self) {
+        if self.ended.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = self.control.send((self.id, ControlMessage::Closed));
+        let _ = self.closed.send(true);
+        if let Some(pc) = self.pc.upgrade() {
+            tokio::spawn(async move {
+                let _ = pc.close().await;
+            });
+        }
+    }
 }
 
 /// How long to wait for each STUN server's answer in [`discover_public_ip`].
@@ -546,10 +584,19 @@ impl WebRtcEngine {
         // is set then), the agent hears of it, so held keys and buttons are released.
         let (closed_tx, closed_rx) = watch::channel(false);
         {
-            let stop = Arc::clone(&stop);
-            let ended = AtomicBool::new(false);
-            let control = control.clone();
             let pc_weak = Arc::downgrade(&pc);
+            let end = Arc::new(SessionEnd {
+                id,
+                ended: AtomicBool::new(false),
+                stop: Arc::clone(&stop),
+                control: control.clone(),
+                closed: closed_tx,
+                pc: pc_weak.clone(),
+            });
+            let grace = self
+                .config
+                .disconnect_grace
+                .unwrap_or(DEFAULT_DISCONNECT_GRACE);
             let stun = self.stun.clone();
             pc.on_peer_connection_state_change(Box::new(move |state| {
                 tracing::info!(session = id, ?state, "peer connection state");
@@ -558,37 +605,55 @@ impl WebRtcEngine {
                         stun.check.notify_one();
                     }
                 }
-                let terminal = matches!(
-                    state,
-                    RTCPeerConnectionState::Failed
-                        | RTCPeerConnectionState::Closed
-                        | RTCPeerConnectionState::Disconnected
-                );
-                if terminal && !ended.swap(true, Ordering::SeqCst) {
-                    stop.store(true, Ordering::SeqCst);
-                    let _ = control.send((id, ControlMessage::Closed));
-                    let _ = closed_tx.send(true);
-                    if let Some(pc) = pc_weak.upgrade() {
+                match state {
+                    RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => end.end(),
+                    // Often only for a moment (Wi-Fi roaming, a few lost consent checks): give
+                    // ICE a chance to get back to Connected before the session is torn down.
+                    RTCPeerConnectionState::Disconnected => {
+                        let end = Arc::clone(&end);
+                        let pc = pc_weak.clone();
                         tokio::spawn(async move {
-                            let _ = pc.close().await;
+                            tokio::time::sleep(grace).await;
+                            let back = pc.upgrade().is_some_and(|pc| {
+                                pc.connection_state() == RTCPeerConnectionState::Connected
+                            });
+                            if back {
+                                tracing::info!(session = id, "connection came back");
+                            } else {
+                                tracing::info!(
+                                    session = id,
+                                    ?grace,
+                                    "connection did not come back"
+                                );
+                                end.end();
+                            }
                         });
                     }
+                    _ => {}
                 }
                 Box::pin(async {})
             }));
         }
 
-        // SDP exchange (non-trickle).
-        pc.set_remote_description(RTCSessionDescription::offer(offer_sdp)?)
-            .await?;
-        let answer = pc.create_answer(None).await?;
-        let mut gathered = pc.gathering_complete_promise().await;
-        pc.set_local_description(answer).await?;
-        let _ = tokio::time::timeout(Duration::from_secs(5), gathered.recv()).await;
-        let local = pc
-            .local_description()
-            .await
-            .context("no local description")?;
+        // SDP exchange (non-trickle). A peer connection that is dropped without `close()` leaves
+        // webrtc-rs tasks running, so close it whenever this fails.
+        let exchange = async {
+            pc.set_remote_description(RTCSessionDescription::offer(offer_sdp)?)
+                .await?;
+            let answer = pc.create_answer(None).await?;
+            let mut gathered = pc.gathering_complete_promise().await;
+            pc.set_local_description(answer).await?;
+            let _ = tokio::time::timeout(Duration::from_secs(5), gathered.recv()).await;
+            pc.local_description().await.context("no local description")
+        };
+        let local = match exchange.await {
+            Ok(local) => local,
+            Err(e) => {
+                stop.store(true, Ordering::SeqCst);
+                let _ = pc.close().await;
+                return Err(e);
+            }
+        };
 
         // A peer that never connects must not keep its slot.
         {
@@ -618,7 +683,7 @@ impl WebRtcEngine {
         // Encoder thread (OpenH264 is blocking, keep it off the async runtime).
         let runtime = tokio::runtime::Handle::current();
         let thread_stop = Arc::clone(&stop);
-        std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name(format!("dalker-enc-{id}"))
             .spawn(move || {
                 encode_loop(
@@ -631,7 +696,12 @@ impl WebRtcEngine {
                     runtime,
                 )
             })
-            .context("spawn encoder thread")?;
+            .context("spawn encoder thread");
+        if let Err(e) = spawned {
+            stop.store(true, Ordering::SeqCst);
+            let _ = pc.close().await;
+            return Err(e);
+        }
 
         tracing::info!(session = id, "session negotiated");
         Ok((
