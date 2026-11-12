@@ -170,7 +170,10 @@ pub fn encode(
     let mut rgb = Vec::with_capacity(native.w as usize * native.h as usize * 3);
     for y in native.y..native.y + native.h {
         let row = frame.row(y);
-        for px in row[native.x as usize * 4..(native.x + native.w) as usize * 4].chunks_exact(4) {
+        for px in row[native.x as usize * 4..(native.x + native.w) as usize * 4]
+            .as_chunks::<4>()
+            .0
+        {
             rgb.extend_from_slice(&[px[2], px[1], px[0]]);
         }
     }

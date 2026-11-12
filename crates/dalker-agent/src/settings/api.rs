@@ -55,6 +55,7 @@ pub struct Live {
 }
 
 type Check = Box<dyn Fn(&HeaderMap) -> bool + Send + Sync>;
+type Observer = Box<dyn Fn(&Saved) + Send + Sync>;
 
 pub struct Api {
     store: Mutex<Box<dyn Store>>,
@@ -66,7 +67,7 @@ pub struct Api {
     /// Why tokens can't be changed here (shown instead of the controls), if they can't.
     blocked: Option<String>,
     /// Told what the file says after every read (the window probes those addresses).
-    observe: Option<Box<dyn Fn(&Saved) + Send + Sync>>,
+    observe: Option<Observer>,
 }
 
 impl Api {

@@ -58,6 +58,20 @@ async fn bad_offer_is_refused() {
     assert!(result.is_err());
 }
 
+/// The fixed UDP port is taken by another program: the engine still starts, on random ports,
+/// and a viewer on this machine still connects.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn busy_udp_port_falls_back_to_random_ports() {
+    let holder = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    let port = holder.local_addr().unwrap().port();
+    let config = WebRtcConfig {
+        udp_port: Some(port),
+        ..Default::default()
+    };
+    roundtrip(config, false).await;
+    drop(holder);
+}
+
 /// The host ends the session (password changed): the viewer is told why before it closes,
 /// and the agent still hears that the session closed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
