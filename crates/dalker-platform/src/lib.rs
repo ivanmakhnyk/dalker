@@ -24,6 +24,75 @@ pub mod macos;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
+/// The kind of desktop the agent serves, which decides every backend: capture, border,
+/// clipboard. Detected by [`Desktop::detect`], in one place, so the backends can't disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Desktop {
+    Windows,
+    Mac,
+    /// GNOME on Wayland or Xorg: Mutter's screen cast and the Dalker Shell extension.
+    Gnome,
+    /// Any other Wayland desktop (KDE Plasma, sway, Hyprland...): the xdg-desktop-portal
+    /// screen cast and a wlr-layer-shell border.
+    PortalWayland,
+    /// An X server (`$DISPLAY`) without GNOME.
+    X11,
+    /// No desktop to serve yet (a Linux service started before anyone signed in).
+    None,
+}
+
+impl Desktop {
+    /// The desktop of this process's session. On Linux it asks the session bus for GNOME,
+    /// which may come up after the agent started, so call it again when retrying.
+    pub fn detect() -> Desktop {
+        #[cfg(target_os = "windows")]
+        {
+            return Desktop::Windows;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            return Desktop::Mac;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            // GNOME first (Wayland, or any session whose bus has Mutter's ScreenCast): under
+            // Wayland the X11 root window is just an empty XWayland surface.
+            return Desktop::linux(
+                linux::gnome::gnome_session_available(),
+                linux::is_wayland_session(),
+                std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty()),
+            );
+        }
+        #[allow(unreachable_code)]
+        Desktop::None
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn linux(gnome: bool, wayland: bool, x_display: bool) -> Desktop {
+        if gnome {
+            Desktop::Gnome
+        } else if wayland {
+            Desktop::PortalWayland
+        } else if x_display {
+            Desktop::X11
+        } else {
+            Desktop::None
+        }
+    }
+
+    /// The capture backend this desktop uses, as its capturer names itself.
+    pub fn capture_name(self) -> &'static str {
+        match self {
+            Desktop::Windows => "dxgi",
+            Desktop::Mac => "screencapturekit",
+            Desktop::Gnome => "gnome-screencast",
+            Desktop::PortalWayland => "portal-screencast",
+            Desktop::X11 => "x11-shm",
+            Desktop::None => "none",
+        }
+    }
+}
+
 /// Prepares the process for capture/injection. Call once at startup, before
 /// creating any window or capturer (on Windows this enables per-monitor DPI
 /// awareness so DXGI and `SendInput` agree on physical pixels).
@@ -46,64 +115,50 @@ pub fn run_app<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> R {
     }
 }
 
-/// Creates the native screen capturer for this OS.
-pub fn create_capturer() -> Result<Box<dyn ScreenCapturer>, CaptureError> {
-    #[cfg(target_os = "windows")]
-    {
-        return Ok(Box::new(windows::DxgiCapturer::new()?));
-    }
-    #[cfg(target_os = "linux")]
-    {
-        // GNOME (Wayland, or any session whose bus has Mutter's ScreenCast) first: under
-        // Wayland the X11 root window is just an empty XWayland surface.
-        let gnome_why = match linux::gnome::GnomeCapturer::new() {
-            Ok(c) => return Ok(Box::new(c)),
-            Err(CaptureError::Unsupported(why)) => why,
-            Err(e) => return Err(e),
-        };
-        if linux::is_wayland_session() {
-            // Any other Wayland desktop (KDE Plasma, sway...): the screen-cast portal. XWayland
-            // only shows X11 apps, so never pretend to capture the desktop with it.
-            return match linux::portal::PortalCapturer::new() {
+/// Creates the native screen capturer for `desktop` (see [`Desktop::detect`]).
+pub fn create_capturer(desktop: Desktop) -> Result<Box<dyn ScreenCapturer>, CaptureError> {
+    match desktop {
+        #[cfg(target_os = "windows")]
+        Desktop::Windows => Ok(Box::new(windows::DxgiCapturer::new()?)),
+        #[cfg(target_os = "macos")]
+        Desktop::Mac => Ok(Box::new(macos::SckCapturer::new()?)),
+        #[cfg(target_os = "linux")]
+        Desktop::Gnome => Ok(Box::new(linux::gnome::GnomeCapturer::new()?)),
+        #[cfg(target_os = "linux")]
+        Desktop::PortalWayland => {
+            // XWayland only shows X11 apps, so never pretend to capture the desktop with it.
+            match linux::portal::PortalCapturer::new() {
                 Ok(c) => Ok(Box::new(c)),
-                Err(CaptureError::Unsupported(portal_why)) => {
-                    Err(CaptureError::Unsupported(format!(
-                        "Wayland session without a usable screen cast (GNOME: {gnome_why}; \
-                         xdg-desktop-portal: {portal_why})"
-                    )))
-                }
+                Err(CaptureError::Unsupported(why)) => Err(CaptureError::Unsupported(format!(
+                    "Wayland session without a usable screen cast (no GNOME; xdg-desktop-portal: {why})"
+                ))),
                 Err(e) => Err(e),
-            };
+            }
         }
-        return match linux::X11Capturer::new() {
-            Ok(c) => Ok(Box::new(c)),
-            Err(CaptureError::Unsupported(x11)) => Err(CaptureError::Unsupported(format!(
-                "GNOME screen cast: {gnome_why}; X11: {x11}"
-            ))),
-            Err(e) => Err(e),
-        };
+        #[cfg(target_os = "linux")]
+        Desktop::X11 => Ok(Box::new(linux::X11Capturer::new()?)),
+        Desktop::None => Err(CaptureError::Unsupported(
+            "no desktop session yet (nobody signed in)".into(),
+        )),
+        #[allow(unreachable_patterns)]
+        other => Err(CaptureError::Unsupported(format!(
+            "{other:?} is not a desktop of {}",
+            std::env::consts::OS
+        ))),
     }
-    #[cfg(target_os = "macos")]
-    {
-        return Ok(Box::new(macos::SckCapturer::new()?));
-    }
-    #[allow(unreachable_code)]
-    Err(CaptureError::Unsupported(std::env::consts::OS.to_string()))
 }
 
 /// Names the capture backend when starting it only to see whether it works would bother
 /// someone, so it should first be started when a viewer connects: the xdg-desktop-portal
 /// screen cast may ask the person at the host to allow it. `None` = probing is harmless.
-pub fn capture_backend_without_probe() -> Option<&'static str> {
+pub fn capture_backend_without_probe(desktop: Desktop) -> Option<&'static str> {
     #[cfg(target_os = "linux")]
     {
-        if linux::is_wayland_session()
-            && !linux::gnome::gnome_session_available()
-            && linux::portal::available()
-        {
-            return Some("portal-screencast");
+        if desktop == Desktop::PortalWayland && linux::portal::available() {
+            return Some(desktop.capture_name());
         }
     }
+    let _ = desktop;
     None
 }
 
@@ -111,7 +166,7 @@ pub fn capture_backend_without_probe() -> Option<&'static str> {
 /// sway, Hyprland...), where the person at the host is asked to allow screen sharing. Asks
 /// the session bus, so call it once rather than on every redraw.
 pub fn screen_sharing_needs_permission() -> bool {
-    capture_backend_without_probe().is_some()
+    capture_backend_without_probe(Desktop::detect()).is_some()
 }
 
 /// Whether screen sharing was allowed ahead of time with [`allow_screen_sharing_now`] (or by
@@ -161,24 +216,25 @@ pub fn create_injector() -> Result<Box<dyn InputInjector>, InputError> {
 /// Errors when there is none to share: Linux needs GNOME Shell with the Dalker extension, or
 /// KDE Plasma's Klipper (Wayland lets nothing else reach the clipboard); other desktops are
 /// not supported yet.
-pub fn create_clipboard() -> Result<Box<dyn Clipboard>, String> {
-    #[cfg(target_os = "windows")]
-    {
-        return Ok(Box::new(windows::WinClipboard::new()?));
-    }
-    #[cfg(target_os = "linux")]
-    {
-        if !linux::gnome::gnome_session_available() && linux::kde::klipper_available() {
-            return Ok(Box::new(linux::kde::KlipperClipboard::new()?));
+pub fn create_clipboard(desktop: Desktop) -> Result<Box<dyn Clipboard>, String> {
+    match desktop {
+        #[cfg(target_os = "windows")]
+        Desktop::Windows => Ok(Box::new(windows::WinClipboard::new()?)),
+        #[cfg(target_os = "macos")]
+        Desktop::Mac => Ok(Box::new(macos::MacClipboard::new()?)),
+        #[cfg(target_os = "linux")]
+        Desktop::Gnome => Ok(Box::new(linux::gnome::GnomeClipboard::new()?)),
+        #[cfg(target_os = "linux")]
+        Desktop::PortalWayland | Desktop::X11 | Desktop::None => {
+            if linux::kde::klipper_available() {
+                return Ok(Box::new(linux::kde::KlipperClipboard::new()?));
+            }
+            // Says what is missing (the GNOME extension).
+            Ok(Box::new(linux::gnome::GnomeClipboard::new()?))
         }
-        return Ok(Box::new(linux::gnome::GnomeClipboard::new()?));
+        #[allow(unreachable_patterns)]
+        _ => Err(format!("no clipboard support for {}", std::env::consts::OS)),
     }
-    #[cfg(target_os = "macos")]
-    {
-        return Ok(Box::new(macos::MacClipboard::new()?));
-    }
-    #[allow(unreachable_code)]
-    Err(format!("no clipboard support for {}", std::env::consts::OS))
 }
 
 /// Opens the host user that viewers' file transfers run as, for the calling thread only (see
@@ -210,40 +266,35 @@ pub fn open_file_access() -> Result<FileAccess, String> {
 ///
 /// Errors if it cannot be drawn; callers serving a real desktop must treat that
 /// as fatal rather than run without a visible indicator.
-pub fn create_indicator() -> Result<Box<dyn ViewerIndicator>, String> {
-    #[cfg(target_os = "windows")]
-    {
-        return Ok(Box::new(windows::BorderOverlay::new()?));
-    }
-    #[cfg(target_os = "linux")]
-    {
+pub fn create_indicator(desktop: Desktop) -> Result<Box<dyn ViewerIndicator>, String> {
+    match desktop {
+        #[cfg(target_os = "windows")]
+        Desktop::Windows => Ok(Box::new(windows::BorderOverlay::new()?)),
+        #[cfg(target_os = "macos")]
+        Desktop::Mac => Ok(Box::new(macos::BorderOverlay::new()?)),
         // Under GNOME the border must come from the shell extension, and on other Wayland
         // desktops from a layer-shell surface: an X11 overlay would "succeed" against
         // XWayland yet never be visible, so there is no fallback to it.
-        if linux::gnome::gnome_session_available() {
-            return Ok(Box::new(linux::gnome::GnomeBorder::new()?));
-        }
-        if linux::is_wayland_session() {
-            return match linux::wayland::LayerBorder::new() {
+        #[cfg(target_os = "linux")]
+        Desktop::Gnome => Ok(Box::new(linux::gnome::GnomeBorder::new()?)),
+        #[cfg(target_os = "linux")]
+        Desktop::PortalWayland => match linux::wayland::LayerBorder::new() {
+            Ok(b) => Ok(Box::new(b)),
+            // GNOME that is still starting has no layer-shell either: say what it needs.
+            Err(layer) => match linux::gnome::GnomeBorder::new() {
                 Ok(b) => Ok(Box::new(b)),
-                // GNOME that is still starting has no layer-shell either: say what it needs.
-                Err(layer) => match linux::gnome::GnomeBorder::new() {
-                    Ok(b) => Ok(Box::new(b)),
-                    Err(gnome) => Err(format!("{layer} (GNOME: {gnome})")),
-                },
-            };
-        }
-        return Ok(Box::new(linux::BorderOverlay::new()?));
+                Err(gnome) => Err(format!("{layer} (GNOME: {gnome})")),
+            },
+        },
+        #[cfg(target_os = "linux")]
+        Desktop::X11 => Ok(Box::new(linux::BorderOverlay::new()?)),
+        Desktop::None => Err("no desktop session yet (nobody signed in)".into()),
+        #[allow(unreachable_patterns)]
+        _ => Err(format!(
+            "no on-screen indicator for {}",
+            std::env::consts::OS
+        )),
     }
-    #[cfg(target_os = "macos")]
-    {
-        return Ok(Box::new(macos::BorderOverlay::new()?));
-    }
-    #[allow(unreachable_code)]
-    Err(format!(
-        "no on-screen indicator for {}",
-        std::env::consts::OS
-    ))
 }
 
 /// True while the host's lock screen is up and its picture is withheld from viewers,
@@ -295,5 +346,28 @@ pub fn has_std_error() -> bool {
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Desktop;
+
+    #[test]
+    fn gnome_wins_then_wayland_then_x11() {
+        assert_eq!(Desktop::linux(true, true, true), Desktop::Gnome);
+        assert_eq!(
+            Desktop::linux(true, false, true),
+            Desktop::Gnome,
+            "GNOME on Xorg"
+        );
+        assert_eq!(
+            Desktop::linux(false, true, true),
+            Desktop::PortalWayland,
+            "not XWayland"
+        );
+        assert_eq!(Desktop::linux(false, false, true), Desktop::X11);
+        assert_eq!(Desktop::linux(false, false, false), Desktop::None);
+        assert_eq!(Desktop::Mac.capture_name(), "screencapturekit");
     }
 }

@@ -33,14 +33,16 @@ use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
-pub use auth::{hash_password, Authenticator, CookieSecure, Credentials};
+pub use auth::{hash_password, Authenticator, CookieSecure, Credentials, SignIn, SignOut};
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 /// Implemented by the agent to plug WebRTC into the HTTP API.
 pub trait SignalingHandler: Send + Sync + 'static {
-    /// Accepts a complete SDP offer and returns a complete SDP answer.
-    fn handle_offer(&self, offer_sdp: String) -> BoxFuture<Result<String, String>>;
+    /// Accepts a complete SDP offer and returns a complete SDP answer. The stream should end
+    /// when `sign_in` does (sign-out, expiry, new password).
+    fn handle_offer(&self, offer_sdp: String, sign_in: SignIn)
+        -> BoxFuture<Result<String, String>>;
     /// Arbitrary JSON shown by the UI (hostname, OS, capture backend...).
     fn info(&self) -> serde_json::Value;
 }
@@ -161,6 +163,9 @@ fn session_token(headers: &HeaderMap) -> Option<String> {
         .map(str::to_owned)
 }
 
+// The error is the response to send as it is; this runs once per request, so its size doesn't
+// matter.
+#[allow(clippy::result_large_err)]
 fn require_auth(state: &AppState, headers: &HeaderMap) -> Result<String, Response> {
     match session_token(headers) {
         Some(t) if state.auth.is_valid(&t) => Ok(t),
@@ -252,10 +257,11 @@ async fn offer(
     headers: HeaderMap,
     Json(req): Json<SdpMessage>,
 ) -> Response {
-    if let Err(r) = require_auth(&state, &headers) {
-        return r;
-    }
-    match state.signaling.handle_offer(req.sdp).await {
+    let sign_in = match session_token(&headers).and_then(|t| state.auth.sign_in(&t)) {
+        Some(s) => s,
+        None => return error(StatusCode::UNAUTHORIZED, "not logged in"),
+    };
+    match state.signaling.handle_offer(req.sdp, sign_in).await {
         Ok(sdp) => Json(SdpMessage { sdp }).into_response(),
         Err(e) => {
             tracing::warn!("offer rejected: {e}");
@@ -272,6 +278,13 @@ async fn asset(Path(path): Path<String>) -> Response {
     serve_asset(&path)
 }
 
+/// Everything the web client and Dalker Settings load comes from the agent itself. Frames only
+/// from the same origin: the viewer shows the settings page in its "AI agents" panel.
+pub const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; \
+     style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; \
+     frame-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'; \
+     object-src 'none'";
+
 fn serve_asset(path: &str) -> Response {
     match Assets::get(path) {
         Some(file) => {
@@ -281,6 +294,12 @@ fn serve_asset(path: &str) -> Response {
                     (header::CONTENT_TYPE, mime.as_ref().to_owned()),
                     (header::CACHE_CONTROL, "no-cache".to_owned()),
                     (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+                    (
+                        header::CONTENT_SECURITY_POLICY,
+                        CONTENT_SECURITY_POLICY.to_owned(),
+                    ),
+                    (header::X_FRAME_OPTIONS, "SAMEORIGIN".to_owned()),
+                    (header::REFERRER_POLICY, "no-referrer".to_owned()),
                 ],
                 file.data.into_owned(),
             )
@@ -300,7 +319,11 @@ mod tests {
 
     struct EchoSignaling;
     impl SignalingHandler for EchoSignaling {
-        fn handle_offer(&self, offer_sdp: String) -> BoxFuture<Result<String, String>> {
+        fn handle_offer(
+            &self,
+            offer_sdp: String,
+            _sign_in: SignIn,
+        ) -> BoxFuture<Result<String, String>> {
             Box::pin(async move { Ok(format!("answer-to:{offer_sdp}")) })
         }
         fn info(&self) -> serde_json::Value {
@@ -483,6 +506,12 @@ mod tests {
             .to_str()
             .unwrap()
             .starts_with("text/html"));
+        let csp = r.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap();
+        assert!(csp.contains("frame-ancestors 'self'") && csp.contains("script-src 'self'"));
+        assert_eq!(r.headers()[header::X_FRAME_OPTIONS], "SAMEORIGIN");
+        assert_eq!(r.headers()[header::REFERRER_POLICY], "no-referrer");
         let r = app()
             .oneshot(Request::get("/app.js").body(Body::empty()).unwrap())
             .await
