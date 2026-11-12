@@ -140,7 +140,7 @@ impl Drop for Tray {
 /// 32x32 premultiplied-BGRA icon: the outlined Dalker mark, coloured as `look` says.
 fn icon_pixels(look: crate::icon::Look) -> Vec<u8> {
     let mut px = crate::icon::rgba(look);
-    for p in px.chunks_exact_mut(4) {
+    for p in px.as_chunks_mut::<4>().0 {
         let a = p[3] as u32;
         let (r, g, b) = (p[0] as u32, p[1] as u32, p[2] as u32);
         p[0] = (b * a / 255) as u8;
