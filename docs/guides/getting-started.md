@@ -42,6 +42,12 @@ can also reach the Windows sign-in screen.
 3. **Log out and back in** (or restart). This loads the small GNOME extension that draws the red
    frame while someone is connected. Dalker shows nothing until it is loaded.
 
+On **KDE Plasma, sway, Hyprland** and other Wayland desktops (experimental), there is no extension:
+the red frame is drawn by Dalker itself. The first time someone connects, the desktop shows a
+"share your screen" dialog on the host. Someone at the computer has to pick the screen and click
+**Share** once (keep "Allow restoring on future sessions" ticked); later connections start without
+asking.
+
 Dalker now runs as the `dalker` system service and starts with the computer.
 
 ### macOS
@@ -70,9 +76,9 @@ characters).
 
 ![Web Remote Access in Dalker Settings](../images/settings-web.png)
 
-Viewers open `http://<this computer>:8742`, where *this computer* is the host's IP address. To
-find it, run `ipconfig` on Windows (the "IPv4 Address" line), `hostname -I` on Ubuntu, or
-`ipconfig getifaddr en0` on macOS.
+Viewers open `http://<this computer>:8742`, where *this computer* is the host's IP address. Dalker
+Settings shows it under **Address for browsers**. From a terminal: `ipconfig` on Windows (the "IPv4
+Address" line), `hostname -I` on Linux, or `ipconfig getifaddr en0` on macOS.
 
 > Nobody can connect until a password is set. Changing the password later signs out everyone who
 > is connected.
@@ -150,6 +156,8 @@ is what appears, and shortcuts still work.
   password box, or use **Keys → Ctrl + Alt + Del**, then type the Windows password.
 - **Ubuntu:** you see the lock screen and can unlock it by typing the password. The Ubuntu login
   screen after a restart is not shown yet: someone has to sign in at the computer first.
+- **macOS:** while the Mac is locked, the viewer shows a "locked" notice instead of the picture;
+  someone has to unlock it at the computer. Dalker only runs once a user has signed in.
 
 ## Changing settings later
 

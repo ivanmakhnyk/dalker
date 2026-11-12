@@ -93,14 +93,16 @@ sudo apt install ./dalker_*_amd64.deb
 ```
 
 then **log out and back in once** so the desktop loads Dalker's red frame. (Without the frame,
-Dalker shows nothing; see [Questions](#questions).)
+Dalker shows nothing; see [Questions](#questions).) On KDE Plasma, sway and other Wayland desktops
+there is no extension to load; instead the desktop asks once to **Share** the screen, the first
+time someone connects (see [Which Linux desktops work?](#questions)).
 
 **macOS:** open the `.pkg`. The first time, macOS blocks it because it isn't notarized: open
 **System Settings → Privacy & Security** and click **Open Anyway**. When Dalker starts, allow it
 under **Screen & System Audio Recording** and **Accessibility** in the same settings page, then
 choose **Quit Dalker** in its menu bar icon and open **Dalker** from Applications again.
 
-Dalker now runs in the background and starts with the computer.
+Dalker now runs in the background and starts with the computer (on macOS, when you sign in).
 
 ### 2. Choose a password
 
@@ -119,8 +121,9 @@ On the other device, open
 http://<the computer's IP address>:8742
 ```
 
-and sign in with the access password. (Find the IP address with `ipconfig` on Windows,
-`hostname -I` on Ubuntu, or `ipconfig getifaddr en0` on macOS.)
+and sign in with the access password. Dalker Settings shows the address to use under **Address for
+browsers**. (From a terminal: `ipconfig` on Windows, `hostname -I` on Linux, or
+`ipconfig getifaddr en0` on macOS.)
 
 <img src="docs/images/sign-in.png" alt="The Dalker sign-in page in a browser" width="420">
 
@@ -258,6 +261,8 @@ says what's missing.
 Open Dalker Settings on that computer and set a new one. From a terminal you can also run
 `sudo dalkerd set-password` (Ubuntu), or on Windows, in a Command Prompt run as administrator,
 `"C:\Program Files\Dalker\dalkerd" set-password` (without `.exe`, so the prompt waits for it).
+On macOS, Dalker Settings opens from the menu bar icon without an administrator password, or run
+`/Applications/Dalker.app/Contents/MacOS/dalkerd set-password` in Terminal.
 
 **Which Linux desktops work?**
 Ubuntu's standard GNOME desktop (Wayland or Xorg) and Xorg sessions are tested. KDE Plasma, sway,
@@ -274,8 +279,15 @@ Windows: `C:\ProgramData\Dalker\logs`. Ubuntu: `journalctl -u dalker`. macOS:
 `~/Library/Logs/Dalker`.
 
 **How do I uninstall?**
-Windows: **Settings → Apps → Dalker → Uninstall**. Ubuntu: `sudo apt remove dalker`. macOS: see
-[How the host runs → macOS](docs/DEVELOPMENT.md#macos).
+Windows: **Settings → Apps → Dalker → Uninstall**. Ubuntu: `sudo apt remove dalker`. macOS: in
+Terminal run
+
+```bash
+launchctl bootout gui/$(id -u)/io.github.ivanmakhnyk.Dalker
+sudo rm -rf /Applications/Dalker.app /Library/LaunchAgents/io.github.ivanmakhnyk.Dalker.plist
+rm -rf ~/Library/Application\ Support/Dalker ~/Library/Logs/Dalker   # settings and logs
+tccutil reset All io.github.ivanmakhnyk.Dalker                        # its permissions
+```
 
 ## For developers
 

@@ -12,7 +12,7 @@ Before you start, install Dalker on the host (see [Getting started](getting-star
 
 ## Step 1. Turn on the MCP server
 
-1. On the host, open **Dalker Settings** and confirm the administrator prompt.
+1. On the host, open **Dalker Settings** (on Windows and Linux, confirm the administrator prompt).
 2. Open the **AI Agents (MCP)** tab.
 3. Switch on **Enable MCP server**.
 
@@ -43,7 +43,9 @@ To use a different port, type it under **MCP Port** and click **Apply** (8743 by
 3. Choose what it may do:
    - **Allow screen capture & remote control:** see the screen, move and click the mouse, type.
      Almost every assistant needs this. (A token that may only look, not touch, can be made on
-     the command line: `dalkerd mcp-token create --scopes view`.)
+     the command line: `dalkerd mcp-token create --name <name> --scopes view`, as administrator on
+     Windows, with `sudo` on Linux, and on macOS as
+     `/Applications/Dalker.app/Contents/MacOS/dalkerd`.)
    - **Allow clipboard access:** read and write the host's clipboard. Leave it off unless needed.
 4. Click **Generate**.
 
