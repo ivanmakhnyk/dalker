@@ -68,7 +68,7 @@ fn main() {
     let _ = cap.next_frame(Duration::from_millis(500));
 
     indicator.set_active(true);
-    ok &= wait_for(cap.as_mut(), "border visible on all 4 edges", &edges);
+    ok &= wait_for(cap.as_mut(), "border visible on all 4 edges", edges);
     ok &= wait_for(cap.as_mut(), "screen centre not red", |f| {
         !is_red(f, w / 2, h / 2)
     });

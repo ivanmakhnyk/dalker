@@ -161,6 +161,9 @@ fn session_token(headers: &HeaderMap) -> Option<String> {
         .map(str::to_owned)
 }
 
+// The error is the response to send as it is; this runs once per request, so its size doesn't
+// matter.
+#[allow(clippy::result_large_err)]
 fn require_auth(state: &AppState, headers: &HeaderMap) -> Result<String, Response> {
     match session_token(headers) {
         Some(t) if state.auth.is_valid(&t) => Ok(t),
