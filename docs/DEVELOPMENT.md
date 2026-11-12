@@ -250,9 +250,10 @@ session at login; the installer starts it for whoever is signed in right away.
 
 - **Permissions.** macOS asks the user to allow Dalker under System Settings › Privacy & Security
   › **Screen & System Audio Recording** and › **Accessibility**. Until both are on, the agent
-  serves no picture or ignores input, and says why in its log. Screen Recording only applies to a
-  newly started process: quit Dalker from the menu bar after allowing it (launchd starts it
-  again at next login, or run `open /Applications/Dalker.app`).
+  serves no picture or ignores input, and says why in its log. Meanwhile the menu bar icon is a
+  warning sign, and its menu starts with **Allow Screen Recording…** and **Allow Accessibility…**
+  (each opens its System Settings pane) for whichever is missing. Screen Recording only applies
+  to a newly started process, so the menu also offers **Restart Dalker** until it is on.
 - **Signing without an Apple Developer account.** Releases are signed with a self-signed
   certificate, not notarized. macOS ties both permissions to that signature, so they stay
   granted across updates. The first install is blocked by Gatekeeper: open System Settings ›

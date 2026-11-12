@@ -93,8 +93,9 @@ Dalker shows nothing; see [Questions](#questions).)
 
 **macOS:** open the `.pkg`. The first time, macOS blocks it because it isn't notarized: open
 **System Settings → Privacy & Security** and click **Open Anyway**. When Dalker starts, allow it
-under **Screen & System Audio Recording** and **Accessibility** in the same settings page, then
-choose **Quit Dalker** in its menu bar icon and open **Dalker** from Applications again.
+under **Screen & System Audio Recording** and **Accessibility** in the same settings page (its
+menu bar icon shows a warning sign and links to both until they are on), then choose
+**Restart Dalker** in that menu.
 
 Dalker now runs in the background and starts with the computer.
 
