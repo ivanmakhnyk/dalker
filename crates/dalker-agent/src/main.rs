@@ -1093,6 +1093,15 @@ impl Agent {
     }
 }
 
+/// The stream's end reason when the viewer's sign-in ends.
+fn end_reason(why: dalker_web::SignOut) -> EndReason {
+    match why {
+        dalker_web::SignOut::LoggedOut => EndReason::SignedOut,
+        dalker_web::SignOut::Expired => EndReason::SessionExpired,
+        dalker_web::SignOut::PasswordChanged => EndReason::PasswordChanged,
+    }
+}
+
 /// Takes one of `max` viewer slots, or returns false when they are all in use.
 fn reserve_slot(active: &AtomicUsize, max: usize) -> bool {
     let mut n = active.load(Ordering::SeqCst);
@@ -1106,7 +1115,11 @@ fn reserve_slot(active: &AtomicUsize, max: usize) -> bool {
 }
 
 impl SignalingHandler for Agent {
-    fn handle_offer(&self, offer_sdp: String) -> BoxFuture<Result<String, String>> {
+    fn handle_offer(
+        &self,
+        offer_sdp: String,
+        sign_in: dalker_web::SignIn,
+    ) -> BoxFuture<Result<String, String>> {
         // Reserve a slot up front so concurrent offers can't exceed the limit.
         let active = Arc::clone(&self.active);
         if !reserve_slot(&active, self.max_sessions) {
@@ -1127,13 +1140,20 @@ impl SignalingHandler for Agent {
                 Ok((answer, mut session)) => {
                     streams.fetch_add(1, Ordering::SeqCst);
                     tokio::spawn(async move {
-                        tokio::select! {
-                            _ = session.wait_closed() => {}
+                        let reason = tokio::select! {
+                            _ = session.wait_closed() => None,
                             Ok(()) = sign_out.changed() => {
-                                let reason = sign_out.borrow_and_update().unwrap_or(EndReason::HostShutdown);
-                                tracing::info!(session = session.id, reason = reason.as_str(), "the host ends the stream");
-                                session.end(reason).await;
+                                Some(sign_out.borrow_and_update().unwrap_or(EndReason::HostShutdown))
                             }
+                            why = sign_in.ended() => Some(end_reason(why)),
+                        };
+                        if let Some(reason) = reason {
+                            tracing::info!(
+                                session = session.id,
+                                reason = reason.as_str(),
+                                "the host ends the stream"
+                            );
+                            session.end(reason).await;
                         }
                         streams.fetch_sub(1, Ordering::SeqCst);
                         let n = active.fetch_sub(1, Ordering::SeqCst) - 1;
