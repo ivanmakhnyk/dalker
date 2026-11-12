@@ -228,8 +228,14 @@ reverse proxy and can forward a UDP port on your router, see
 [Behind a reverse proxy](docs/guides/reverse-proxy.md).
 
 **Is the connection encrypted?**
-The picture and your input are always encrypted (WebRTC). The sign-in page uses plain HTTP, so use
-Dalker on a network you trust, over a VPN, or behind an HTTPS reverse proxy.
+The picture, your input, the clipboard and files travel encrypted (WebRTC). But the page itself,
+the sign-in and the start of each connection use plain HTTP. Anyone who can read the traffic on
+your network can see the access password and the sign-in cookie, and someone who can also change
+that traffic can put themselves in the middle of the encrypted stream. The access password also
+lets a signed-in viewer copy the AI agents' tokens. So the stream is only as safe as the network:
+use Dalker on a network you trust, over a VPN (WireGuard, Tailscale), or behind an HTTPS reverse
+proxy ([guide](docs/guides/reverse-proxy.md)) until Dalker serves HTTPS itself
+([#15](https://github.com/ivanmakhnyk/dalker/issues/15)).
 
 **The page opens but the picture stays black.**
 Check that a firewall allows Dalker (the Windows installer adds the rule itself). On Ubuntu,

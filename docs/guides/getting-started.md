@@ -77,6 +77,10 @@ find it, run `ipconfig` on Windows (the "IPv4 Address" line), `hostname -I` on U
 > Nobody can connect until a password is set. Changing the password later signs out everyone who
 > is connected.
 
+> The sign-in page uses plain HTTP, so on a network you don't trust (café, hotel, shared office)
+> someone could read the password. There, connect through a VPN or an HTTPS reverse proxy; see
+> [Is the connection encrypted?](../../README.md#questions).
+
 ## Step 4. Connect from another device
 
 1. On the viewer, open the host's address in the browser, for example `http://192.168.1.20:8742`:

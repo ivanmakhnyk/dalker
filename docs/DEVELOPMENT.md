@@ -298,7 +298,8 @@ DALKER_MCP_MAX_SESSIONS=1
 ```
 
 With other computers allowed, tokens cross the network as plain HTTP, like the web client's
-password. On a network you don't trust, leave the switch off and use an SSH tunnel, VPN or TLS
+password. (Viewers signed in with that password can also copy every token from the web client's AI
+agents panel, so the web password protects the tokens too.) On a network you don't trust, leave the switch off and use an SSH tunnel, VPN or TLS
 reverse proxy; `DALKER_MCP_ALLOW_PLAINTEXT=0` refuses any network address outright.
 
 **2. Create a token** on the host, in **Dalker Settings** ("Generate new token") or on the
