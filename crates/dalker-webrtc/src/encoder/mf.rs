@@ -86,8 +86,108 @@ fn string_attr(attrs: &IMFAttributes, key: &GUID) -> String {
     }
 }
 
-/// The hardware H.264 encoders, best first (Media Foundation's own order).
-fn hardware_encoders() -> Result<Vec<IMFActivate>> {
+/// The hardware H.264 encoders of every GPU, best first.
+///
+/// `MFTEnumEx` lists only the encoder of the GPU that drives the display: on a PC with an
+/// integrated Radeon 780M and an RTX 4070 SUPER it found just AMD's. So each GPU is asked
+/// for its own (`MFTEnum2` with the adapter's LUID), NVIDIA's first; `MFTEnumEx` is the
+/// fallback where that finds nothing.
+fn hardware_encoders() -> Result<Vec<Candidate>> {
+    let mut found = Vec::new();
+    for (vendor_id, luid, name) in adapters() {
+        // SAFETY: a fresh attribute store holding the adapter's LUID.
+        let listed = unsafe {
+            let mut attrs = None;
+            MFCreateAttributes(&mut attrs, 1)
+                .ok()
+                .and(attrs)
+                .filter(|a| a.SetUINT64(&MFT_ENUM_ADAPTER_LUID, luid).is_ok())
+                .map(|a| enum_encoders(Some(&a)))
+        };
+        match listed {
+            Some(Ok(list)) => {
+                tracing::debug!(
+                    adapter = name,
+                    vendor_id,
+                    count = list.len(),
+                    "hardware H.264 encoders"
+                );
+                found.extend(
+                    list.into_iter()
+                        .map(|a| Candidate::new(a, Some(name.clone()))),
+                );
+            }
+            Some(Err(e)) => tracing::debug!(adapter = name, "MFTEnum2: {e:#}"),
+            None => {}
+        }
+    }
+    if found.is_empty() {
+        found = enum_encoders(None)?
+            .into_iter()
+            .map(|a| Candidate::new(a, None))
+            .collect();
+    }
+    found.sort_by_key(|c| vendor_rank(&c.vendor));
+    Ok(found)
+}
+
+/// An encoder MFT to try.
+pub(crate) struct Candidate {
+    activate: IMFActivate,
+    /// PCI vendor ID as Media Foundation gives it ("VEN_10DE").
+    vendor: String,
+    friendly: String,
+    adapter: Option<String>,
+}
+
+impl Candidate {
+    fn new(activate: IMFActivate, adapter: Option<String>) -> Self {
+        Self {
+            vendor: string_attr(&activate, &MFT_ENUM_HARDWARE_VENDOR_ID_Attribute),
+            friendly: string_attr(&activate, &MFT_FRIENDLY_NAME_Attribute),
+            activate,
+            adapter,
+        }
+    }
+}
+
+/// The hardware GPUs: PCI vendor ID, LUID (high part above the low part) and name.
+fn adapters() -> Vec<(u32, u64, String)> {
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE,
+    };
+    let mut out = Vec::new();
+    // SAFETY: plain DXGI queries.
+    unsafe {
+        let Ok(factory) = CreateDXGIFactory1::<IDXGIFactory1>() else {
+            return out;
+        };
+        for i in 0.. {
+            let Ok(adapter) = factory.EnumAdapters1(i) else {
+                break;
+            };
+            let Ok(desc) = adapter.GetDesc1() else {
+                continue;
+            };
+            if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
+                continue;
+            }
+            let luid =
+                ((desc.AdapterLuid.HighPart as u32 as u64) << 32) | desc.AdapterLuid.LowPart as u64;
+            let len = desc.Description.iter().position(|&c| c == 0).unwrap_or(128);
+            out.push((
+                desc.VendorId,
+                luid,
+                String::from_utf16_lossy(&desc.Description[..len]),
+            ));
+        }
+    }
+    out
+}
+
+/// The hardware NV12 → H.264 encoder MFTs: of the adapter `attrs` names (`MFTEnum2`), or of
+/// the display's (`MFTEnumEx`).
+fn enum_encoders(attrs: Option<&IMFAttributes>) -> Result<Vec<IMFActivate>> {
     let input = MFT_REGISTER_TYPE_INFO {
         guidMajorType: MFMediaType_Video,
         guidSubtype: MFVideoFormat_NV12,
@@ -96,20 +196,33 @@ fn hardware_encoders() -> Result<Vec<IMFActivate>> {
         guidMajorType: MFMediaType_Video,
         guidSubtype: MFVideoFormat_H264,
     };
+    let flags = MFT_ENUM_FLAG(MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0);
     let mut list: *mut Option<IMFActivate> = std::ptr::null_mut();
     let mut n = 0u32;
     // SAFETY: on success `list` holds `n` activation objects, owned by us; the array itself
     // is freed below.
     unsafe {
-        MFTEnumEx(
-            MFT_CATEGORY_VIDEO_ENCODER,
-            MFT_ENUM_FLAG(MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0),
-            Some(&input),
-            Some(&output),
-            &mut list,
-            &mut n,
-        )
-        .context("MFTEnumEx")?;
+        match attrs {
+            Some(a) => MFTEnum2(
+                MFT_CATEGORY_VIDEO_ENCODER,
+                flags,
+                Some(&input),
+                Some(&output),
+                a,
+                &mut list,
+                &mut n,
+            )
+            .context("MFTEnum2")?,
+            None => MFTEnumEx(
+                MFT_CATEGORY_VIDEO_ENCODER,
+                flags,
+                Some(&input),
+                Some(&output),
+                &mut list,
+                &mut n,
+            )
+            .context("MFTEnumEx")?,
+        }
         if list.is_null() {
             return Ok(vec![]);
         }
@@ -160,28 +273,28 @@ impl MfEncoder {
         if encoders.is_empty() {
             bail!("no hardware H.264 encoder for Media Foundation");
         }
-        // Media Foundation lists an integrated GPU's encoder first on a PC that also has an
-        // NVIDIA card (a Radeon 780M before an RTX 4070 SUPER); NVENC goes first instead.
-        let mut encoders: Vec<_> = encoders
-            .into_iter()
-            .map(|a| {
-                let vendor = string_attr(&a, &MFT_ENUM_HARDWARE_VENDOR_ID_Attribute);
-                let friendly = string_attr(&a, &MFT_FRIENDLY_NAME_Attribute);
-                (a, vendor, friendly)
-            })
-            .collect();
-        encoders.sort_by_key(|(_, vendor, _)| vendor_rank(vendor));
         let mut errors = Vec::new();
-        for (activate, vendor, friendly) in encoders {
-            match Self::open_one(activate.clone(), config) {
+        for c in encoders {
+            let adapter = c.adapter.as_deref().unwrap_or("display GPU");
+            match Self::open_one(c.activate.clone(), config) {
                 Ok(enc) => {
-                    tracing::info!(vendor, mft = friendly, "Media Foundation H.264 encoder");
-                    return Ok((enc, vendor_name(&vendor, &friendly)));
+                    tracing::info!(
+                        vendor = c.vendor,
+                        mft = c.friendly,
+                        adapter,
+                        "Media Foundation H.264 encoder"
+                    );
+                    return Ok((enc, vendor_name(&c.vendor, &c.friendly)));
                 }
                 Err(e) => {
                     // SAFETY: releases the MFT that failed to start.
-                    let _ = unsafe { activate.ShutdownObject() };
-                    errors.push(format!("{friendly}: {e:#}"));
+                    let _ = unsafe { c.activate.ShutdownObject() };
+                    tracing::info!(
+                        mft = c.friendly,
+                        adapter,
+                        "hardware encoder didn't start: {e:#}"
+                    );
+                    errors.push(format!("{} ({adapter}): {e:#}", c.friendly));
                 }
             }
         }
@@ -586,6 +699,13 @@ mod tests {
             keyframe_interval: 300,
             strict_bitrate: false,
         };
+        startup().unwrap();
+        for (vendor, _, name) in adapters() {
+            eprintln!("GPU: {name} (vendor {vendor:#06x})");
+        }
+        for c in hardware_encoders().unwrap() {
+            eprintln!("candidate: {} {} on {:?}", c.vendor, c.friendly, c.adapter);
+        }
         let mut enc = match MfEncoder::open(&config) {
             Ok((enc, name)) => {
                 eprintln!("Media Foundation encoder: {name}");
