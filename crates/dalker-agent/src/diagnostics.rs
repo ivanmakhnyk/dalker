@@ -55,8 +55,14 @@ pub fn collect(
         Desktop::X11 => "X11",
         Desktop::None => "No desktop detected",
     };
+    // The session's actual encoder shows in the viewer's connection details and the log.
+    let encoder = match config_values.get("DALKER_ENCODER").map(String::as_str) {
+        Some("software") => "OpenH264 (software, chosen in the config)",
+        Some("hardware") => "hardware only (chosen in the config)",
+        _ => "hardware when available, otherwise OpenH264",
+    };
     let mut report = format!(
-        "Dalker diagnostics\nVersion: {}\nOS: {} ({})\nSession: {session}\nCapture backend (expected): {capture}\nInput backend (expected): {input}\nEncoder: OpenH264\n",
+        "Dalker diagnostics\nVersion: {}\nOS: {} ({})\nSession: {session}\nCapture backend (expected): {capture}\nInput backend (expected): {input}\nEncoder: {encoder}\n",
         env!("CARGO_PKG_VERSION"), os_build(), std::env::consts::ARCH,
     );
     #[cfg(windows)]
@@ -136,6 +142,9 @@ fn safe_config(values: &BTreeMap<String, String>) -> String {
             | "DALKER_BITRATE_KBPS"
             | "DALKER_MAX_WIDTH" => value.parse::<u32>().ok().map(|number| number.to_string()),
             "DALKER_CAPTURE" if matches!(value.as_str(), "mock" | "native") => Some(value.clone()),
+            "DALKER_ENCODER" if matches!(value.as_str(), "auto" | "hardware" | "software") => {
+                Some(value.clone())
+            }
             "DALKER_COOKIE_SECURE" if matches!(value.as_str(), "auto" | "on" | "off") => {
                 Some(value.clone())
             }

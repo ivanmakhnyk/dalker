@@ -26,6 +26,7 @@ let state = "idle";
 let statusKey = "viewer.status.disconnected";
 let statusParams = {};
 let lastRtt = null;
+let hostEncoder = null; // the host's last "encoder" message: { name, hardware }
 let hintTimer = null;
 let hintFadeTimer = null;
 // Why the host ended the session: the reason of its "session_end" message, until the
@@ -495,15 +496,24 @@ let last = { bytes: 0, ts: 0, lost: 0, recv: 0 };
 function resetStats() {
   last = { bytes: 0, ts: 0, lost: 0, recv: 0 };
   lastRtt = null;
-  for (const id of ["s-res", "s-fps", "s-bitrate", "s-rtt", "s-loss", "s-codec", "s-route"]) {
+  hostEncoder = null;
+  for (const id of ["s-res", "s-fps", "s-bitrate", "s-rtt", "s-loss", "s-codec", "s-encoder", "s-route"]) {
     $(id).textContent = "–";
     $(id).className = "";
   }
   $("quality").hidden = true;
 }
 
+// Which H.264 encoder the host streams with (the GPU's or OpenH264), as the host reports it.
+function renderEncoder() {
+  $("s-encoder").textContent = hostEncoder
+    ? tr(hostEncoder.hardware ? "viewer.stats.encoderHardware" : "viewer.stats.encoderSoftware", { name: hostEncoder.name })
+    : "–";
+}
+
 async function updateStats() {
   if (!pc) return;
+  renderEncoder();
   const report = await pc.getStats();
   let inbound = null, pair = null, selectedPairId = null;
   report.forEach((s) => {
@@ -1339,6 +1349,9 @@ function onHostMessage(data) {
       sendStreamSettings();
     }
     renderSettings();
+  } else if (msg.type === "encoder") {
+    hostEncoder = { name: String(msg.name || ""), hardware: !!msg.hardware };
+    renderEncoder();
   } else if (msg.type === "session_end") {
     // The host is about to close the session; the channel closes next (see sessionEnded).
     endReason = msg.reason || "";

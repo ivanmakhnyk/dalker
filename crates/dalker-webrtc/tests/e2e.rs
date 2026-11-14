@@ -79,7 +79,9 @@ async fn host_ends_session_with_reason() {
     roundtrip(WebRtcConfig::default(), true).await;
 }
 
-async fn roundtrip(config: WebRtcConfig, host_ends: bool) {
+async fn roundtrip(mut config: WebRtcConfig, host_ends: bool) {
+    // OpenH264 whatever GPU this machine has, so the encoder message below is known.
+    config.encoder_backend = dalker_webrtc::EncoderBackend::Software;
     // Frame source: mock capturer on its own thread, like the agent.
     let (frame_tx, _) = watch::channel::<Option<Arc<RawFrame>>>(None);
     let frames = frame_tx.subscribe();
@@ -131,9 +133,15 @@ async fn roundtrip(config: WebRtcConfig, host_ends: bool) {
         Box::pin(async {})
     }));
     let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<serde_json::Value>();
+    // The encoder message comes whenever the encoder starts, so it has its own queue.
+    let (enc_tx, mut enc_rx) = mpsc::unbounded_channel::<serde_json::Value>();
     dc.on_message(Box::new(move |m| {
-        if let Ok(v) = serde_json::from_slice(&m.data) {
-            let _ = msg_tx.send(v);
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&m.data) {
+            let _ = if v["type"] == "encoder" {
+                enc_tx.send(v)
+            } else {
+                msg_tx.send(v)
+            };
         }
         Box::pin(async {})
     }));
@@ -192,6 +200,15 @@ async fn roundtrip(config: WebRtcConfig, host_ends: bool) {
     timeout(Duration::from_secs(10), open_rx.recv())
         .await
         .expect("control channel open");
+    // The viewer is told which encoder the stream comes from.
+    let enc = timeout(Duration::from_secs(5), enc_rx.recv())
+        .await
+        .expect("encoder message")
+        .unwrap();
+    assert_eq!(
+        enc,
+        serde_json::json!({"type": "encoder", "name": "OpenH264", "hardware": false})
+    );
     dc.send_text(
         r#"{"type":"mouse_button","button":"left","down":true,"x":0.25,"y":2.0}"#.to_string(),
     )

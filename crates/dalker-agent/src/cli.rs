@@ -44,6 +44,27 @@ pub enum CaptureMode {
     Mock,
 }
 
+/// H.264 encoder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum EncoderMode {
+    /// The GPU's encoder (NVENC, Quick Sync, AMF, VA-API) when there is one, else OpenH264.
+    Auto,
+    /// Only the GPU's encoder, without falling back to OpenH264 (for trying it out).
+    Hardware,
+    /// Always OpenH264 on the CPU.
+    Software,
+}
+
+impl EncoderMode {
+    pub fn backend(self) -> dalker_webrtc::EncoderBackend {
+        match self {
+            EncoderMode::Auto => dalker_webrtc::EncoderBackend::Auto,
+            EncoderMode::Hardware => dalker_webrtc::EncoderBackend::Hardware,
+            EncoderMode::Software => dalker_webrtc::EncoderBackend::Software,
+        }
+    }
+}
+
 /// Dalker host agent: remote desktop over WebRTC.
 #[derive(Debug, Parser)]
 #[command(name = "dalkerd", version, about)]
@@ -99,6 +120,10 @@ pub struct Cli {
     #[arg(long, env = stream::KEY_MAX_WIDTH, default_value_t = stream::DEFAULT_MAX_WIDTH,
           value_parser = stream::parse_max_width)]
     pub max_width: u32,
+
+    /// H.264 encoder: `auto` uses the GPU's encoder when there is one and OpenH264 otherwise.
+    #[arg(long, value_enum, env = "DALKER_ENCODER", default_value = "auto")]
+    pub encoder: EncoderMode,
 
     /// Concurrent viewers allowed.
     #[arg(long, default_value_t = 2)]

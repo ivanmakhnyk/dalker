@@ -1102,12 +1102,14 @@ dependencies = [
  "anyhow",
  "bytes",
  "dalker-core",
+ "libc",
  "openh264",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
  "webrtc",
+ "windows",
 ]
 
 [[package]]

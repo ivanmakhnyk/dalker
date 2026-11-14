@@ -4,7 +4,7 @@ Section: net
 Priority: optional
 Architecture: amd64
 Depends: libc6 (>= 2.34), systemd, procps, debconf (>= 1.5), acl, dconf-cli, libglib2.0-bin, gstreamer1.0-tools, gstreamer1.0-pipewire, pkexec | policykit-1, libwebkit2gtk-4.1-0, libgtk-3-0
-Recommends: xserver-xorg-core, xdg-desktop-portal
+Recommends: xserver-xorg-core, xdg-desktop-portal, libva-drm2
 Maintainer: Dalker <dalker@localhost>
 Description: Remote desktop agent (WebRTC) with browser client
  Dalker streams the desktop to a web browser over WebRTC and accepts remote
