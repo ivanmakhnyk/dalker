@@ -196,6 +196,15 @@ mod tests {
                 );
                 assert!(!text.trim().is_empty(), "{code} {key} is empty");
             }
+            // A file that is mostly English was copied, not translated.
+            let same = strings.iter().filter(|(k, t)| en[*k] == **t).count();
+            assert!(
+                code == "en" || same * 4 < en.len(),
+                "{code}: {same} strings are still English"
+            );
+            // The shell cuts a tray tooltip at 127 characters.
+            let tip = tr(code, "tray.tipViewers", &[("n", &1000)]);
+            assert!(tip.encode_utf16().count() < 127, "{code}: {tip}");
         }
     }
 

@@ -35,10 +35,9 @@ fn placeholders(text: &str) -> BTreeSet<String> {
 /// numbers).
 fn plural_forms(code: &str) -> &'static [&'static str] {
     match code.split('-').next().unwrap() {
-        "ja" | "ko" | "zh" | "vi" | "id" | "th" | "ms" | "tr" => &["other"],
-        "uk" | "sr" | "hr" => &["one", "few", "many", "other"],
-        "pl" | "lt" => &["one", "few", "many", "other"],
-        "cs" | "sk" => &["one", "few", "many", "other"],
+        "ja" | "ko" | "zh" | "vi" | "id" | "th" | "ms" => &["other"],
+        "uk" | "pl" | "lt" | "cs" | "sk" => &["one", "few", "many", "other"],
+        "sr" | "hr" => &["one", "few", "other"],
         "ar" => &["zero", "one", "two", "few", "many", "other"],
         "he" => &["one", "two", "other"],
         "ro" => &["one", "few", "other"],
