@@ -98,9 +98,21 @@ fn save_token(token: &str) {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        // Replace it in one step, so a crash never leaves half a token.
+        // Replace it in one step, so a crash never leaves half a token. Only its owner can
+        // read it: with it, any program of theirs could cast the screen without a dialog.
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, token)?;
+        let _ = std::fs::remove_file(&tmp);
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        f.write_all(token.as_bytes())?;
+        f.sync_all()?;
+        drop(f);
         std::fs::rename(&tmp, &path)
     })();
     if let Err(e) = result {
@@ -109,6 +121,43 @@ fn save_token(token: &str) {
             path.display()
         );
     }
+}
+
+/// Whether screen sharing was allowed ahead of time: a restore token is saved.
+pub fn sharing_allowed() -> bool {
+    load_token().is_some()
+}
+
+/// Asks the person at the computer to allow screen sharing now ("share your screen"
+/// dialog), saves the restore token, and stops at once. Later connections then start
+/// without the dialog. `Ok(false)` when they declined or didn't answer.
+pub fn allow_sharing_now() -> Result<bool, String> {
+    let conn = Connection::session().map_err(|e| format!("no D-Bus session bus: {e}"))?;
+    let result = (|| {
+        let version = screencast_version(&conn).map_err(|e| e.to_string())?;
+        if version < 4 {
+            return Err(format!(
+                "this xdg-desktop-portal (ScreenCast version {version}) can't remember the                  permission; the host will be asked on every connection"
+            ));
+        }
+        let sc = Proxy::new(&conn, PORTAL, PORTAL_PATH, SCREENCAST)
+            .map_err(|e| format!("ScreenCast portal proxy: {e}"))?;
+        let Some(session) = create_session(&conn, &sc).map_err(|e| e.to_string())? else {
+            return Ok(false);
+        };
+        let granted = grant(&conn, &sc, version, &session);
+        close_session(&conn, &session);
+        match granted.map_err(|e| e.to_string())? {
+            Some(_) => Ok(sharing_allowed()),
+            None => Ok(false),
+        }
+    })();
+    let _ = conn.close();
+    if matches!(result, Ok(true)) {
+        // Asked and answered: don't hold a viewer back for an earlier "no".
+        *DECLINED.lock().unwrap() = None;
+    }
+    result
 }
 
 /// Builds the `Request` object path the portal will answer on, for `token`.
@@ -313,25 +362,9 @@ impl PortalCapturer {
             )
         };
 
-        let session_token = new_token();
-        let answer = request(conn, REQUEST_TIMEOUT, |token| {
-            let mut opts = HashMap::<&str, Value>::new();
-            opts.insert("handle_token", Value::from(token));
-            opts.insert("session_handle_token", Value::from(session_token.as_str()));
-            sc.call("CreateSession", &(opts,))
-        })?;
-        let Answer::Granted(results) = answer else {
+        let Some(session) = create_session(conn, &sc)? else {
             return Err(declined());
         };
-        let session = results
-            .get("session_handle")
-            .and_then(|v| {
-                String::try_from(v.clone())
-                    .ok()
-                    .and_then(|s| OwnedObjectPath::try_from(s).ok())
-                    .or_else(|| OwnedObjectPath::try_from(v.clone()).ok())
-            })
-            .ok_or_else(|| CaptureError::Backend("the portal returned no session".into()))?;
         let result = Self::start_session(conn, &sc, version, &session);
         if result.is_err() {
             close_session(conn, &session);
@@ -351,54 +384,10 @@ impl PortalCapturer {
         version: u32,
         session: &OwnedObjectPath,
     ) -> Result<Option<GstStream>, CaptureError> {
+        let Some((results, saved)) = grant(conn, sc, version, session)? else {
+            return Ok(None);
+        };
         let session_path = ObjectPath::from(session);
-        let cursor_modes = sc.get_property::<u32>("AvailableCursorModes").unwrap_or(0);
-        let cursor = if cursor_modes & CURSOR_EMBEDDED != 0 {
-            CURSOR_EMBEDDED
-        } else {
-            CURSOR_HIDDEN
-        };
-        let saved = (version >= 4).then(load_token).flatten();
-        let answer = request(conn, REQUEST_TIMEOUT, |token| {
-            let mut opts = HashMap::<&str, Value>::new();
-            opts.insert("handle_token", Value::from(token));
-            opts.insert("types", Value::U32(SOURCE_MONITOR));
-            opts.insert("multiple", Value::Bool(false));
-            if version >= 2 && cursor_modes != 0 {
-                opts.insert("cursor_mode", Value::U32(cursor));
-            }
-            if version >= 4 {
-                opts.insert("persist_mode", Value::U32(PERSIST_UNTIL_REVOKED));
-                if let Some(t) = &saved {
-                    opts.insert("restore_token", Value::from(t.as_str()));
-                }
-            }
-            sc.call("SelectSources", &(&session_path, opts))
-        })?;
-        if matches!(answer, Answer::Declined) {
-            return Ok(None);
-        }
-
-        if saved.is_none() {
-            tracing::info!(
-                "asking the person at the host to allow screen sharing (a dialog on the host's screen)"
-            );
-        }
-        let answer = request(conn, APPROVAL_TIMEOUT, |token| {
-            let mut opts = HashMap::<&str, Value>::new();
-            opts.insert("handle_token", Value::from(token));
-            sc.call("Start", &(&session_path, "", opts))
-        })?;
-        let Answer::Granted(results) = answer else {
-            return Ok(None);
-        };
-        // A new token comes back on every start (the old one is used up): save it each time.
-        if let Some(token) = results
-            .get("restore_token")
-            .and_then(|v| String::try_from(v.clone()).ok())
-        {
-            save_token(&token);
-        }
         let streams = parse_streams(&results)?;
         let stream = streams
             .first()
@@ -466,6 +455,93 @@ impl PortalCapturer {
     }
 }
 
+/// Opens a ScreenCast session. `None` when the portal declined.
+fn create_session(
+    conn: &Connection,
+    sc: &Proxy<'_>,
+) -> Result<Option<OwnedObjectPath>, CaptureError> {
+    let session_token = new_token();
+    let answer = request(conn, REQUEST_TIMEOUT, |token| {
+        let mut opts = HashMap::<&str, Value>::new();
+        opts.insert("handle_token", Value::from(token));
+        opts.insert("session_handle_token", Value::from(session_token.as_str()));
+        sc.call("CreateSession", &(opts,))
+    })?;
+    let Answer::Granted(results) = answer else {
+        return Ok(None);
+    };
+    results
+        .get("session_handle")
+        .and_then(|v| {
+            String::try_from(v.clone())
+                .ok()
+                .and_then(|s| OwnedObjectPath::try_from(s).ok())
+                .or_else(|| OwnedObjectPath::try_from(v.clone()).ok())
+        })
+        .map(Some)
+        .ok_or_else(|| CaptureError::Backend("the portal returned no session".into()))
+}
+
+/// Selects a monitor and starts the cast (the portal asks the person at the host unless a
+/// saved restore token still applies), and saves the new restore token. Returns `Start`'s
+/// results and the token that was used, or `None` when the person declined.
+fn grant(
+    conn: &Connection,
+    sc: &Proxy<'_>,
+    version: u32,
+    session: &OwnedObjectPath,
+) -> Result<Option<(Results, Option<String>)>, CaptureError> {
+    let session_path = ObjectPath::from(session);
+    let cursor_modes = sc.get_property::<u32>("AvailableCursorModes").unwrap_or(0);
+    let cursor = if cursor_modes & CURSOR_EMBEDDED != 0 {
+        CURSOR_EMBEDDED
+    } else {
+        CURSOR_HIDDEN
+    };
+    let saved = (version >= 4).then(load_token).flatten();
+    let answer = request(conn, REQUEST_TIMEOUT, |token| {
+        let mut opts = HashMap::<&str, Value>::new();
+        opts.insert("handle_token", Value::from(token));
+        opts.insert("types", Value::U32(SOURCE_MONITOR));
+        opts.insert("multiple", Value::Bool(false));
+        if version >= 2 && cursor_modes != 0 {
+            opts.insert("cursor_mode", Value::U32(cursor));
+        }
+        if version >= 4 {
+            opts.insert("persist_mode", Value::U32(PERSIST_UNTIL_REVOKED));
+            if let Some(t) = &saved {
+                opts.insert("restore_token", Value::from(t.as_str()));
+            }
+        }
+        sc.call("SelectSources", &(&session_path, opts))
+    })?;
+    if matches!(answer, Answer::Declined) {
+        return Ok(None);
+    }
+
+    if saved.is_none() {
+        tracing::info!(
+            "asking the person at the host to allow screen sharing (a dialog on the host's screen)"
+        );
+    }
+    let answer = request(conn, APPROVAL_TIMEOUT, |token| {
+        let mut opts = HashMap::<&str, Value>::new();
+        opts.insert("handle_token", Value::from(token));
+        sc.call("Start", &(&session_path, "", opts))
+    })?;
+    let Answer::Granted(results) = answer else {
+        return Ok(None);
+    };
+    // A new token comes back on every start (the old one is used up): save it each time.
+    if let Some(token) = results
+        .get("restore_token")
+        .and_then(|v| String::try_from(v.clone()).ok())
+    {
+        save_token(&token);
+    }
+    Ok(Some((results, saved)))
+}
+
 fn close_session(conn: &Connection, session: &OwnedObjectPath) {
     if let Ok(s) = Proxy::new(conn, PORTAL, session.clone(), SESSION) {
         let _ = s.call_method("Close", &());
@@ -500,6 +576,26 @@ impl ScreenCapturer for PortalCapturer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_restore_token_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("dalker-portal-token-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // No other test in this crate reads XDG_STATE_HOME.
+        std::env::set_var("XDG_STATE_HOME", &dir);
+        assert!(!sharing_allowed());
+        save_token("first");
+        save_token("second");
+        assert_eq!(load_token().as_deref(), Some("second"));
+        assert!(sharing_allowed());
+        let mode = std::fs::metadata(token_path().unwrap())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn output(x: i32, y: i32, width: u32, height: u32) -> OutputInfo {
         OutputInfo {

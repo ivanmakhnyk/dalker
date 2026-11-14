@@ -83,6 +83,11 @@ Address" line), `hostname -I` on Linux, or `ipconfig getifaddr en0` on macOS.
 > Nobody can connect until a password is set. Changing the password later signs out everyone who
 > is connected.
 
+On KDE Plasma, sway, Hyprland and other Wayland desktops besides GNOME, **Web Remote Access** also
+shows **Allow screen sharing now**. Click it while you are at the computer, pick the screen and
+click **Share** (keep "Allow restoring on future sessions" ticked). Otherwise the desktop asks when
+the first viewer connects, and that viewer sees a black screen until somebody here answers.
+
 > The sign-in page uses plain HTTP, so on a network you don't trust (café, hotel, shared office)
 > someone could read the password. There, connect through a VPN or an HTTPS reverse proxy; see
 > [Is the connection encrypted?](../../README.md#questions).

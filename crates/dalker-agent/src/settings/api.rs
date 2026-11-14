@@ -16,6 +16,7 @@
 //! | `PATCH /api/settings/tokens/{id}` | `{remote, clipboard}` | |
 //! | `DELETE /api/settings/tokens/{id}` | | |
 //! | `GET /api/settings/tokens/{id}/secret` | | → `{token}` |
+//! | `POST /api/settings/screen-sharing` | | host only: show the portal's "share your screen" dialog now → `{allowed, state}` |
 //!
 //! Every change answers with the new state, so the page redraws from one source.
 
@@ -120,6 +121,7 @@ impl Api {
                 patch(change_token).delete(revoke_token),
             )
             .route("/api/settings/tokens/{id}/secret", get(token_secret))
+            .route("/api/settings/screen-sharing", post(allow_screen_sharing))
             .with_state(Arc::new(self))
     }
 
@@ -254,7 +256,32 @@ pub fn state_json(api: &Api, saved: &Saved) -> Value {
         },
         "tokens": token_rows,
         "min_password": MIN_PASSWORD_LEN,
+        // `null` where nobody at the host is asked to allow screen sharing.
+        "screen_sharing": (host && portal_desktop()).then(|| json!({
+            "allowed": dalker_platform::screen_sharing_allowed(),
+        })),
     })
+}
+
+/// Whether this desktop shares the screen through xdg-desktop-portal (asked once: the page
+/// redraws every two seconds).
+fn portal_desktop() -> bool {
+    static PORTAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PORTAL.get_or_init(dalker_platform::screen_sharing_needs_permission)
+}
+
+/// Shows the "share your screen" dialog while the person is at the computer and keeps the
+/// answer, so a remote viewer later doesn't wait for somebody to click Share. The settings
+/// window runs in the desktop user's session, like the agent that captures.
+async fn allow_screen_sharing(State(api): ApiState, headers: HeaderMap) -> Response {
+    guarded(api, headers, true, move |api| {
+        let allowed = dalker_platform::allow_screen_sharing_now()
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        tracing::info!(allowed, "screen sharing asked ahead of time");
+        let saved = api.read().map_err(bad)?;
+        Ok(json!({ "allowed": allowed, "state": state_json(api, &saved) }))
+    })
+    .await
 }
 
 /// `running`, `stopped`, `down` (on but not answering), `stopping` or `checking`.
@@ -793,6 +820,7 @@ mod tests {
             v["file"].is_null(),
             "the host's file path is not shown to viewers"
         );
+        assert!(v["screen_sharing"].is_null(), "a host-only setting");
         for (uri, body) in [
             ("/api/settings/web", json!({"enabled": false})),
             ("/api/settings/mcp", json!({"enabled": true})),
@@ -800,6 +828,7 @@ mod tests {
                 "/api/settings/password",
                 json!({"password": "long-enough", "repeat": "long-enough"}),
             ),
+            ("/api/settings/screen-sharing", Value::Null),
         ] {
             let (s, _) = call(&app, "POST", uri, body).await;
             assert_eq!(s, StatusCode::FORBIDDEN, "{uri}");
