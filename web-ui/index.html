@@ -11,7 +11,9 @@
   <main id="stage" tabindex="0" aria-label="Remote screen. Click to control.">
     <div id="viewport">
       <video id="screen" autoplay playsinline muted disablepictureinpicture></video>
+      <div id="touch-cursor" hidden aria-hidden="true"></div>
     </div>
+    <button id="zoom-reset" hidden title="Reset zoom" aria-label="Reset zoom"></button>
     <div id="locked" hidden role="status">
       <strong>The host is locked.</strong>
       Click here, press a key or use <em>Ctrl+Alt+Del</em> to show the sign-in screen.
@@ -43,6 +45,9 @@
           </button>
           <button id="btn-keys" class="icon keys session-only" aria-haspopup="true" aria-expanded="false" title="Send keys and shortcuts to the host" aria-label="Send keys and shortcuts to the host">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path stroke-width="2.4" d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M18 13h.01M10 13h4M7 16h10"/></svg>
+          </button>
+          <button id="btn-kbd" class="icon session-only" aria-pressed="false" title="On-screen keyboard" aria-label="On-screen keyboard">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="12" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h8M9 19l3 3 3-3"/></svg>
           </button>
           <button id="btn-ai" class="icon ai" hidden title="AI agents (MCP tokens)" aria-label="AI agents">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 4v4M9 13h.01M15 13h.01M9 17h6M2 13v2M22 13v2"/></svg>
@@ -193,7 +198,11 @@
           <label class="toggle"><input type="checkbox" id="set-clip"> Sync clipboard automatically</label>
         </section>
         <section class="set-sec">
-          <h3>Mouse</h3>
+          <h3>Mouse &amp; Touch</h3>
+          <div class="set-row">
+            <span class="set-label">Touch mode <small>touchscreens only</small></span>
+            <div class="seg" id="set-touch" role="radiogroup" aria-label="Touch mode"></div>
+          </div>
           <label class="toggle" title="Turns the scroll direction around, like natural scrolling on a touchpad"><input type="checkbox" id="set-wheel"> Natural scrolling (invert wheel)</label>
           <label class="toggle" title="While connected and idle, presses F15 on the host now and then so it doesn't lock or sleep"><input type="checkbox" id="set-awake"> Prevent host sleep (keep-alive jiggler)</label>
           <div class="set-row" id="set-awake-row">
@@ -235,6 +244,19 @@
         </button>
         <iframe id="ai-frame" title="AI agents"></iframe>
       </div>
+    </div>
+
+    <textarea id="kbd-input" class="kbd-input" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="On-screen keyboard input"></textarea>
+    <div id="touch-keys" hidden role="toolbar" aria-label="Touch keyboard keys">
+      <button type="button" data-key="Escape">Esc</button>
+      <button type="button" data-key="Tab">Tab</button>
+      <button type="button" data-mod="ControlLeft" aria-pressed="false">Ctrl</button>
+      <button type="button" data-mod="AltLeft" aria-pressed="false">Alt</button>
+      <button type="button" data-key="ArrowLeft" aria-label="Left arrow">←</button>
+      <button type="button" data-key="ArrowDown" aria-label="Down arrow">↓</button>
+      <button type="button" data-key="ArrowUp" aria-label="Up arrow">↑</button>
+      <button type="button" data-key="ArrowRight" aria-label="Right arrow">→</button>
+      <button type="button" id="touch-keys-close" class="close" aria-label="Hide on-screen keyboard">✕</button>
     </div>
 
     <button id="notch" hidden title="Show the toolbar" aria-label="Show the toolbar">

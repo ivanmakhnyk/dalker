@@ -33,7 +33,10 @@ let quickDrops = 0;
 
 // ---------------------------------------------------------------- UI helpers
 
+const isTouchDevice = () => window.matchMedia("(pointer: coarse), (hover: none)").matches;
+
 function showHint(fullscreen = !!document.fullscreenElement) {
+  if (isTouchDevice()) { hideHint(); return; }
   clearTimeout(hintTimer);
   clearTimeout(hintFadeTimer);
   const el = $("hint");
@@ -74,7 +77,12 @@ function setStatus(text, cls) {
   updateSessionGroup();
   applyAutoHide();
   updateKeysCapabilities();
-  if (cls !== "connected") { closePopover("pop-keys"); closePopover("pop-clip"); closePopover("pop-settings"); closePopover("pop-files"); }
+  if (cls !== "connected") {
+    closePopover("pop-keys"); closePopover("pop-clip"); closePopover("pop-settings"); closePopover("pop-files");
+    closeTouchKeyboard();
+    resetZoom();
+    hideTouchCursor();
+  }
   if (cls === "connected") {
     if (!wasConnected) showHint();
   } else {
@@ -703,9 +711,22 @@ function releaseAll() {
   send({ type: "release_all" });
 }
 
+const viewport = $("viewport");
+const touchCursor = $("touch-cursor");
+const zoomResetBtn = $("zoom-reset");
+const kbdInput = $("kbd-input");
+const touchKeysBar = $("touch-keys");
+const btnKbd = $("btn-kbd");
+
+let zoom = 1;
+let panX = 0;
+let panY = 0;
+let cursor = { x: 0.5, y: 0.5 };
+let touchCursorShown = false;
+
 // Maps a client position to 0..1 of the *video content*, accounting for the
-// letterboxing introduced by object-fit: contain.
-function normalize(clientX, clientY) {
+// letterboxing introduced by object-fit: contain (and any active CSS zoom/pan).
+function videoContentBox() {
   const r = video.getBoundingClientRect();
   const vw = video.videoWidth || r.width;
   const vh = video.videoHeight || r.height;
@@ -713,8 +734,63 @@ function normalize(clientX, clientY) {
   const cw = vw * scale, ch = vh * scale;
   const ox = r.left + (r.width - cw) / 2;
   const oy = r.top + (r.height - ch) / 2;
+  return { ox, oy, cw, ch };
+}
+
+function normalize(clientX, clientY) {
+  const { ox, oy, cw, ch } = videoContentBox();
   const clamp = (v) => Math.min(1, Math.max(0, v));
-  return { x: clamp((clientX - ox) / cw), y: clamp((clientY - oy) / ch) };
+  return { x: clamp((clientX - ox) / (cw || 1)), y: clamp((clientY - oy) / (ch || 1)) };
+}
+
+function clampPan() {
+  const vp = viewport.getBoundingClientRect();
+  const minX = Math.min(0, vp.width * (1 - zoom));
+  const minY = Math.min(0, vp.height * (1 - zoom));
+  panX = Math.min(0, Math.max(minX, panX));
+  panY = Math.min(0, Math.max(minY, panY));
+}
+
+function applyZoom() {
+  if (zoom <= 1.01) {
+    zoom = 1;
+    panX = 0;
+    panY = 0;
+    video.style.transform = "";
+    zoomResetBtn.hidden = true;
+  } else {
+    clampPan();
+    video.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+    zoomResetBtn.textContent = `${zoom.toFixed(1)}× · Reset`;
+    zoomResetBtn.hidden = false;
+  }
+  updateTouchCursor();
+}
+
+function resetZoom() {
+  zoom = 1;
+  panX = 0;
+  panY = 0;
+  video.style.transform = "";
+  zoomResetBtn.hidden = true;
+  updateTouchCursor();
+}
+zoomResetBtn.addEventListener("click", resetZoom);
+
+function updateTouchCursor(show = touchCursorShown) {
+  touchCursorShown = show;
+  const visible = show && state === "connected" && prefs.touchMode === "touchpad";
+  touchCursor.hidden = !visible;
+  if (!visible) return;
+  const vp = viewport.getBoundingClientRect();
+  const { ox, oy, cw, ch } = videoContentBox();
+  touchCursor.style.left = `${ox - vp.left + cursor.x * cw}px`;
+  touchCursor.style.top = `${oy - vp.top + cursor.y * ch}px`;
+}
+
+function hideTouchCursor() {
+  touchCursorShown = false;
+  touchCursor.hidden = true;
 }
 
 const BUTTONS = ["left", "middle", "right", "back", "forward"];
@@ -725,11 +801,192 @@ function flushMove() {
   if (pendingMove) send({ type: "mouse_move", ...pendingMove });
   pendingMove = null;
 }
-video.addEventListener("pointermove", (e) => {
+function queueMove(pos) {
+  cursor = pos;
   if (!pendingMove) requestAnimationFrame(flushMove);
-  pendingMove = normalize(e.clientX, e.clientY);
+  pendingMove = pos;
+}
+
+// Touch gesture state (separated from mouse/pen so desktop behavior is untouched).
+const touches = new Map();
+let touchGesture = null;
+let twoFinger = null;
+let longPressTimer = null;
+let lastTapAt = 0;
+
+function clearLongPress() {
+  clearTimeout(longPressTimer);
+  longPressTimer = null;
+}
+
+function startLongPress(posFn) {
+  clearLongPress();
+  longPressTimer = setTimeout(() => {
+    if (!touchGesture || touchGesture.moved || touches.size !== 1) return;
+    touchGesture.longPressed = true;
+    const pos = posFn();
+    cursor = pos;
+    send({ type: "mouse_move", ...pos });
+    send({ type: "mouse_button", button: "right", down: true, ...pos });
+    send({ type: "mouse_button", button: "right", down: false, ...pos });
+  }, 480);
+}
+
+function touchPairInfo() {
+  const [a, b] = [...touches.values()];
+  const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  const dist = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  return { mid, dist };
+}
+
+function onTouchDown(e) {
+  e.preventDefault();
+  focusStageUnlessTyping();
+  wakeLockScreen();
+  try { video.setPointerCapture(e.pointerId); } catch (_) {}
+  touches.set(e.pointerId, {
+    id: e.pointerId,
+    x: e.clientX,
+    y: e.clientY,
+    startX: e.clientX,
+    startY: e.clientY,
+    lastX: e.clientX,
+    lastY: e.clientY,
+  });
+
+  if (touches.size === 1) {
+    twoFinger = null;
+    touchGesture = {
+      mode: "one",
+      moved: false,
+      longPressed: false,
+      downSent: false,
+      dragging: false,
+      tapDragPending: prefs.touchMode === "touchpad" && (Date.now() - lastTapAt < 280),
+    };
+    if (prefs.touchMode === "touchpad") updateTouchCursor(true);
+    startLongPress(() => prefs.touchMode === "touchpad" ? cursor : normalize(e.clientX, e.clientY));
+  } else if (touches.size === 2) {
+    clearLongPress();
+    if (touchGesture && (touchGesture.downSent || touchGesture.dragging)) {
+      flushMove();
+      send({ type: "mouse_button", button: "left", down: false, ...cursor });
+    }
+    touchGesture = null;
+    const { mid, dist } = touchPairInfo();
+    twoFinger = {
+      startDist: dist,
+      startMid: mid,
+      prevMid: mid,
+      startZoom: zoom,
+      startPanX: panX,
+      startPanY: panY,
+      mode: null,
+    };
+  }
+}
+
+function onTouchMove(e) {
+  const t = touches.get(e.pointerId);
+  if (!t) return;
+  t.x = e.clientX;
+  t.y = e.clientY;
+
+  if (touches.size === 2 && twoFinger) {
+    const { mid, dist } = touchPairInfo();
+    if (!twoFinger.mode) {
+      const distDelta = Math.abs(dist - twoFinger.startDist);
+      const scaleRatio = Math.abs(dist / twoFinger.startDist - 1);
+      const midDelta = Math.hypot(mid.x - twoFinger.startMid.x, mid.y - twoFinger.startMid.y);
+      if (distDelta > 18 && scaleRatio > 0.12 && distDelta >= midDelta * 0.8) twoFinger.mode = "pinch";
+      else if (midDelta > 12 && distDelta <= 14) twoFinger.mode = "scroll";
+    }
+    if (twoFinger.mode === "pinch" && prefs.view !== "actual") {
+      const vp = viewport.getBoundingClientRect();
+      const newZoom = Math.min(5, Math.max(1, twoFinger.startZoom * (dist / twoFinger.startDist)));
+      const cx = (twoFinger.startMid.x - vp.left - twoFinger.startPanX) / twoFinger.startZoom;
+      const cy = (twoFinger.startMid.y - vp.top - twoFinger.startPanY) / twoFinger.startZoom;
+      zoom = newZoom;
+      panX = (mid.x - vp.left) - cx * zoom;
+      panY = (mid.y - vp.top) - cy * zoom;
+      applyZoom();
+    } else if (twoFinger.mode === "scroll") {
+      const dir = prefs.invertWheel ? -1 : 1;
+      const dx = (twoFinger.prevMid.x - mid.x) * 2.5 * dir;
+      const dy = (twoFinger.prevMid.y - mid.y) * 2.5 * dir;
+      if (dx !== 0 || dy !== 0) send({ type: "wheel", dx, dy });
+    }
+    twoFinger.prevMid = mid;
+    return;
+  }
+
+  if (touches.size !== 1 || !touchGesture || touchGesture.mode !== "one") return;
+  const dx = e.clientX - t.lastX;
+  const dy = e.clientY - t.lastY;
+  t.lastX = e.clientX;
+  t.lastY = e.clientY;
+
+  if (!touchGesture.moved && Math.hypot(e.clientX - t.startX, e.clientY - t.startY) > 7) {
+    touchGesture.moved = true;
+    clearLongPress();
+    if (prefs.touchMode === "direct") {
+      const p0 = normalize(t.startX, t.startY);
+      cursor = p0;
+      send({ type: "mouse_move", ...p0 });
+      send({ type: "mouse_button", button: "left", down: true, ...p0 });
+      touchGesture.downSent = true;
+    } else if (touchGesture.tapDragPending) {
+      send({ type: "mouse_button", button: "left", down: true, ...cursor });
+      touchGesture.dragging = true;
+    }
+  }
+
+  if (!touchGesture.moved || touchGesture.longPressed) return;
+
+  if (prefs.touchMode === "touchpad") {
+    const { cw, ch } = videoContentBox();
+    const gain = 1.35;
+    const clamp = (v) => Math.min(1, Math.max(0, v));
+    const next = {
+      x: clamp(cursor.x + (dx * gain) / (cw || 1)),
+      y: clamp(cursor.y + (dy * gain) / (ch || 1)),
+    };
+    queueMove(next);
+    updateTouchCursor(true);
+  } else {
+    queueMove(normalize(e.clientX, e.clientY));
+  }
+}
+
+function onTouchUp(e, cancelled = false) {
+  touches.delete(e.pointerId);
+  clearLongPress();
+  if (!cancelled && touchGesture && touchGesture.mode === "one" && !touchGesture.longPressed) {
+    if (touchGesture.dragging || touchGesture.downSent) {
+      flushMove();
+      send({ type: "mouse_button", button: "left", down: false, ...cursor });
+    } else if (!touchGesture.moved) {
+      if (prefs.touchMode === "direct") cursor = normalize(e.clientX, e.clientY);
+      send({ type: "mouse_move", ...cursor });
+      send({ type: "mouse_button", button: "left", down: true, ...cursor });
+      send({ type: "mouse_button", button: "left", down: false, ...cursor });
+      if (prefs.touchMode === "touchpad") {
+        lastTapAt = Date.now();
+        updateTouchCursor(true);
+      }
+    }
+  }
+  if (touches.size < 2) twoFinger = null;
+  if (touches.size === 0) touchGesture = null;
+}
+
+video.addEventListener("pointermove", (e) => {
+  if (e.pointerType === "touch") { onTouchMove(e); return; }
+  hideTouchCursor();
+  queueMove(normalize(e.clientX, e.clientY));
 });
 video.addEventListener("pointerdown", (e) => {
+  if (e.pointerType === "touch") { onTouchDown(e); return; }
   e.preventDefault();
   stage.focus();
   wakeLockScreen();
@@ -737,14 +994,22 @@ video.addEventListener("pointerdown", (e) => {
   const button = BUTTONS[e.button];
   if (!button) return;
   pendingMove = null;
-  send({ type: "mouse_button", button, down: true, ...normalize(e.clientX, e.clientY) });
+  const pos = normalize(e.clientX, e.clientY);
+  cursor = pos;
+  send({ type: "mouse_button", button, down: true, ...pos });
 });
 video.addEventListener("pointerup", (e) => {
+  if (e.pointerType === "touch") { e.preventDefault(); onTouchUp(e, false); return; }
   e.preventDefault();
   const button = BUTTONS[e.button];
   if (!button) return;
   flushMove();
-  send({ type: "mouse_button", button, down: false, ...normalize(e.clientX, e.clientY) });
+  const pos = normalize(e.clientX, e.clientY);
+  cursor = pos;
+  send({ type: "mouse_button", button, down: false, ...pos });
+});
+video.addEventListener("pointercancel", (e) => {
+  if (e.pointerType === "touch") onTouchUp(e, true);
 });
 video.addEventListener("contextmenu", (e) => e.preventDefault());
 // Clicks next to the picture (letterbox, the locked notice) still mean "control the host";
@@ -763,6 +1028,151 @@ video.addEventListener("wheel", (e) => {
   const dir = prefs.invertWheel ? -1 : 1;
   send({ type: "wheel", dx: e.deltaX * k * dir, dy: e.deltaY * k * dir });
 }, { passive: false });
+
+// ---------------------------------------------------------------- on-screen touch keyboard
+
+const stickyMods = new Set();
+let touchKbdOpen = false;
+let kbdComposing = false;
+
+function positionTouchKeys() {
+  if (!touchKbdOpen) return;
+  const vv = window.visualViewport;
+  if (!vv) { touchKeysBar.style.bottom = ""; return; }
+  const covered = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+  touchKeysBar.style.bottom = `${covered + 12}px`;
+}
+
+function clearStickyMods() {
+  if (!stickyMods.size) return;
+  stickyMods.clear();
+  for (const b of touchKeysBar.querySelectorAll("button[data-mod]")) {
+    b.setAttribute("aria-pressed", "false");
+  }
+}
+
+function sendTouchKey(code) {
+  for (const m of stickyMods) send({ type: "key", code: m, down: true });
+  send({ type: "key", code, down: true });
+  send({ type: "key", code, down: false });
+  for (const m of [...stickyMods].reverse()) send({ type: "key", code: m, down: false });
+  clearStickyMods();
+}
+
+function charToCode(ch) {
+  if (/^[a-zA-Z]$/.test(ch)) return `Key${ch.toUpperCase()}`;
+  if (/^[0-9]$/.test(ch)) return `Digit${ch}`;
+  if (ch === " ") return "Space";
+  return null;
+}
+
+function sendTouchText(text) {
+  if (!text) return;
+  if (stickyMods.size > 0 && text.length === 1) {
+    const code = charToCode(text);
+    if (code) { sendTouchKey(code); return; }
+  }
+  send({ type: "text", text });
+}
+
+function resetKbdInput() {
+  // Keep a leading space so Backspace on Android/iOS always has something to delete.
+  kbdInput.value = " ";
+  try { kbdInput.setSelectionRange(1, 1); } catch (_) {}
+}
+
+function openTouchKeyboard() {
+  if (state !== "connected") return;
+  closePopovers();
+  touchKbdOpen = true;
+  touchKeysBar.hidden = false;
+  btnKbd.setAttribute("aria-pressed", "true");
+  resetKbdInput();
+  kbdInput.focus({ preventScroll: true });
+  positionTouchKeys();
+}
+
+function closeTouchKeyboard() {
+  if (!touchKbdOpen && touchKeysBar.hidden) return;
+  touchKbdOpen = false;
+  touchKeysBar.hidden = true;
+  touchKeysBar.style.bottom = "";
+  btnKbd.setAttribute("aria-pressed", "false");
+  clearStickyMods();
+  if (document.activeElement === kbdInput) kbdInput.blur();
+}
+
+btnKbd.addEventListener("click", () => {
+  if (touchKbdOpen) closeTouchKeyboard();
+  else openTouchKeyboard();
+});
+
+touchKeysBar.addEventListener("pointerdown", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  e.preventDefault(); // Keep focus on #kbd-input so the soft keyboard stays open.
+  if (b.id === "touch-keys-close") { closeTouchKeyboard(); return; }
+  if (b.dataset.mod) {
+    const mod = b.dataset.mod;
+    const on = !stickyMods.has(mod);
+    if (on) stickyMods.add(mod);
+    else stickyMods.delete(mod);
+    b.setAttribute("aria-pressed", String(on));
+    return;
+  }
+  if (b.dataset.key) sendTouchKey(b.dataset.key);
+});
+
+const KBD_NAV_KEYS = new Set([
+  "Escape", "Tab", "Backspace", "Enter", "Delete", "Home", "End",
+  "PageUp", "PageDown", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
+]);
+
+kbdInput.addEventListener("keydown", (e) => {
+  if (e.isComposing || kbdComposing) return;
+  const code = KBD_NAV_KEYS.has(e.code) ? e.code : KBD_NAV_KEYS.has(e.key) ? e.key : null;
+  if (!code) return;
+  e.preventDefault();
+  sendTouchKey(code);
+});
+
+kbdInput.addEventListener("compositionstart", () => { kbdComposing = true; });
+kbdInput.addEventListener("compositionend", (e) => {
+  kbdComposing = false;
+  if (e.data) sendTouchText(e.data);
+  resetKbdInput();
+});
+
+kbdInput.addEventListener("beforeinput", (e) => {
+  if (kbdComposing || e.isComposing) return;
+  if (e.inputType === "insertText" && e.data) {
+    e.preventDefault();
+    sendTouchText(e.data);
+  } else if (e.inputType === "insertLineBreak" || e.inputType === "insertParagraph") {
+    e.preventDefault();
+    sendTouchKey("Enter");
+  } else if (e.inputType === "deleteContentBackward") {
+    e.preventDefault();
+    sendTouchKey("Backspace");
+  }
+});
+
+kbdInput.addEventListener("input", () => {
+  if (kbdComposing) return;
+  const val = kbdInput.value;
+  if (val.length > 1) {
+    const text = val.startsWith(" ") ? val.slice(1) : val;
+    if (text) sendTouchText(text);
+  } else if (val.length === 0) {
+    sendTouchKey("Backspace");
+  }
+  resetKbdInput();
+});
+
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", positionTouchKeys);
+  window.visualViewport.addEventListener("scroll", positionTouchKeys);
+}
 
 // Keyboard goes to the host only while the remote screen itself has focus, not the toolbar.
 // Only keys pressed here are released here: a toolbar button that hands focus back on
@@ -1124,7 +1534,7 @@ renderClip();
 // this browser.
 
 const SETTINGS_KEY = "dalker.settings";
-const DEFAULTS = { fps: 0, bw: 1, scale: 1, view: "fit", keyboard: "hardware", invertWheel: false, keepAlive: false, keepAliveSec: 60, autoHide: false }; // fps 0 = the host's maximum
+const DEFAULTS = { fps: 0, bw: 1, scale: 1, view: "fit", keyboard: "hardware", touchMode: "touchpad", invertWheel: false, keepAlive: false, keepAliveSec: 60, autoHide: false }; // fps 0 = the host's maximum
 const AWAKE_CHOICES = [30, 60, 120, 300];
 let prefs = { ...DEFAULTS };
 let applied = null; // the host's last settings_applied
@@ -1189,6 +1599,10 @@ function renderSettings() {
   }
   renderSeg("set-view", [["fit", "Fit window"], ["actual", "1:1 pixels", "One stream pixel per screen pixel; scroll with the scrollbars"]], prefs.view,
     (v) => { prefs.view = v; applyView(); });
+  renderSeg("set-touch", [
+    ["touchpad", "Touchpad", "Drag moves the cursor; tap clicks; long press right-clicks"],
+    ["direct", "Direct", "Tap or drag directly where you touch; long press right-clicks"],
+  ], prefs.touchMode, (v) => { prefs.touchMode = v; updateTouchCursor(v === "touchpad"); });
   renderKeyboardMode("set-kbd");
   $("set-clip").checked = clip.auto;
   $("set-wheel").checked = prefs.invertWheel;
@@ -1217,6 +1631,8 @@ function applyView() {
   const dpr = window.devicePixelRatio || 1;
   video.style.width = actual ? `${video.videoWidth / dpr}px` : "";
   video.style.height = actual ? `${video.videoHeight / dpr}px` : "";
+  if (actual) resetZoom();
+  else applyZoom();
 }
 video.addEventListener("resize", applyView);
 window.addEventListener("resize", applyView);
