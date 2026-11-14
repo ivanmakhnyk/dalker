@@ -582,6 +582,8 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
         refused_until: std::sync::Mutex::new(None),
         input_available,
         clipboard_requests,
+        file_access: Arc::new(dalker_platform::open_file_access),
+        mcp_active: Arc::new(AtomicUsize::new(0)),
         next_mcp_id: AtomicU64::new(1),
     });
     let mcp = mcp_server(&cli, &signaling);
@@ -600,6 +602,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
     // appears later (login screen, user session).
     if cli.capture == CaptureMode::Native {
         let active = Arc::clone(&signaling.active);
+        let mcp_active = Arc::clone(&signaling.mcp_active);
         let ready = Arc::clone(&border_ready);
         let shown = Arc::clone(&border_shown);
         let disconnect_all = Arc::clone(&disconnect_all);
@@ -607,6 +610,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
             let mut indicator: Option<Box<dyn dalker_core::ViewerIndicator>> = None;
             let mut failures = FailureLog::default();
             let mut last_on = false;
+            let mut last_mcp_on = false;
             loop {
                 if indicator.is_none() {
                     let create =
@@ -623,6 +627,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                             tracing::info!(backend = i.name(), "remote-session border ready");
                             indicator = Some(i);
                             last_on = false;
+                            last_mcp_on = false;
                             failures.recovered();
                             ready.store(true, Ordering::SeqCst);
                         }
@@ -642,9 +647,12 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                 }
                 if let Some(i) = &indicator {
                     let on = active.load(Ordering::SeqCst) > 0;
-                    if on != last_on {
+                    let mcp_on = mcp_active.load(Ordering::SeqCst) > 0;
+                    if on != last_on || mcp_on != last_mcp_on {
+                        i.set_label((on && mcp_on).then_some("AI agent"));
                         i.set_active(on);
                         last_on = on;
+                        last_mcp_on = mcp_on;
                     }
                     // Frames flow only once the backend reports the border drawn.
                     shown.store(on && i.shown(), Ordering::SeqCst);
@@ -1047,10 +1055,12 @@ impl dalker_mcp::DesktopHandle for Agent {
                 self.max_sessions
             ));
         }
+        self.mcp_active.fetch_add(1, Ordering::SeqCst);
         Ok(MCP_SESSION_BASE + self.next_mcp_id.fetch_add(1, Ordering::SeqCst))
     }
 
     fn close_viewer(&self, id: u64) {
+        self.mcp_active.fetch_sub(1, Ordering::SeqCst);
         let n = self.active.fetch_sub(1, Ordering::SeqCst) - 1;
         tracing::info!(session = id, remaining = n, "AI agent left");
     }
@@ -1093,6 +1103,10 @@ impl dalker_mcp::DesktopHandle for Agent {
             }
         })
     }
+
+    fn file_access(&self) -> Option<dalker_core::files::FileAccessFactory> {
+        Some(Arc::clone(&self.file_access))
+    }
 }
 
 // ------------------------------------------------------------------ signaling
@@ -1116,6 +1130,8 @@ struct Agent {
     refused_until: std::sync::Mutex<Option<Instant>>,
     input_available: bool,
     clipboard_requests: std::sync::mpsc::Sender<ClipboardRequest>,
+    file_access: dalker_core::files::FileAccessFactory,
+    mcp_active: Arc<AtomicUsize>,
     next_mcp_id: AtomicU64,
 }
 

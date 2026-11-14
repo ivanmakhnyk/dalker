@@ -220,6 +220,7 @@ pub fn state_json(api: &Api, saved: &Saved) -> Value {
                 "masked": masked(r),
                 "remote": match remote_of(r) { Remote::Full => "full", Remote::ViewOnly => "view", Remote::None => "none" },
                 "clipboard": r.scopes.contains(&Scope::Clipboard),
+                "files": r.scopes.contains(&Scope::Files),
                 "created": date(r.created),
                 "expires": r.expires.map(date),
                 "expired": r.expired_at(now),

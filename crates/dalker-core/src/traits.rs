@@ -83,4 +83,9 @@ pub trait ViewerIndicator: Send + Sync {
     fn take_disconnect_request(&self) -> bool {
         false
     }
+    /// Optional badge label shown on the red border (for example `"AI agent"` while an MCP
+    /// session is active). Default is a no-op.
+    fn set_label(&self, label: Option<&str>) {
+        let _ = label;
+    }
 }

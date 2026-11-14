@@ -47,6 +47,9 @@ const IFACE = `<node>
     <method name="SetActive">
       <arg type="b" direction="in" name="active"/>
     </method>
+    <method name="SetLabel">
+      <arg type="s" direction="in" name="label"/>
+    </method>
     <property name="Active" type="b" access="read"/>
     <method name="ClipboardSerial">
       <arg type="u" direction="out" name="serial"/>
@@ -69,8 +72,10 @@ const IFACE = `<node>
 export default class DalkerBorder extends Extension {
     enable() {
         this._active = false;
+        this._labelText = '';
         this._released = false;
         this._edges = [];
+        this._badge = null;
         this._timeoutId = 0;
 
         this._buildEdges();
@@ -135,6 +140,7 @@ export default class DalkerBorder extends Extension {
         this._active = !!active;
         for (const e of this._edges)
             e.visible = this._active;
+        this._updateBadge();
         if (this._active) {
             this._raise();
             // Dead-man switch: no ping for 3 s (agent crashed or stopped) hides the frame.
@@ -143,12 +149,19 @@ export default class DalkerBorder extends Extension {
                 this._active = false;
                 for (const e of this._edges)
                     e.visible = false;
+                this._updateBadge();
                 this._updateRemoteAccess();
                 this._updateIndicator();
                 return GLib.SOURCE_REMOVE;
             });
         }
         this._updateRemoteAccess();
+        this._updateIndicator();
+    }
+
+    SetLabel(label) {
+        this._labelText = label ?? '';
+        this._updateBadge();
         this._updateIndicator();
     }
 
@@ -236,8 +249,9 @@ export default class DalkerBorder extends Extension {
             style_class: 'system-status-icon',
             style: 'color: rgb(255, 0, 0);',
         }));
-        this._indicator.menu.addMenuItem(
-            new PopupMenu.PopupMenuItem('Someone is connected through Dalker', {reactive: false}));
+        this._statusItem = new PopupMenu.PopupMenuItem(
+            'Someone is connected through Dalker', {reactive: false});
+        this._indicator.menu.addMenuItem(this._statusItem);
         const item = new PopupMenu.PopupMenuItem('Disconnect everyone');
         item.connect('activate', () => {
             this._disconnectRequested = true;
@@ -250,6 +264,11 @@ export default class DalkerBorder extends Extension {
     _updateIndicator() {
         if (!this._active)
             this._disconnectRequested = false;
+        if (this._statusItem) {
+            this._statusItem.label.text = this._labelText
+                ? `${this._labelText} is connected through Dalker`
+                : 'Someone is connected through Dalker';
+        }
         if (this._indicator)
             this._indicator.visible = this._active && !Main.sessionMode.isLocked;
     }
@@ -264,6 +283,33 @@ export default class DalkerBorder extends Extension {
             if (parent)
                 parent.set_child_above_sibling(e, null);
         }
+        if (this._badge) {
+            const parent = this._badge.get_parent();
+            if (parent)
+                parent.set_child_above_sibling(this._badge, null);
+        }
+    }
+
+    _updateBadge() {
+        if (!this._badge)
+            return;
+        this._badge.text = this._labelText;
+        this._badge.visible = this._active && this._labelText.length > 0;
+        if (this._badge.visible)
+            this._positionBadge();
+    }
+
+    _positionBadge() {
+        if (!this._badge)
+            return;
+        const m = Main.layoutManager.primaryMonitor ?? Main.layoutManager.monitors[0];
+        if (!m)
+            return;
+        const [, natW] = this._badge.get_preferred_width(-1);
+        this._badge.set_position(
+            Math.round(m.x + (m.width - natW) / 2),
+            m.y + BORDER_PX,
+        );
     }
 
     _clearTimeout() {
@@ -279,6 +325,11 @@ export default class DalkerBorder extends Extension {
             e.destroy();
         }
         this._edges = [];
+        if (this._badge) {
+            Main.layoutManager.removeChrome(this._badge);
+            this._badge.destroy();
+            this._badge = null;
+        }
     }
 
     _buildEdges() {
@@ -309,5 +360,20 @@ export default class DalkerBorder extends Extension {
                 this._edges.push(edge);
             }
         }
+        this._badge = new St.Label({
+            style: 'background-color: rgb(255, 0, 0); color: rgb(255, 255, 255); ' +
+                   'font-weight: bold; font-size: 12px; padding: 2px 10px 4px 10px; ' +
+                   'border-radius: 0 0 6px 6px;',
+            text: this._labelText,
+            reactive: false,
+            can_focus: false,
+            track_hover: false,
+            visible: this._active && this._labelText.length > 0,
+        });
+        Main.layoutManager.addTopChrome(this._badge, {
+            affectsStruts: false,
+            trackFullscreen: false,
+        });
+        this._positionBadge();
     }
 }
