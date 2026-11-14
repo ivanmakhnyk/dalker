@@ -294,8 +294,19 @@ impl State {
         region: Option<Region>,
     ) -> Result<(Shot, String), String> {
         self.take_screenshot()?;
-        let max_width = max_width.clamp(screen::MIN_MAX_WIDTH, screen::MAX_MAX_WIDTH);
         let raw = self.latest_frame(desktop).await?;
+        self.encode_raw_frame(raw, max_width, format, region).await
+    }
+
+    /// Encodes a given `RawFrame` as a screenshot and updates the coordinate frame when `region` is `None`.
+    pub(crate) async fn encode_raw_frame(
+        &mut self,
+        raw: Arc<RawFrame>,
+        max_width: u32,
+        format: Option<Format>,
+        region: Option<Region>,
+    ) -> Result<(Shot, String), String> {
+        let max_width = max_width.clamp(screen::MIN_MAX_WIDTH, screen::MAX_MAX_WIDTH);
         let (nw, nh) = (raw.width, raw.height);
         let native = match region {
             Some(r) => {
@@ -350,6 +361,40 @@ impl State {
         };
         Ok((shot, text))
     }
+
+    /// Waits until the captured frame differs from the current one, or `timeout` elapses.
+    /// Returns `Some(frame)` on change, `None` on timeout.
+    pub(crate) async fn wait_for_screen_change(
+        &mut self,
+        desktop: &dyn DesktopHandle,
+        timeout: Duration,
+    ) -> Result<Option<Arc<RawFrame>>, String> {
+        let baseline = self.latest_frame(desktop).await?;
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            match tokio::time::timeout_at(deadline, self.frames.changed()).await {
+                Err(_) | Ok(Err(_)) => return Ok(None),
+                Ok(Ok(())) => {
+                    if self.closed.load(Ordering::SeqCst) {
+                        return Err(ENDED.into());
+                    }
+                    if let Some(next) = self.frames.borrow_and_update().clone() {
+                        if frames_differ(&baseline, &next) {
+                            return Ok(Some(next));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn frames_differ(a: &RawFrame, b: &RawFrame) -> bool {
+    a.width != b.width
+        || a.height != b.height
+        || a.format != b.format
+        || a.stride != b.stride
+        || a.data != b.data
 }
 
 #[cfg(test)]

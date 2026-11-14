@@ -371,6 +371,7 @@ pub struct GnomeBorder {
     active: Arc<AtomicBool>,
     /// The extension answered the last `SetActive(true)`.
     shown: Arc<AtomicBool>,
+    label: Arc<std::sync::Mutex<Option<String>>>,
     stop: Arc<AtomicBool>,
     /// The person at the host chose "Disconnect everyone" in the extension's panel menu.
     disconnect: Arc<AtomicBool>,
@@ -399,12 +400,14 @@ impl GnomeBorder {
         }
         let active = Arc::new(AtomicBool::new(false));
         let shown = Arc::new(AtomicBool::new(false));
+        let label = Arc::new(std::sync::Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
         let disconnect = Arc::new(AtomicBool::new(false));
-        let (c, a, v, s) = (
+        let (c, a, v, l, s) = (
             conn.clone(),
             Arc::clone(&active),
             Arc::clone(&shown),
+            Arc::clone(&label),
             Arc::clone(&stop),
         );
         let d = Arc::clone(&disconnect);
@@ -416,12 +419,19 @@ impl GnomeBorder {
             .spawn(move || {
                 let proxy = Proxy::new(&c, BUS_NAME, BORDER_PATH, BORDER).ok();
                 let mut last = false;
+                let mut last_label: Option<String> = None;
                 while !s.load(Ordering::SeqCst) {
                     let now = a.load(Ordering::SeqCst);
+                    let cur_label = l.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     if !now {
                         v.store(false, Ordering::SeqCst);
                     }
                     if let Some(p) = &proxy {
+                        if cur_label != last_label || (now && !last) {
+                            let _ =
+                                p.call_method("SetLabel", &(cur_label.as_deref().unwrap_or(""),));
+                            last_label = cur_label.clone();
+                        }
                         if now || last {
                             // The extension draws the frame before it answers.
                             let ok = p.call_method("SetActive", &(now,)).is_ok();
@@ -446,6 +456,7 @@ impl GnomeBorder {
                     while waited < period
                         && !s.load(Ordering::SeqCst)
                         && a.load(Ordering::SeqCst) == now
+                        && *l.lock().unwrap_or_else(|e| e.into_inner()) == cur_label
                     {
                         std::thread::sleep(Duration::from_millis(10));
                         waited += Duration::from_millis(10);
@@ -453,6 +464,7 @@ impl GnomeBorder {
                 }
                 v.store(false, Ordering::SeqCst);
                 if let Some(p) = &proxy {
+                    let _ = p.call_method("SetLabel", &("",));
                     let _ = p.call_method("SetActive", &(false,));
                 }
             })
@@ -461,6 +473,7 @@ impl GnomeBorder {
             conn,
             active,
             shown,
+            label,
             stop,
             disconnect,
             heartbeat: Some(heartbeat),
@@ -487,6 +500,10 @@ impl ViewerIndicator for GnomeBorder {
 
     fn take_disconnect_request(&self) -> bool {
         self.disconnect.swap(false, Ordering::SeqCst)
+    }
+
+    fn set_label(&self, label: Option<&str>) {
+        *self.label.lock().unwrap_or_else(|e| e.into_inner()) = label.map(str::to_owned);
     }
 }
 

@@ -225,7 +225,7 @@ pub fn with_permissions(
     clipboard: bool,
 ) -> Result<TokenRecord, String> {
     // A view-only token stays view-only while only its clipboard permission changes.
-    let scopes = if !remote_control && remote_of(record) == Remote::ViewOnly {
+    let mut scopes = if !remote_control && remote_of(record) == Remote::ViewOnly {
         let mut s = BTreeSet::from([Scope::View]);
         if clipboard {
             s.insert(Scope::Clipboard);
@@ -234,6 +234,9 @@ pub fn with_permissions(
     } else {
         scopes_for(remote_control, clipboard)?
     };
+    if record.scopes.contains(&Scope::Files) {
+        scopes.insert(Scope::Files);
+    }
     Ok(TokenRecord {
         scopes,
         ..record.clone()

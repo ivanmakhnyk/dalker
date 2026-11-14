@@ -32,22 +32,25 @@ const TOKEN_PREFIX: &str = "dkmcp_";
 /// What a token may do. Checked per tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Scope {
-    /// Host info and screenshots.
+    /// Host info, screenshots, screen-change waits, and `dalker://screen`.
     View,
     /// Mouse and keyboard.
     Input,
     /// Read and write the host's clipboard.
     Clipboard,
+    /// List, read, and upload files.
+    Files,
 }
 
 impl Scope {
-    pub const ALL: [Scope; 3] = [Scope::View, Scope::Input, Scope::Clipboard];
+    pub const ALL: [Scope; 4] = [Scope::View, Scope::Input, Scope::Clipboard, Scope::Files];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Scope::View => "view",
             Scope::Input => "input",
             Scope::Clipboard => "clipboard",
+            Scope::Files => "files",
         }
     }
 }
@@ -66,7 +69,7 @@ impl std::str::FromStr for Scope {
             .find(|sc| sc.as_str() == s.trim())
             .ok_or_else(|| {
                 format!(
-                    "unknown scope `{}` (known: view, input, clipboard)",
+                    "unknown scope `{}` (known: view, input, clipboard, files)",
                     s.trim()
                 )
             })
@@ -81,7 +84,7 @@ pub fn parse_scopes(list: &str) -> Result<BTreeSet<Scope>, String> {
         .map(str::parse)
         .collect::<Result<BTreeSet<_>, _>>()?;
     if scopes.is_empty() {
-        return Err("at least one scope is needed (view, input, clipboard)".into());
+        return Err("at least one scope is needed (view, input, clipboard, files)".into());
     }
     Ok(scopes)
 }
@@ -397,11 +400,11 @@ mod tests {
     fn scopes_parse_and_print() {
         assert_eq!(format_scopes(&scopes("input, view,view")), "view,input");
         assert_eq!(
-            format_scopes(&scopes("clipboard,input,view")),
-            "view,input,clipboard"
+            format_scopes(&scopes("files,clipboard,input,view")),
+            "view,input,clipboard,files"
         );
         assert!(parse_scopes("").is_err());
-        assert!(parse_scopes("view,files").is_err());
+        assert!(parse_scopes("view,bogus").is_err());
         assert!(parse_scopes("VIEW").is_err(), "scopes are lowercase");
     }
 
