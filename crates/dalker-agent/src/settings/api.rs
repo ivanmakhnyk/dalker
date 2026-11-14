@@ -12,6 +12,7 @@
 //! | `POST /api/settings/web` | `{enabled?, port?}` | host only |
 //! | `POST /api/settings/password` | `{password, repeat}` | host only |
 //! | `POST /api/settings/mcp` | `{enabled?, port?, remote?}` | host only |
+//! | `POST /api/settings/stream` | `{fps?, bitrate_kbps?, max_width?}` | host only: stream limits |
 //! | `POST /api/settings/tokens` | `{name, remote, clipboard}` | → `{token, state}` |
 //! | `PATCH /api/settings/tokens/{id}` | `{remote, clipboard}` | |
 //! | `DELETE /api/settings/tokens/{id}` | | |
@@ -38,6 +39,7 @@ use super::{
 };
 use crate::cli::OnOff;
 use crate::listeners::{KEY_BIND, KEY_MCP, KEY_MCP_BIND, KEY_WEB};
+use crate::stream;
 
 /// What a caller of the API may change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +117,7 @@ impl Api {
             .route("/api/settings/web", post(set_web))
             .route("/api/settings/password", post(set_password))
             .route("/api/settings/mcp", post(set_mcp))
+            .route("/api/settings/stream", post(set_stream))
             .route("/api/settings/tokens", post(create_token))
             .route(
                 "/api/settings/tokens/{id}",
@@ -253,6 +256,21 @@ pub fn state_json(api: &Api, saved: &Saved) -> Value {
             "public_url": saved.mcp_public_url,
             "loopback": saved.mcp_bind.ip().is_loopback(),
             "status": status(saved.mcp, live.mcp),
+        },
+        "stream": {
+            "fps": saved.stream.fps,
+            "bitrate_kbps": saved.stream.bitrate_kbps,
+            "max_width": saved.stream.max_width,
+            "default": {
+                "fps": stream::DEFAULT_FPS,
+                "bitrate_kbps": stream::DEFAULT_BITRATE_KBPS,
+                "max_width": stream::DEFAULT_MAX_WIDTH,
+            },
+            "range": {
+                "fps": [1, stream::MAX_FPS],
+                "bitrate_kbps": [stream::MIN_BITRATE_KBPS, stream::MAX_BITRATE_KBPS],
+                "max_width": [stream::MIN_MAX_WIDTH, stream::MAX_MAX_WIDTH],
+            },
         },
         "tokens": token_rows,
         "min_password": MIN_PASSWORD_LEN,
@@ -448,6 +466,35 @@ async fn set_mcp(State(api): ApiState, headers: HeaderMap, Json(body): Json<Valu
         let bind = SocketAddr::new(ip, port);
         if bind != saved.mcp_bind {
             set.push((KEY_MCP_BIND.to_owned(), bind.to_string()));
+        }
+        let saved = saved_or_500(api.edit(&set, &[]))?;
+        tracing::info!(keys = ?set.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), "settings saved");
+        Ok(json!({ "state": state_json(api, &saved) }))
+    })
+    .await
+}
+
+/// The stream limits every viewer gets: the most frame rate and bitrate, and the width wider
+/// screens are scaled down to. The agent applies them to running streams too.
+async fn set_stream(State(api): ApiState, headers: HeaderMap, Json(body): Json<Value>) -> Response {
+    guarded(api, headers, true, move |api| {
+        type Parse = fn(&str) -> Result<u32, String>;
+        let fields: [(&str, &str, &str, Parse); 3] = [
+            ("fps", stream::KEY_FPS, "Frame rate", stream::parse_fps),
+            ("bitrate_kbps", stream::KEY_BITRATE_KBPS, "Bitrate", stream::parse_bitrate_kbps),
+            ("max_width", stream::KEY_MAX_WIDTH, "Width", stream::parse_max_width),
+        ];
+        let mut set = Vec::new();
+        for (field, key, what, parse) in fields {
+            let value = &body[field];
+            if value.is_null() {
+                continue;
+            }
+            let v = value
+                .as_u64()
+                .ok_or_else(|| bad(format!("{what}: enter a whole number.")))?;
+            let v = parse(&v.to_string()).map_err(|e| bad(format!("{}.", capitalize(&e))))?;
+            set.push((key.to_owned(), v.to_string()));
         }
         let saved = saved_or_500(api.edit(&set, &[]))?;
         tracing::info!(keys = ?set.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), "settings saved");
@@ -693,6 +740,53 @@ mod tests {
             "{text}"
         );
 
+        // Stream limits.
+        let (_, v) = call(&app, "GET", "/api/settings", Value::Null).await;
+        assert_eq!(
+            v["stream"],
+            json!({"fps": 30, "bitrate_kbps": 6000, "max_width": 1920,
+                   "default": {"fps": 30, "bitrate_kbps": 6000, "max_width": 1920},
+                   "range": {"fps": [1, 120], "bitrate_kbps": [250, 100000], "max_width": [320, 16384]}})
+        );
+        let (s, v) = call(
+            &app,
+            "POST",
+            "/api/settings/stream",
+            json!({"fps": 60, "bitrate_kbps": 12000, "max_width": 0}),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(
+            (
+                &v["state"]["stream"]["fps"],
+                &v["state"]["stream"]["bitrate_kbps"],
+                &v["state"]["stream"]["max_width"]
+            ),
+            (&json!(60), &json!(12000), &json!(0))
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("DALKER_FPS=60")
+                && text.contains("DALKER_BITRATE_KBPS=12000")
+                && text.contains("DALKER_MAX_WIDTH=0"),
+            "{text}"
+        );
+        for bad in [
+            json!({"fps": 121}),
+            json!({"fps": "fast"}),
+            json!({"bitrate_kbps": 100}),
+            json!({"max_width": 100}),
+        ] {
+            let (s, v) = call(&app, "POST", "/api/settings/stream", bad.clone()).await;
+            assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}: {v}");
+        }
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("DALKER_FPS=60"),
+            "unchanged"
+        );
+
         // Tokens: create, copy again, change, revoke.
         let (s, v) = call(
             &app,
@@ -823,6 +917,7 @@ mod tests {
         assert!(v["screen_sharing"].is_null(), "a host-only setting");
         for (uri, body) in [
             ("/api/settings/web", json!({"enabled": false})),
+            ("/api/settings/stream", json!({"fps": 60})),
             ("/api/settings/mcp", json!({"enabled": true})),
             (
                 "/api/settings/password",

@@ -98,6 +98,7 @@ function render(s) {
       : `${ICON.alert}<span>No password: nobody can sign in</span>`;
     $("pw-hint").textContent =
       `At least ${s.min_password} characters. Changing it signs out everyone who is connected.`;
+    renderStream(s.stream);
     renderSharing(s.screen_sharing);
   }
 
@@ -207,6 +208,69 @@ function pickAddress(urls) {
 function isLocal(host) {
   return host === "127.0.0.1" || host === "::1";
 }
+
+// ---------------------------------------------------------------- stream limits
+
+// The most frame rate and bitrate every viewer gets, and the width wider screens are scaled
+// down to (0 = full size). The running agent applies them to open streams too.
+const STREAM = [["stream-fps", "fps"], ["stream-bitrate", "bitrate_kbps"], ["stream-width", "max_width"]];
+let streamDirty = false;
+
+function renderStream(st) {
+  if (!st) return;
+  const d = st.default;
+  $("stream-default").textContent = `Default: ${d.fps} fps · ${d.bitrate_kbps} kbit/s · ${d.max_width} px`;
+  for (const [id, key] of STREAM) {
+    if (!streamDirty && !STREAM.some(([i]) => document.activeElement === $(i))) $(id).value = String(st[key]);
+  }
+  validateStream();
+}
+
+function streamValues() {
+  const out = {};
+  for (const [id, key] of STREAM) {
+    const v = $(id).value.trim();
+    out[key] = /^\d{1,6}$/.test(v) ? Number(v) : null;
+  }
+  return out;
+}
+
+function validateStream() {
+  const st = state && state.stream;
+  if (!st) return false;
+  const v = streamValues();
+  const r = st.range;
+  const within = (x, [lo, hi]) => x !== null && x >= lo && x <= hi;
+  let err = "", bad = "";
+  if (!within(v.fps, r.fps)) [bad, err] = ["stream-fps", `Frame rate: choose from ${r.fps[0]} to ${r.fps[1]} fps.`];
+  else if (!within(v.bitrate_kbps, r.bitrate_kbps)) [bad, err] = ["stream-bitrate", `Bitrate: choose from ${r.bitrate_kbps[0]} to ${r.bitrate_kbps[1]} kbit/s.`];
+  else if (v.max_width !== 0 && !within(v.max_width, r.max_width)) {
+    [bad, err] = ["stream-width", `Max width: 0 for full size, or from ${r.max_width[0]} to ${r.max_width[1]} pixels.`];
+  }
+  $("stream-error").textContent = err;
+  for (const [id] of STREAM) $(id).classList.toggle("invalid", id === bad);
+  const same = STREAM.every(([, key]) => v[key] === st[key]);
+  $("stream-apply").disabled = !!err || same;
+  return !err;
+}
+
+for (const [id] of STREAM) {
+  $(id).addEventListener("input", () => { streamDirty = true; validateStream(); });
+  $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") $("stream-apply").click(); });
+}
+$("stream-apply").addEventListener("click", async () => {
+  if (!validateStream()) return;
+  const v = streamValues();
+  $("stream-apply").disabled = true;
+  try {
+    const data = await api("POST", "/api/settings/stream", v);
+    streamDirty = false;
+    applyResult(data, `Viewers now get up to ${v.fps} fps at up to ${v.bitrate_kbps} kbit/s. Open streams switch within a few seconds.`);
+  } catch (err) {
+    $("stream-error").textContent = err.message;
+    validateStream();
+  }
+});
 
 // KDE Plasma, sway and other portal desktops ask the person at the computer to allow
 // screen sharing. Doing it here, ahead of time, spares a remote viewer a black screen.

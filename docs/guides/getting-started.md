@@ -171,7 +171,9 @@ Open **Dalker Settings** on the host again to:
 
 - turn browser access off (everyone watching is disconnected at once);
 - change the port (8742 by default) and click **Apply**;
-- change the access password.
+- change the access password;
+- raise or lower the stream limits: the most frame rate (30 fps by default, up to 120), bitrate and
+  picture width every viewer gets.
 
 Changes apply within a few seconds without a restart.
 

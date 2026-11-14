@@ -33,6 +33,13 @@ DALKER_UDP_PORT=8443
 # Extra address(es) to advertise as ICE host candidates (NAT 1:1, port forwards), comma-separated
 DALKER_PUBLIC_IP=203.0.113.10
 
+# Stream limits for every viewer (Dalker Settings writes these): the most frame rate (1-120),
+# the H.264 bitrate in kbit/s (250-100000), and the width wider screens are scaled down to
+# (0 = always native). Viewers can choose less in their own settings.
+DALKER_FPS=30
+DALKER_BITRATE_KBPS=6000
+DALKER_MAX_WIDTH=1920
+
 # Capture backend: native (Windows: DXGI; Linux: GNOME screen cast, the xdg-desktop-portal screen
 # cast on other Wayland desktops, or X11; macOS: ScreenCaptureKit) or mock (test pattern)
 DALKER_CAPTURE=native
@@ -40,8 +47,9 @@ DALKER_CAPTURE=native
 
 The easiest way to change the main settings is the host's **Dalker Settings** window (below). A
 running agent follows the config file: within a few seconds it picks up a new password (and signs
-every viewer out), turns the web and MCP servers on or off, moves them to a new port, and applies
-new, changed or revoked MCP tokens, without a restart. Settings given on the command line or as
+every viewer out), turns the web and MCP servers on or off, moves them to a new port, applies new
+stream limits (open streams too), and applies new, changed or revoked MCP tokens, without a
+restart. Settings given on the command line or as
 environment variables can't be changed that way; other keys need a service restart.
 
 ### Dalker Settings (host)
@@ -57,26 +65,28 @@ WebKitGTK on Ubuntu) and served by the window's own process on a loopback port b
 each launch, so it works even while the web server is off. The same page, limited to the MCP tokens,
 is the web client's **AI agents** panel (robot button in the toolbar).
 
-- **Web remote access:** turn the web server on or off, its HTTP port (default 8742), and the access
-  password (shown or hidden while typing; only an Argon2 hash is stored).
+- **Web remote access:** turn the web server on or off, its HTTP port (default 8742), the access
+  password (shown or hidden while typing; only an Argon2 hash is stored), and the stream limits
+  (`DALKER_FPS`, `DALKER_BITRATE_KBPS`, `DALKER_MAX_WIDTH`).
 - **AI agents (MCP):** turn the MCP server on or off, its port (default 8743), and its access tokens:
   generate one, copy it again at any time, copy a ready **MCP config** (JSON for Claude Code,
   Cursor/LM Studio/Windsurf or Claude Desktop), switch its remote control (screenshots, mouse,
   keyboard) and clipboard permissions on and off without a new token, or revoke it.
-- Switches and token changes take effect at once; ports and the password have their own **Apply**
-  button. The footer shows whether each server is running.
+- Switches and token changes take effect at once; ports, the password and the stream limits have
+  their own **Apply** button. The footer shows whether each server is running.
 - In the web client's AI agents panel, viewers signed in with the access password can create, copy,
   change and revoke MCP tokens. The password, the switches and the ports can only be changed on the
   host.
 
-The stream and session options are flags only:
+Stream and session options. The stream limits can also be set in the config file (and in Dalker
+Settings); a flag wins over the file, and the agent then doesn't follow the file for that limit:
 
 | Flag | Default | Purpose |
 |------|---------|---------|
 | `--capture native\|mock` | `native` | `mock` = synthetic test pattern, input drawn on it |
-| `--fps` | `30` | max frame rate (1–120) |
-| `--bitrate-kbps` | `6000` | H.264 target bitrate |
-| `--max-width` | `1920` | downscale wider screens; `0` = always native |
+| `--fps` (`DALKER_FPS`) | `30` | max frame rate (1–120) |
+| `--bitrate-kbps` (`DALKER_BITRATE_KBPS`) | `6000` | H.264 target bitrate in kbit/s, the most a viewer gets (250–100000) |
+| `--max-width` (`DALKER_MAX_WIDTH`) | `1920` | downscale wider screens; `0` = always native |
 | `--udp-port` | ephemeral | single UDP port for all WebRTC traffic |
 | `--public-ip` | – | extra host ICE candidate (repeatable); with `--udp-port` and no `--public-ip`, a `stun:` server is asked for it at startup, every 10 minutes and after a viewer fails to connect |
 | `--stun` | – | STUN/TURN server URL for non-LAN use (repeatable) |

@@ -788,6 +788,13 @@ function onHostMessage(data) {
     renderClip();
   } else if (msg.type === "settings_applied") {
     applied = msg;
+    // The host's limits can change while connected (Dalker Settings on the host). The choices
+    // here are shares of them, so ask again for the same shares of the new limits.
+    const h = hostStream();
+    if (h && msg.max_fps && (h.max_fps !== msg.max_fps || h.max_bitrate_kbps !== msg.max_bitrate_kbps)) {
+      Object.assign(h, { max_fps: msg.max_fps, max_bitrate_kbps: msg.max_bitrate_kbps, max_downscale: msg.max_downscale });
+      sendStreamSettings();
+    }
     renderSettings();
   } else if (msg.type === "session_end") {
     // The host is about to close the session; the channel closes next (see sessionEnded).

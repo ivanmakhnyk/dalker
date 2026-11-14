@@ -3,6 +3,8 @@ use std::net::SocketAddr;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+use crate::stream;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OnOff {
     On,
@@ -83,16 +85,19 @@ pub struct Cli {
     #[arg(long, default_value_t = 720)]
     pub mock_height: u32,
 
-    /// Maximum frames per second sent to viewers.
-    #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=120))]
+    /// Maximum frames per second sent to viewers (1-120).
+    #[arg(long, env = stream::KEY_FPS, default_value_t = stream::DEFAULT_FPS,
+          value_parser = stream::parse_fps)]
     pub fps: u32,
 
-    /// Target H.264 bitrate in kbit/s.
-    #[arg(long, default_value_t = 6000)]
+    /// Target H.264 bitrate in kbit/s, the most a viewer gets (250-100000).
+    #[arg(long, env = stream::KEY_BITRATE_KBPS, default_value_t = stream::DEFAULT_BITRATE_KBPS,
+          value_parser = stream::parse_bitrate_kbps)]
     pub bitrate_kbps: u32,
 
     /// Downscale screens wider than this (integer factor). 0 = always native.
-    #[arg(long, default_value_t = 1920)]
+    #[arg(long, env = stream::KEY_MAX_WIDTH, default_value_t = stream::DEFAULT_MAX_WIDTH,
+          value_parser = stream::parse_max_width)]
     pub max_width: u32,
 
     /// Concurrent viewers allowed.
