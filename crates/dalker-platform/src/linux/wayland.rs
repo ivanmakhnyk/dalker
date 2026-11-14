@@ -472,6 +472,8 @@ pub fn outputs() -> Result<Vec<OutputInfo>, String> {
 /// connection and the frame with it, so it can never be left behind.
 pub struct LayerBorder {
     active: Arc<AtomicBool>,
+    /// Every monitor's strips have a buffer attached and committed.
+    shown: Arc<AtomicBool>,
     alive: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -480,10 +482,12 @@ pub struct LayerBorder {
 impl LayerBorder {
     pub fn new() -> Result<Self, String> {
         let active = Arc::new(AtomicBool::new(false));
+        let shown = Arc::new(AtomicBool::new(false));
         let alive = Arc::new(AtomicBool::new(true));
         let stop = Arc::new(AtomicBool::new(false));
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
         let (a, l, s) = (Arc::clone(&active), Arc::clone(&alive), Arc::clone(&stop));
+        let v = Arc::clone(&shown);
         let thread = std::thread::Builder::new()
             .name("dalker-border".into())
             .spawn(move || {
@@ -505,14 +509,16 @@ impl LayerBorder {
                     return;
                 }
                 let _ = ready_tx.send(Ok(()));
-                if let Err(e) = run_border(&conn, &mut queue, &mut state, &a, &s) {
+                if let Err(e) = run_border(&conn, &mut queue, &mut state, &a, &v, &s) {
                     tracing::warn!("red border: {e}");
                 }
+                v.store(false, Ordering::SeqCst);
                 l.store(false, Ordering::SeqCst);
             })
             .map_err(|e| format!("spawn border thread: {e}"))?;
         let mut border = Self {
             active,
+            shown,
             alive,
             stop,
             thread: Some(thread),
@@ -534,11 +540,13 @@ fn run_border(
     queue: &mut EventQueue<State>,
     state: &mut State,
     active: &AtomicBool,
+    shown: &AtomicBool,
     stop: &AtomicBool,
 ) -> Result<(), String> {
     let qh = queue.handle();
     loop {
         if stop.load(Ordering::SeqCst) {
+            shown.store(false, Ordering::SeqCst);
             state.hide();
             let _ = conn.flush();
             return Ok(());
@@ -550,8 +558,11 @@ fn run_border(
         }
         if active.load(Ordering::SeqCst) {
             state.show(&qh);
-        } else if !state.strips.is_empty() {
-            state.hide();
+        } else {
+            shown.store(false, Ordering::SeqCst);
+            if !state.strips.is_empty() {
+                state.hide();
+            }
         }
         queue
             .flush()
@@ -573,6 +584,13 @@ fn run_border(
         queue
             .dispatch_pending(state)
             .map_err(|e| format!("Wayland connection lost: {e}"))?;
+        // Drawn strips were committed on an earlier pass and the compositor has answered since.
+        shown.store(
+            active.load(Ordering::SeqCst)
+                && !state.strips.is_empty()
+                && state.strips.iter().all(|s| s.drawn != (0, 0)),
+            Ordering::SeqCst,
+        );
     }
 }
 
@@ -587,6 +605,10 @@ impl ViewerIndicator for LayerBorder {
 
     fn healthy(&self) -> bool {
         self.alive.load(Ordering::SeqCst)
+    }
+
+    fn shown(&self) -> bool {
+        self.shown.load(Ordering::SeqCst)
     }
 }
 

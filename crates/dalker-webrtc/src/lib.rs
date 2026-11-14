@@ -175,6 +175,50 @@ impl SessionEnd {
 /// How long to wait for each STUN server's answer in [`discover_public_ip`].
 const STUN_TIMEOUT: Duration = Duration::from_secs(3);
 
+fn has_stun(urls: &[String]) -> bool {
+    urls.iter().any(|u| u.starts_with("stun:"))
+}
+
+/// Asks the STUN server again every [`STUN_REFRESH`], or when a viewer failed to connect,
+/// and rebuilds the API for new sessions when the public IP changed. Running sessions keep
+/// theirs. Ends with the engine.
+async fn follow_public_ip(
+    stun: std::sync::Weak<PublicIp>,
+    api: std::sync::Weak<std::sync::RwLock<Arc<API>>>,
+    settings: ApiSettings,
+) {
+    let mut last_check = tokio::time::Instant::now();
+    loop {
+        let Some(s) = stun.upgrade() else { return };
+        let failed = tokio::select! {
+            _ = tokio::time::sleep(STUN_REFRESH) => false,
+            _ = s.check.notified() => true,
+        };
+        if failed {
+            // Many viewers failing at once ask once.
+            tokio::time::sleep_until(last_check + STUN_RETRY_MIN).await;
+        }
+        last_check = tokio::time::Instant::now();
+        let Some(ip) = discover_public_ip(&s.ice_servers).await else {
+            continue;
+        };
+        if *s.current.lock().unwrap() == Some(ip) {
+            continue;
+        }
+        let Some(api) = api.upgrade() else { return };
+        match settings.build(&[ip.to_string()]) {
+            Ok(new) => {
+                let old = s.current.lock().unwrap().replace(ip);
+                tracing::info!(?old, new = %ip, "public IP changed; new viewers get the new address");
+                *api.write().unwrap() = Arc::new(new);
+            }
+            Err(e) => tracing::warn!(
+                "public IP changed to {ip}, but the WebRTC API could not be rebuilt: {e:#}"
+            ),
+        }
+    }
+}
+
 /// Asks the first answering `stun:` server in `urls` for this host's public IPv4 address.
 /// `None` (logged) when there is no STUN server or none answers.
 async fn discover_public_ip(urls: &[String]) -> Option<std::net::IpAddr> {
@@ -242,16 +286,23 @@ async fn stun_binding(host: &str) -> Result<std::net::IpAddr> {
     }
 }
 
-/// Shared WebRTC API object; one per process.
-pub struct WebRtcEngine {
-    api: API,
-    config: WebRtcConfig,
-    next_id: AtomicU64,
-    files: Option<FileAccessFactory>,
+/// How often the STUN-discovered public IP is checked again (see [`PublicIp`]).
+const STUN_REFRESH: Duration = Duration::from_secs(10 * 60);
+/// The soonest a failed viewer triggers another STUN check.
+const STUN_RETRY_MIN: Duration = if cfg!(test) {
+    Duration::from_millis(50)
+} else {
+    Duration::from_secs(30)
+};
+
+/// How the engine's [`API`] is built. NAT 1:1 IPs can't be changed on a live `API`, so a new
+/// public IP means a new one, built from the same settings (and the same UDP mux).
+struct ApiSettings {
+    mux: Option<Arc<UDPMuxDefault>>,
 }
 
-impl WebRtcEngine {
-    pub async fn new(config: WebRtcConfig) -> Result<Self> {
+impl ApiSettings {
+    fn build(&self, public_ips: &[String]) -> Result<API> {
         let mut media = MediaEngine::default();
         media.register_default_codecs()?;
         let registry = register_default_interceptors(Registry::new(), &mut media)?;
@@ -261,39 +312,13 @@ impl WebRtcEngine {
         // its host candidates and shows up as peer-reflexive), and the mDNS socket logs a
         // warning for every LAN packet it cannot parse.
         settings.set_ice_multicast_dns_mode(MulticastDnsMode::Disabled);
-        // A port another program holds must not take the whole agent down (the sign-in page
-        // too): fall back to ephemeral ports, which still work on the LAN, and say so loudly.
-        let mut udp_port = None;
-        if let Some(port) = config.udp_port {
-            match tokio::net::UdpSocket::bind(("0.0.0.0", port)).await {
-                Ok(socket) => {
-                    tracing::info!("ICE UDP mux listening on 0.0.0.0:{port}");
-                    settings.set_udp_network(UDPNetwork::Muxed(UDPMuxDefault::new(
-                        UDPMuxParams::new(socket),
-                    )));
-                    settings.set_network_types(vec![NetworkType::Udp4]);
-                    udp_port = Some(port);
-                }
-                Err(e) => tracing::error!(
-                    "can't use UDP port {port} for WebRTC ({e}); another program may be using it. \
-                     Using random UDP ports instead: viewers on this network can still connect, \
-                     but a port forward to {port} won't work. Free the port or change \
-                     DALKER_UDP_PORT, then restart Dalker."
-                ),
-            }
-        }
-        // With a single UDP port webrtc-ice gathers no server-reflexive candidates, so the
-        // STUN servers would go unused: ask one for the public IP here and advertise it as
-        // the host candidate instead, as if it had been given with --public-ip.
-        let mut public_ips = config.public_ips.clone();
-        if udp_port.is_some() && public_ips.is_empty() {
-            if let Some(ip) = discover_public_ip(&config.ice_servers).await {
-                public_ips.push(ip.to_string());
-            }
+        if let Some(mux) = &self.mux {
+            settings.set_udp_network(UDPNetwork::Muxed(Arc::clone(mux) as _));
+            settings.set_network_types(vec![NetworkType::Udp4]);
         }
         if !public_ips.is_empty() {
-            settings.set_nat_1to1_ips(public_ips.clone(), RTCIceCandidateType::Host);
-            if udp_port.is_some() {
+            settings.set_nat_1to1_ips(public_ips.to_vec(), RTCIceCandidateType::Host);
+            if self.mux.is_some() {
                 // With a mux every local IP maps to the same public ip:port, and
                 // webrtc-ice drops the duplicates by closing them — which closes
                 // the shared muxed conn. Gather from a single local IPv4 only:
@@ -310,13 +335,84 @@ impl WebRtcEngine {
             }
         }
 
-        let api = APIBuilder::new()
+        Ok(APIBuilder::new()
             .with_media_engine(media)
             .with_interceptor_registry(registry)
             .with_setting_engine(settings)
-            .build();
+            .build())
+    }
+}
+
+/// The public IP asked of a STUN server (single UDP port, no `--public-ip`). It is asked
+/// again every [`STUN_REFRESH`] and after a viewer fails to connect, so a home connection
+/// whose address changes keeps working without a restart.
+struct PublicIp {
+    ice_servers: Vec<String>,
+    current: std::sync::Mutex<Option<std::net::IpAddr>>,
+    /// A viewer failed to connect: check now (rate limited by [`STUN_RETRY_MIN`]).
+    check: tokio::sync::Notify,
+}
+
+/// Shared WebRTC API object; one per process.
+pub struct WebRtcEngine {
+    /// Replaced (for new sessions only) when the public IP changes.
+    api: Arc<std::sync::RwLock<Arc<API>>>,
+    stun: Option<Arc<PublicIp>>,
+    config: WebRtcConfig,
+    next_id: AtomicU64,
+    files: Option<FileAccessFactory>,
+}
+
+impl WebRtcEngine {
+    pub async fn new(config: WebRtcConfig) -> Result<Self> {
+        // A port another program holds must not take the whole agent down (the sign-in page
+        // too): fall back to ephemeral ports, which still work on the LAN, and say so loudly.
+        let mut mux = None;
+        if let Some(port) = config.udp_port {
+            match tokio::net::UdpSocket::bind(("0.0.0.0", port)).await {
+                Ok(socket) => {
+                    tracing::info!("ICE UDP mux listening on 0.0.0.0:{port}");
+                    mux = Some(UDPMuxDefault::new(UDPMuxParams::new(socket)));
+                }
+                Err(e) => tracing::error!(
+                    "can't use UDP port {port} for WebRTC ({e}); another program may be using it. \
+                     Using random UDP ports instead: viewers on this network can still connect, \
+                     but a port forward to {port} won't work. Free the port or change \
+                     DALKER_UDP_PORT, then restart Dalker."
+                ),
+            }
+        }
+        let muxed = mux.is_some();
+        let settings = ApiSettings { mux };
+        // With a single UDP port webrtc-ice gathers no server-reflexive candidates, so the
+        // STUN servers would go unused: ask one for the public IP here and advertise it as
+        // the host candidate instead, as if it had been given with --public-ip.
+        let mut public_ips = config.public_ips.clone();
+        let mut stun = None;
+        if muxed && public_ips.is_empty() && has_stun(&config.ice_servers) {
+            let ip = discover_public_ip(&config.ice_servers).await;
+            if let Some(ip) = ip {
+                public_ips.push(ip.to_string());
+            }
+            stun = Some(Arc::new(PublicIp {
+                ice_servers: config.ice_servers.clone(),
+                current: std::sync::Mutex::new(ip),
+                check: tokio::sync::Notify::new(),
+            }));
+        }
+        let api = Arc::new(std::sync::RwLock::new(Arc::new(
+            settings.build(&public_ips)?,
+        )));
+        if let Some(stun) = &stun {
+            tokio::spawn(follow_public_ip(
+                Arc::downgrade(stun),
+                Arc::downgrade(&api),
+                settings,
+            ));
+        }
         Ok(Self {
             api,
+            stun,
             config,
             next_id: AtomicU64::new(1),
             files: None,
@@ -352,7 +448,9 @@ impl WebRtcEngine {
             },
             ..Default::default()
         };
-        let pc = Arc::new(self.api.new_peer_connection(rtc_config).await?);
+        let api = Arc::clone(&self.api.read().unwrap());
+        let pc = Arc::new(api.new_peer_connection(rtc_config).await?);
+        drop(api);
 
         // Video track. Added before applying the offer so it binds to the
         // browser's recvonly video transceiver.
@@ -502,8 +600,14 @@ impl WebRtcEngine {
                 .config
                 .disconnect_grace
                 .unwrap_or(DEFAULT_DISCONNECT_GRACE);
+            let stun = self.stun.clone();
             pc.on_peer_connection_state_change(Box::new(move |state| {
                 tracing::info!(session = id, ?state, "peer connection state");
+                if state == RTCPeerConnectionState::Failed {
+                    if let Some(stun) = &stun {
+                        stun.check.notify_one();
+                    }
+                }
                 match state {
                     RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => end.end(),
                     // Often only for a moment (Wi-Fi roaming, a few lost consent checks): give
@@ -562,6 +666,7 @@ impl WebRtcEngine {
                 .config
                 .connect_timeout
                 .unwrap_or(DEFAULT_CONNECT_TIMEOUT);
+            let stun = self.stun.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(limit).await;
                 if let Some(pc) = weak.upgrade() {
@@ -569,6 +674,9 @@ impl WebRtcEngine {
                         && pc.connection_state() != RTCPeerConnectionState::Connected
                     {
                         tracing::info!(session = id, ?limit, "viewer never connected; dropping it");
+                        if let Some(stun) = &stun {
+                            stun.check.notify_one();
+                        }
                         let _ = pc.close().await;
                     }
                 }
@@ -738,6 +846,71 @@ fn encode_loop(
 #[cfg(test)]
 mod tests {
     use super::EndReason;
+    use super::*;
+
+    /// A STUN server on loopback that reports whatever address `ip` holds.
+    async fn fake_stun(ip: Arc<std::sync::Mutex<std::net::IpAddr>>) -> u16 {
+        use webrtc::stun::message::{Message, Setter, BINDING_SUCCESS};
+        use webrtc::stun::xoraddr::XorMappedAddress;
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = socket.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 1500];
+            while let Ok((n, from)) = socket.recv_from(&mut buf).await {
+                let mut req = Message::new();
+                req.raw = buf[..n].to_vec();
+                if req.decode().is_err() {
+                    continue;
+                }
+                let mut resp = Message::new();
+                resp.transaction_id = req.transaction_id;
+                resp.typ = BINDING_SUCCESS;
+                resp.write_header();
+                let mapped = XorMappedAddress {
+                    ip: *ip.lock().unwrap(),
+                    port: 4242,
+                };
+                mapped.add_to(&mut resp).unwrap();
+                let _ = socket.send_to(&resp.raw, from).await;
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn a_failed_viewer_refreshes_a_changed_public_ip() {
+        let first: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+        let second: std::net::IpAddr = "198.51.100.9".parse().unwrap();
+        let reported = Arc::new(std::sync::Mutex::new(first));
+        let port = fake_stun(Arc::clone(&reported)).await;
+        let engine = WebRtcEngine::new(WebRtcConfig {
+            ice_servers: vec![format!("stun:127.0.0.1:{port}")],
+            udp_port: Some(0),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let stun = engine.stun.clone().expect("STUN refresh is on");
+        assert_eq!(*stun.current.lock().unwrap(), Some(first));
+        let before = Arc::clone(&engine.api.read().unwrap());
+
+        // Same address: nothing is rebuilt.
+        stun.check.notify_one();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(Arc::ptr_eq(&before, &engine.api.read().unwrap()));
+
+        *reported.lock().unwrap() = second;
+        stun.check.notify_one();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while *stun.current.lock().unwrap() != Some(second) {
+            assert!(Instant::now() < deadline, "public IP was not refreshed");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            !Arc::ptr_eq(&before, &engine.api.read().unwrap()),
+            "new API for new viewers"
+        );
+    }
 
     #[test]
     fn end_reason_messages() {

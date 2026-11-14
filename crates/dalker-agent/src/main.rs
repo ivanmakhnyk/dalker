@@ -16,6 +16,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod cli;
+mod config_watch;
 mod listeners;
 mod settings;
 
@@ -502,16 +503,19 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
     let (display_tx, display_rx) = watch::channel::<Option<DisplayInfo>>(None);
     let (control_tx, control_rx) = mpsc::unbounded_channel::<(SessionId, ControlMessage)>();
 
-    // Mock sources show no real screen, so they need no border; native capture is
-    // gated on the border being up (see below).
-    let border_ready = Arc::new(AtomicBool::new(cli.capture == CaptureMode::Mock));
+    // Mock sources show no real screen, so they need no border; native capture runs only
+    // while a viewer is connected and the border is actually on screen (see below).
+    let mock = cli.capture == CaptureMode::Mock;
+    let border_ready = Arc::new(AtomicBool::new(mock));
+    let border_shown = Arc::new(AtomicBool::new(mock));
+    let active = Arc::new(AtomicUsize::new(0));
     spawn_capture_thread(
         capture_factory,
         frame_tx.clone(),
         display_tx,
-        Arc::clone(&border_ready),
+        Arc::clone(&active),
+        Arc::clone(&border_shown),
     )?;
-    let active = Arc::new(AtomicUsize::new(0));
     let clipboard_factory: ClipboardFactory = match cli.capture {
         CaptureMode::Mock => {
             let clip = MockClipboard::new();
@@ -594,6 +598,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
     if cli.capture == CaptureMode::Native {
         let active = Arc::clone(&signaling.active);
         let ready = Arc::clone(&border_ready);
+        let shown = Arc::clone(&border_shown);
         let disconnect_all = Arc::clone(&disconnect_all);
         tokio::spawn(async move {
             let mut indicator: Option<Box<dyn dalker_core::ViewerIndicator>> = None;
@@ -632,6 +637,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                 }
                 if indicator.as_ref().is_some_and(|i| !i.healthy()) {
                     tracing::warn!("remote-session border went away; the desktop is not served until it is back");
+                    shown.store(false, Ordering::SeqCst);
                     ready.store(false, Ordering::SeqCst);
                     indicator = None;
                     last_err.clear();
@@ -642,20 +648,24 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                         i.set_active(on);
                         last_on = on;
                     }
+                    // Frames flow only once the backend reports the border drawn.
+                    shown.store(on && i.shown(), Ordering::SeqCst);
                     if on && i.take_disconnect_request() {
                         disconnect_all();
                     }
                 }
-                let pause = if indicator.is_some() { 100 } else { 1000 };
+                let pause = if indicator.is_some() { 50 } else { 1000 };
                 tokio::time::sleep(Duration::from_millis(pause)).await;
             }
         });
     }
 
+    // One reader for the config file: the password, the MCP tokens and the listeners follow it.
+    let config = config_watch::spawn(cli::config_path());
     {
         let signaling = Arc::clone(&signaling);
         tokio::spawn(follow_password_changes(
-            cli::config_path(),
+            config.clone(),
             Arc::clone(&auth),
             move || signaling.end_streams(EndReason::PasswordChanged),
         ));
@@ -675,14 +685,15 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
         start_menu_bar(&status, &exit, Arc::clone(&disconnect_all))
     };
 
-    let config_file = followed_config_file();
-    if let Some(path) = &config_file {
-        // Tokens given through the environment can't change while the agent runs.
-        tokio::spawn(follow_mcp_tokens(path.clone(), mcp.clone()));
+    // Without a readable file at start, tokens and listeners come from the environment and
+    // can't change while the agent runs.
+    let follow_file = followed_config_file().is_some();
+    if follow_file {
+        tokio::spawn(follow_mcp_tokens(config.clone(), mcp.clone()));
     }
     let (wanted_tx, wanted_rx) = watch::channel(startup.wanted());
-    if let Some(path) = config_file {
-        tokio::spawn(listeners::follow_config(path, startup, wanted_tx));
+    if follow_file {
+        tokio::spawn(listeners::follow_config(config, startup, wanted_tx));
     }
     let (stop_tx, stop_rx) = watch::channel(false);
     let web = listeners::WebParts {
@@ -767,14 +778,14 @@ fn web_settings_api(auth: &Arc<Authenticator>, status: &Arc<listeners::Status>) 
 /// `sign_out` to end the running streams. Only changes to the file count, so a password given
 /// on the command line stays until the file changes.
 async fn follow_password_changes(
-    path: std::path::PathBuf,
+    mut config: watch::Receiver<config_watch::Snapshot>,
     auth: Arc<Authenticator>,
     sign_out: impl Fn(),
 ) {
-    let mut seen = cli::read_config_value(&path, "DALKER_PASSWORD_HASH");
-    loop {
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        let now = cli::read_config_value(&path, "DALKER_PASSWORD_HASH");
+    const KEY: &str = "DALKER_PASSWORD_HASH";
+    let mut seen = config_watch::value(&config.borrow_and_update(), KEY).map(str::to_owned);
+    while config.changed().await.is_ok() {
+        let now = config_watch::value(&config.borrow_and_update(), KEY).map(str::to_owned);
         if now == seen {
             continue;
         }
@@ -784,7 +795,7 @@ async fn follow_password_changes(
                     tracing::info!("login password changed on the host; all viewers signed out");
                     sign_out();
                 }
-                Err(e) => tracing::warn!("ignoring the new password in {}: {e:#}", path.display()),
+                Err(e) => tracing::warn!("ignoring the new password in the config file: {e:#}"),
             }
         }
         seen = now;
@@ -894,11 +905,16 @@ fn run_mcp_token(action: &McpTokenCommand, default_path: &std::path::Path) -> Re
 /// The MCP token records in a config file (malformed lines are skipped with a warning).
 fn mcp_tokens_in(path: &std::path::Path) -> Vec<TokenRecord> {
     let text = std::fs::read_to_string(path).unwrap_or_default();
-    cli::parse_config(&text)
-        .into_iter()
+    mcp_tokens_of(&cli::parse_config(&text), path)
+}
+
+/// The MCP token records among a config file's settings (`path` is only for the warnings).
+fn mcp_tokens_of(settings: &[(String, String)], path: &std::path::Path) -> Vec<TokenRecord> {
+    settings
+        .iter()
         .filter(|(k, _)| k.starts_with(tokens::CONFIG_KEY_PREFIX))
         .filter_map(|(k, v)| {
-            let r = TokenRecord::from_config(&k, &v);
+            let r = TokenRecord::from_config(k, v);
             if r.is_none() {
                 tracing::warn!(
                     "ignoring malformed MCP token line {k} in {}",
@@ -976,11 +992,11 @@ fn mcp_server(cli: &Cli, agent: &Arc<Agent>) -> McpServer {
 
 /// Picks up tokens created or revoked on the host (`mcp-token`) without a restart; a revoked
 /// token's sessions end at once.
-async fn follow_mcp_tokens(path: std::path::PathBuf, server: McpServer) {
+async fn follow_mcp_tokens(mut config: watch::Receiver<config_watch::Snapshot>, server: McpServer) {
     let mut seen = server.tokens().records();
-    loop {
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        let mut now = mcp_tokens_in(&path);
+    while config.changed().await.is_ok() {
+        let snapshot = config.borrow_and_update().clone();
+        let mut now = mcp_tokens_of(&snapshot, &cli::config_path());
         now.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)));
         if now != seen {
             tracing::info!(tokens = now.len(), "MCP tokens changed on the host");
@@ -1243,13 +1259,26 @@ impl SignalingHandler for Agent {
 
 // ------------------------------------------------------------------ capture
 
+/// Desktop frames are captured only while a viewer holds a slot and the red border is on screen.
+/// The receiver count alone is not enough: an ended MCP session's tool call can still hold one.
+fn may_capture(
+    frames: &watch::Sender<Option<Arc<RawFrame>>>,
+    viewers: &AtomicUsize,
+    border_shown: &AtomicBool,
+) -> bool {
+    frames.receiver_count() > 0
+        && viewers.load(Ordering::SeqCst) > 0
+        && border_shown.load(Ordering::SeqCst)
+}
+
 type CaptureFactory = Box<dyn Fn() -> Result<Box<dyn ScreenCapturer>, CaptureError> + Send>;
 
 fn spawn_capture_thread(
     factory: CaptureFactory,
     frames: watch::Sender<Option<Arc<RawFrame>>>,
     display: watch::Sender<Option<DisplayInfo>>,
-    border_ready: Arc<AtomicBool>,
+    viewers: Arc<AtomicUsize>,
+    border_shown: Arc<AtomicBool>,
 ) -> Result<()> {
     std::thread::Builder::new()
         .name("dalker-capture".into())
@@ -1258,7 +1287,7 @@ fn spawn_capture_thread(
             loop {
                 // Idle: release the capture backend entirely. Recreating it on
                 // demand also guarantees DXGI hands us a fresh full frame.
-                if frames.receiver_count() == 0 || !border_ready.load(Ordering::SeqCst) {
+                if !may_capture(&frames, &viewers, &border_shown) {
                     if capturer.take().is_some() {
                         tracing::info!("no viewers; capture paused");
                     }
@@ -1281,6 +1310,8 @@ fn spawn_capture_thread(
                     },
                 };
                 match cap.next_frame(Duration::from_millis(100)) {
+                    // The border may have gone off while this frame was being grabbed.
+                    Ok(Some(_)) if !may_capture(&frames, &viewers, &border_shown) => {}
                     Ok(Some(frame)) => {
                         let info = frame.display_info();
                         if *display.borrow() != Some(info) {
@@ -1391,6 +1422,29 @@ const CLIPBOARD_POLL: Duration = Duration::from_millis(250);
 /// How long to wait before opening the clipboard again after it failed.
 const CLIPBOARD_RETRY: Duration = Duration::from_secs(5);
 
+/// Calls `op` again (up to four more times, 50 ms apart) while another program holds the
+/// clipboard.
+fn retry_busy<T>(mut op: impl FnMut() -> Result<T, ClipboardError>) -> Result<T, ClipboardError> {
+    let mut result = op();
+    for _ in 0..4 {
+        let Err(ClipboardError::Busy(_)) = &result else {
+            break;
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        result = op();
+    }
+    result
+}
+
+/// Line ends as the browser uses them; Windows apps put CRLF on the clipboard.
+fn browser_line_ends(text: String) -> String {
+    if text.contains('\r') {
+        text.replace("\r\n", "\n")
+    } else {
+        text
+    }
+}
+
 /// Runs the host's clipboard on its own thread (Windows ties it to one) and returns where to
 /// send requests (text a viewer copied, a read). While viewers are connected, every change of
 /// the host's text is published on `state`; what was copied before they connected is not.
@@ -1450,45 +1504,21 @@ fn spawn_clipboard_thread(
                             .reason
                             .clone()
                             .unwrap_or_else(|| "the host's clipboard is not available".into())),
-                        Some(c) => {
-                            let mut result = c.get_text();
-                            for _ in 0..4 {
-                                let Err(ClipboardError::Busy(_)) = &result else {
-                                    break;
-                                };
-                                std::thread::sleep(Duration::from_millis(50));
-                                result = c.get_text();
+                        Some(c) => match retry_busy(|| c.get_text()) {
+                            Ok(t) => Ok(t.map(browser_line_ends)),
+                            Err(ClipboardError::Busy(why)) => Err(why),
+                            Err(ClipboardError::Failed(why)) => {
+                                fail(&mut clip, &mut next_open, why.clone());
+                                Err(why)
                             }
-                            match result {
-                                Ok(t) => Ok(t.map(|t| {
-                                    if t.contains('\r') {
-                                        t.replace("\r\n", "\n")
-                                    } else {
-                                        t
-                                    }
-                                })),
-                                Err(ClipboardError::Busy(why)) => Err(why),
-                                Err(ClipboardError::Failed(why)) => {
-                                    fail(&mut clip, &mut next_open, why.clone());
-                                    Err(why)
-                                }
-                            }
-                        }
+                        },
                     };
                     let _ = reply.send(result);
                     continue;
                 }
                 if let Some(ClipboardRequest::Set(text, done)) = request {
                     if let Some(c) = clip.as_mut() {
-                        let mut result = c.set_text(&text);
-                        for _ in 0..4 {
-                            let Err(ClipboardError::Busy(_)) = &result else {
-                                break;
-                            };
-                            std::thread::sleep(Duration::from_millis(50));
-                            result = c.set_text(&text);
-                        }
-                        match result {
+                        match retry_busy(|| c.set_text(&text)) {
                             Ok(()) => {}
                             Err(ClipboardError::Busy(why)) => {
                                 tracing::info!("viewer's clipboard text not applied: {why}")
@@ -1523,14 +1553,7 @@ fn spawn_clipboard_thread(
                     continue;
                 }
                 let text = match c.get_text() {
-                    // Line ends as the browser uses them; Windows apps put CRLF there.
-                    Ok(t) => t.map(|t| {
-                        if t.contains('\r') {
-                            t.replace("\r\n", "\n")
-                        } else {
-                            t
-                        }
-                    }),
+                    Ok(t) => t.map(browser_line_ends),
                     Err(ClipboardError::Busy(_)) => continue,
                     Err(ClipboardError::Failed(why)) => {
                         fail(&mut clip, &mut next_open, why);
@@ -1612,6 +1635,50 @@ fn hostname() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_needs_a_viewer_and_the_border_on_screen() {
+        let (frames, _) = watch::channel::<Option<Arc<RawFrame>>>(None);
+        let viewers = AtomicUsize::new(0);
+        let shown = AtomicBool::new(false);
+        assert!(!may_capture(&frames, &viewers, &shown), "nobody listening");
+
+        // A receiver alone (e.g. a closed MCP session's tool call) doesn't start capture.
+        let rx = frames.subscribe();
+        assert!(!may_capture(&frames, &viewers, &shown));
+        viewers.store(1, Ordering::SeqCst);
+        assert!(
+            !may_capture(&frames, &viewers, &shown),
+            "border not drawn yet"
+        );
+        shown.store(true, Ordering::SeqCst);
+        assert!(may_capture(&frames, &viewers, &shown));
+        viewers.store(0, Ordering::SeqCst);
+        assert!(!may_capture(&frames, &viewers, &shown), "viewer left");
+        drop(rx);
+    }
+
+    #[test]
+    fn clipboard_helpers() {
+        assert_eq!(browser_line_ends("a\r\nb\nc".into()), "a\nb\nc");
+        let mut calls = 0;
+        let r = retry_busy(|| {
+            calls += 1;
+            if calls < 3 {
+                Err(ClipboardError::Busy("held".into()))
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(r.ok(), Some(3));
+        let mut calls = 0;
+        let r: Result<(), _> = retry_busy(|| {
+            calls += 1;
+            Err(ClipboardError::Busy("held".into()))
+        });
+        assert!(r.is_err());
+        assert_eq!(calls, 5, "one try and four retries");
+    }
 
     #[test]
     fn panic_messages_are_read_from_both_payload_kinds() {
