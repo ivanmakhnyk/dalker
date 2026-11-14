@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use dalker_core::ViewerIndicator;
+use dalker_core::{PlatformError, ViewerIndicator};
 use x11rb::connection::Connection;
 use x11rb::protocol::shape::{self, ConnectionExt as _, SK, SO};
 use x11rb::protocol::xproto::{
@@ -31,7 +31,7 @@ pub struct BorderOverlay {
 }
 
 impl BorderOverlay {
-    pub fn new() -> Result<Self, String> {
+    pub fn new() -> Result<Self, PlatformError> {
         let active = Arc::new(AtomicBool::new(false));
         let shown = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
@@ -40,7 +40,7 @@ impl BorderOverlay {
         let thread = std::thread::Builder::new()
             .name("dalker-border".into())
             .spawn(move || run(a, v, s, ready_tx))
-            .map_err(|e| format!("spawn overlay thread: {e}"))?;
+            .map_err(|e| PlatformError::Fatal(format!("spawn overlay thread: {e}")))?;
         match ready_rx.recv_timeout(Duration::from_secs(5)) {
             Ok(Ok(())) => Ok(Self {
                 active,
@@ -48,8 +48,9 @@ impl BorderOverlay {
                 stop,
                 thread: Some(thread),
             }),
-            Ok(Err(e)) => Err(e),
-            Err(_) => Err("overlay thread did not start".into()),
+            // Retried: the X server may not be up yet.
+            Ok(Err(e)) => Err(PlatformError::Transient(e)),
+            Err(_) => Err(PlatformError::Fatal("overlay thread did not start".into())),
         }
     }
 }

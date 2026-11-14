@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use dalker_core::ViewerIndicator;
+use dalker_core::{PlatformError, ViewerIndicator};
 use objc2::rc::Retained;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
@@ -116,8 +116,11 @@ pub struct BorderOverlay {
 impl BorderOverlay {
     /// Creates the (hidden) windows. Needs the AppKit loop on the main thread
     /// ([`super::run_app`]); errors otherwise.
-    pub fn new() -> Result<Self, String> {
-        on_main(create_edges)??;
+    pub fn new() -> Result<Self, PlatformError> {
+        // No screen to draw on (the display asleep or reconfiguring) comes back by itself.
+        on_main(create_edges)
+            .map_err(PlatformError::Fatal)?
+            .map_err(PlatformError::Transient)?;
         Ok(Self {
             healthy: Arc::new(AtomicBool::new(true)),
             shown: Arc::new(AtomicBool::new(false)),

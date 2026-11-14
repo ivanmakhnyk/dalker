@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use bytes::Bytes;
-use dalker_core::FileAccess;
+use dalker_core::{FileAccess, PlatformError};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -60,7 +60,7 @@ const MAX_ENTRIES: usize = 5000;
 
 /// Opens the user that transfers run as. Called on the worker thread, again after a failure
 /// (nobody signed in yet).
-pub type FileAccessFactory = Arc<dyn Fn() -> Result<FileAccess, String> + Send + Sync>;
+pub type FileAccessFactory = Arc<dyn Fn() -> Result<FileAccess, PlatformError> + Send + Sync>;
 
 #[derive(Debug)]
 pub(crate) enum In {
@@ -246,9 +246,14 @@ impl Worker {
                     tracing::info!(user = %a.user, downloads = %a.downloads.display(), "file transfers ready");
                     self.access = Some(a);
                 }
-                Err(reason) => {
-                    tracing::info!("file transfers unavailable: {reason}");
-                    self.send(json!({"op": "unavailable", "reason": reason}));
+                Err(e) => {
+                    match &e {
+                        PlatformError::Fatal(_) => {
+                            tracing::warn!("file transfers unavailable: {e}")
+                        }
+                        _ => tracing::info!("file transfers unavailable: {e}"),
+                    }
+                    self.send(json!({"op": "unavailable", "reason": e.message()}));
                     return false;
                 }
             }
@@ -954,7 +959,9 @@ mod tests {
         let h = home.clone();
         let factory: FileAccessFactory = Arc::new(move || {
             if !flag.load(Ordering::SeqCst) {
-                return Err("Nobody is signed in on the host.".into());
+                return Err(PlatformError::Transient(
+                    "Nobody is signed in on the host.".into(),
+                ));
             }
             Ok(FileAccess {
                 user: "u".into(),

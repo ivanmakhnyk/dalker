@@ -29,7 +29,8 @@ use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, FromArgMatches};
 use dalker_core::{
     CaptureError, Clipboard, ClipboardError, DisplayInfo, InputEvent, InputInjector, InputTracker,
-    MockCapturer, MockClipboard, MockInjector, RawFrame, ScreenCapturer, MAX_CLIPBOARD_BYTES,
+    MockCapturer, MockClipboard, MockInjector, PlatformError, RawFrame, ScreenCapturer,
+    MAX_CLIPBOARD_BYTES,
 };
 use dalker_mcp::tokens::{self, TokenRecord};
 use dalker_mcp::{HostCommand, McpServer};
@@ -478,9 +479,11 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                     tracing::info!(backend = probe.name(), display = ?probe.display(), "capture backend ready");
                     capture_name = probe.name().to_string();
                 }
-                Some(Err(e)) => {
-                    tracing::warn!("no screen to capture yet ({e}); serving anyway and retrying")
-                }
+                Some(Err(e)) => FailureLog::default().failed(
+                    "no screen to capture yet",
+                    &e,
+                    "serving anyway and retrying",
+                ),
             }
             let injector = match dalker_platform::create_injector() {
                 Ok(i) => {
@@ -488,7 +491,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                     Some(i)
                 }
                 Err(e) => {
-                    tracing::error!("input injection disabled (view-only): {e}");
+                    FailureLog::default().failed("input injection disabled", &e, "view-only");
                     None
                 }
             };
@@ -602,37 +605,32 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
         let disconnect_all = Arc::clone(&disconnect_all);
         tokio::spawn(async move {
             let mut indicator: Option<Box<dyn dalker_core::ViewerIndicator>> = None;
-            let mut last_err = String::new();
+            let mut failures = FailureLog::default();
             let mut last_on = false;
             loop {
                 if indicator.is_none() {
                     let create =
                         || dalker_platform::create_indicator(dalker_platform::Desktop::detect());
-                    match tokio::task::spawn_blocking(create).await {
-                        Ok(Ok(i)) => {
+                    let created = tokio::task::spawn_blocking(create)
+                        .await
+                        .unwrap_or_else(|e| {
+                            Err(PlatformError::Fatal(format!(
+                                "the border backend failed: {e}"
+                            )))
+                        });
+                    match created {
+                        Ok(i) => {
                             tracing::info!(backend = i.name(), "remote-session border ready");
                             indicator = Some(i);
                             last_on = false;
-                            last_err.clear();
+                            failures.recovered();
                             ready.store(true, Ordering::SeqCst);
                         }
-                        Ok(Err(e)) => {
-                            if e != last_err {
-                                tracing::warn!(
-                                    "remote-session border unavailable ({e}); the desktop is not served until it can be shown"
-                                );
-                                last_err = e;
-                            }
-                        }
-                        Err(e) => {
-                            let e = format!("the border backend failed: {e}");
-                            if e != last_err {
-                                tracing::error!(
-                                    "{e}; the desktop is not served until the border can be shown"
-                                );
-                                last_err = e;
-                            }
-                        }
+                        Err(e) => failures.failed(
+                            "remote-session border unavailable",
+                            &e,
+                            "the desktop is not served until it can be shown",
+                        ),
                     }
                 }
                 if indicator.as_ref().is_some_and(|i| !i.healthy()) {
@@ -640,7 +638,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                     shown.store(false, Ordering::SeqCst);
                     ready.store(false, Ordering::SeqCst);
                     indicator = None;
-                    last_err.clear();
+                    failures.recovered();
                 }
                 if let Some(i) = &indicator {
                     let on = active.load(Ordering::SeqCst) > 0;
@@ -1271,7 +1269,7 @@ fn may_capture(
         && border_shown.load(Ordering::SeqCst)
 }
 
-type CaptureFactory = Box<dyn Fn() -> Result<Box<dyn ScreenCapturer>, CaptureError> + Send>;
+type CaptureFactory = Box<dyn Fn() -> Result<Box<dyn ScreenCapturer>, PlatformError> + Send>;
 
 fn spawn_capture_thread(
     factory: CaptureFactory,
@@ -1284,6 +1282,7 @@ fn spawn_capture_thread(
         .name("dalker-capture".into())
         .spawn(move || {
             let mut capturer: Option<Box<dyn ScreenCapturer>> = None;
+            let mut failures = FailureLog::default();
             loop {
                 // Idle: release the capture backend entirely. Recreating it on
                 // demand also guarantees DXGI hands us a fresh full frame.
@@ -1299,11 +1298,12 @@ fn spawn_capture_thread(
                     None => match factory() {
                         Ok(c) => {
                             tracing::info!(backend = c.name(), display = ?c.display(), "capture started");
+                            failures.recovered();
                             display.send_replace(Some(c.display()));
                             capturer.insert(c)
                         }
                         Err(e) => {
-                            tracing::warn!("capture init failed, retrying: {e}");
+                            failures.failed("capture init failed", &e, "retrying");
                             std::thread::sleep(Duration::from_secs(1));
                             continue;
                         }
@@ -1407,7 +1407,7 @@ fn spawn_input_thread(
 
 // ------------------------------------------------------------------ clipboard
 
-type ClipboardFactory = Box<dyn Fn() -> Result<Box<dyn Clipboard>, String> + Send>;
+type ClipboardFactory = Box<dyn Fn() -> Result<Box<dyn Clipboard>, PlatformError> + Send>;
 
 /// What the clipboard thread is asked to do.
 enum ClipboardRequest {
@@ -1494,7 +1494,7 @@ fn spawn_clipboard_thread(
                             });
                             clip = Some(c);
                         }
-                        Err(why) => fail(&mut clip, &mut next_open, why),
+                        Err(e) => fail(&mut clip, &mut next_open, e.to_string()),
                     }
                 }
                 if let Some(ClipboardRequest::Get(reply)) = request {
@@ -1583,6 +1583,41 @@ fn spawn_clipboard_thread(
     Ok(set_tx)
 }
 
+/// Logs a backend that could not be opened, once per kind of failure: a retry loop that keeps
+/// failing the same way only says so again at debug level. The kind decides how loud (a
+/// transient wait is info, an unsupported desktop a warning, an unexpected failure an error),
+/// never the message, which may change from one attempt to the next.
+#[derive(Default)]
+struct FailureLog {
+    last: Option<PlatformError>,
+}
+
+impl FailureLog {
+    /// `what` failed with `e`; `meanwhile` says what the agent does about it.
+    fn failed(&mut self, what: &str, e: &PlatformError, meanwhile: &str) {
+        if !self.is_news(e) {
+            tracing::debug!("{what} ({e}); {meanwhile}");
+        } else {
+            match e {
+                PlatformError::Transient(_) => tracing::info!("{what} ({e}); {meanwhile}"),
+                PlatformError::Unsupported(_) => tracing::warn!("{what} ({e}); {meanwhile}"),
+                PlatformError::Fatal(_) => tracing::error!("{what} ({e}); {meanwhile}"),
+            }
+        }
+        self.last = Some(e.clone());
+    }
+
+    /// The backend opened: the next failure is news again.
+    fn recovered(&mut self) {
+        self.last = None;
+    }
+
+    /// Whether `e` is a different kind of failure than the last one, or the first.
+    fn is_news(&self, e: &PlatformError) -> bool {
+        !self.last.as_ref().is_some_and(|l| l.same_kind(e))
+    }
+}
+
 /// Logs injection failures where people look (warn), without one line per mouse move:
 /// a new or changed error is logged at once, a repeating one at most every
 /// [`InjectErrorLog::REPEAT`] with a count of what was suppressed in between.
@@ -1656,6 +1691,21 @@ mod tests {
         viewers.store(0, Ordering::SeqCst);
         assert!(!may_capture(&frames, &viewers, &shown), "viewer left");
         drop(rx);
+    }
+
+    #[test]
+    fn failures_log_again_only_when_the_kind_changes() {
+        let mut log = FailureLog::default();
+        let starting = PlatformError::Transient("GNOME is starting".into());
+        assert!(log.is_news(&starting), "the first failure");
+        log.failed("border", &starting, "waiting");
+        assert!(
+            !log.is_news(&PlatformError::Transient("the screen is locked".into())),
+            "same kind, other words"
+        );
+        assert!(log.is_news(&PlatformError::Fatal("GNOME is starting".into())));
+        log.recovered();
+        assert!(log.is_news(&starting), "news again after it worked");
     }
 
     #[test]
