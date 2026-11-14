@@ -111,10 +111,10 @@
   "viewer.clip.noteInsecure": "Šī lapa nav HTTPS, tāpēc resursdatorā kopētais teksts šeit nonāk pēc jūsu nākamā klikšķa vai taustiņa nospiešanas attālajā ekrānā.",
 
   "viewer.files.button": "Failu pārsūtīšana",
-  "viewer.files.buttonActive": { "zero": "Failu pārsūtīšana ({n} aktīvi)", "one": "Failu pārsūtīšana ({n} aktīva)", "other": "Failu pārsūtīšana ({n} aktīvas)" },
+  "viewer.files.buttonActive": { "zero": "Failu pārsūtīšana ({n} aktīvas)", "one": "Failu pārsūtīšana ({n} aktīva)", "other": "Failu pārsūtīšana ({n} aktīvas)" },
   "viewer.files.title": "Failu pārsūtīšana",
   "viewer.files.subtitle": "Pa WebRTC savienojumu",
-  "viewer.files.active": { "zero": "{n} aktīvu", "one": "{n} aktīva", "other": "{n} aktīvas" },
+  "viewer.files.active": { "zero": "{n} aktīvas", "one": "{n} aktīva", "other": "{n} aktīvas" },
   "viewer.files.clear": "Notīrīt pabeigtās",
   "viewer.files.drop": "Velciet failus šeit vai noklikšķiniet, lai pārlūkotu",
   "viewer.files.dropDest": "Tie nonāk resursdatora mapē Lejupielādes",
