@@ -94,6 +94,8 @@ pub enum EndReason {
     SignedOut,
     /// The viewer's sign-in reached its lifetime.
     SessionExpired,
+    /// The person at the host chose "Disconnect everyone".
+    HostDisconnected,
 }
 
 impl EndReason {
@@ -105,6 +107,7 @@ impl EndReason {
             EndReason::HostShutdown => "host_shutdown",
             EndReason::SignedOut => "signed_out",
             EndReason::SessionExpired => "session_expired",
+            EndReason::HostDisconnected => "host_disconnected",
         }
     }
 

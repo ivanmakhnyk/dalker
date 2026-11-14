@@ -20,6 +20,11 @@
 //                  apps), pressed as keysyms on a virtual keyboard (those must exist in the
 //                  current layout). Also only while the frame is shown.
 //
+//   TakeDisconnectRequest() -> b
+//                  True once after the person here chose "Disconnect everyone" in the panel
+//                  menu shown while the frame is on. The agent asks with every ping and then
+//                  ends every viewer's and AI agent's session.
+//
 // It also runs on the lock screen ("session-modes"), so a connected viewer can see and unlock it.
 
 import Clutter from 'gi://Clutter';
@@ -30,6 +35,8 @@ import St from 'gi://St';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 const BORDER_PX = 5;
 const TIMEOUT_MS = 3000;
@@ -53,6 +60,9 @@ const IFACE = `<node>
     <method name="TypeText">
       <arg type="s" direction="in" name="text"/>
     </method>
+    <method name="TakeDisconnectRequest">
+      <arg type="b" direction="out" name="requested"/>
+    </method>
   </interface>
 </node>`;
 
@@ -65,6 +75,10 @@ export default class DalkerBorder extends Extension {
 
         this._buildEdges();
         this._monitorsChangedId = Main.layoutManager.connect('monitors-changed', () => this._buildEdges());
+
+        this._disconnectRequested = false;
+        this._buildIndicator();
+        this._sessionModeId = Main.sessionMode.connect('updated', () => this._updateIndicator());
 
         this._clipSerial = 0;
         this._selection = global.display.get_selection();
@@ -97,6 +111,12 @@ export default class DalkerBorder extends Extension {
             this._ownerChangedId = 0;
             this._selection = null;
         }
+        if (this._sessionModeId) {
+            Main.sessionMode.disconnect(this._sessionModeId);
+            this._sessionModeId = 0;
+        }
+        this._indicator?.destroy();
+        this._indicator = null;
         this._clearTimeout();
         this._active = false;
         this._updateRemoteAccess();
@@ -124,10 +144,18 @@ export default class DalkerBorder extends Extension {
                 for (const e of this._edges)
                     e.visible = false;
                 this._updateRemoteAccess();
+                this._updateIndicator();
                 return GLib.SOURCE_REMOVE;
             });
         }
         this._updateRemoteAccess();
+        this._updateIndicator();
+    }
+
+    TakeDisconnectRequest() {
+        const requested = this._disconnectRequested;
+        this._disconnectRequested = false;
+        return requested;
     }
 
     ClipboardSerial() {
@@ -195,6 +223,35 @@ export default class DalkerBorder extends Extension {
                 controller.inhibit_remote_access();
             this._released = false;
         }
+    }
+
+    // --- panel menu --------------------------------------------------------------------
+
+    // While someone is connected, a red icon in the top bar lets the person here end every
+    // session without an administrator password.
+    _buildIndicator() {
+        this._indicator = new PanelMenu.Button(0.0, 'Dalker', false);
+        this._indicator.add_child(new St.Icon({
+            icon_name: 'screen-shared-symbolic',
+            style_class: 'system-status-icon',
+            style: 'color: rgb(255, 0, 0);',
+        }));
+        this._indicator.menu.addMenuItem(
+            new PopupMenu.PopupMenuItem('Someone is connected through Dalker', {reactive: false}));
+        const item = new PopupMenu.PopupMenuItem('Disconnect everyone');
+        item.connect('activate', () => {
+            this._disconnectRequested = true;
+        });
+        this._indicator.menu.addMenuItem(item);
+        Main.panel.addToStatusArea(this.uuid, this._indicator);
+        this._updateIndicator();
+    }
+
+    _updateIndicator() {
+        if (!this._active)
+            this._disconnectRequested = false;
+        if (this._indicator)
+            this._indicator.visible = this._active && !Main.sessionMode.isLocked;
     }
 
     // --- drawing -----------------------------------------------------------------------

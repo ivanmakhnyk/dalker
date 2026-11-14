@@ -1,4 +1,5 @@
-//! The menu bar icon: open the viewer in a browser, open Dalker Settings, quit.
+//! The menu bar icon: open the viewer in a browser, open Dalker Settings, disconnect everyone,
+//! quit.
 //!
 //! While Screen Recording or Accessibility is not allowed, the icon turns into a warning sign
 //! and the menu starts with what is missing: items that open the right System Settings pane,
@@ -93,6 +94,8 @@ pub struct MenuBarConfig {
     /// The viewer's address right now, if the web server runs.
     pub open_url: Box<dyn Fn() -> Option<String> + Send>,
     pub on_settings: Box<dyn Fn() + Send>,
+    /// Ends every viewer's and AI agent's session (no password needed).
+    pub on_disconnect: Box<dyn Fn() + Send>,
     pub on_exit: Box<dyn Fn() + Send>,
 }
 
@@ -122,6 +125,11 @@ define_class!(
         #[unsafe(method(openSettings:))]
         fn open_settings(&self, _sender: Option<&AnyObject>) {
             (self.ivars().on_settings)();
+        }
+
+        #[unsafe(method(disconnectAll:))]
+        fn disconnect_all(&self, _sender: Option<&AnyObject>) {
+            (self.ivars().on_disconnect)();
         }
 
         #[unsafe(method(quit:))]
@@ -216,6 +224,7 @@ fn install(mtm: MainThreadMarker, cfg: MenuBarConfig) {
     entry("Open Dalker in Browser", Some(sel!(openViewer:)));
     entry("Dalker Settings…", Some(sel!(openSettings:)));
     menu.addItem(&NSMenuItem::separatorItem(mtm));
+    entry("Disconnect Everyone", Some(sel!(disconnectAll:)));
     entry("Quit Dalker", Some(sel!(quit:)));
 
     let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
