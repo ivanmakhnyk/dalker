@@ -208,17 +208,9 @@
       </div>
 
       <!-- Key combinations the browser would otherwise act on itself. -->
-      <div id="pop-keys" class="pop narrow" hidden>
+      <div id="pop-keys" class="pop narrow keys" hidden>
         <div class="pop-head"><span class="pop-title">Send key combinations</span></div>
-        <div class="keylist">
-          <button id="btn-cad" data-hint="Windows sign-in and lock screen" title="Send Ctrl+Alt+Del to the host (Windows sign-in and lock screen)">
-            <span>Ctrl + Alt + Del</span><kbd>Secure</kbd></button>
-          <button data-combo="MetaLeft KeyL" title="Lock the host (Win + L)"><span>Lock</span><kbd>Win + L</kbd></button>
-          <button data-combo="MetaLeft"><span>Windows / Super key</span><kbd>Win</kbd></button>
-          <button data-combo="AltLeft Tab"><span>Alt + Tab</span><kbd>Switch</kbd></button>
-          <button data-combo="ControlLeft ShiftLeft Escape"><span>Ctrl + Shift + Esc</span><kbd>Task Mgr</kbd></button>
-          <button data-combo="Escape"><span>Esc</span><kbd>Cancel</kbd></button>
-        </div>
+        <div id="keys-list" class="keylist"></div>
         <div class="keys-mode">
           <span class="set-label">Keyboard mode</span>
           <div class="seg" id="keys-kbd" role="radiogroup" aria-label="Keyboard mode"></div>
