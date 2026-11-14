@@ -610,7 +610,9 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .files.active .act-dot { display: block; }
 .files.active .act-dot::after { content: ""; position: absolute; inset: -1.5px; border-radius: 50%; background: var(--indigo); animation: ping 1.6s cubic-bezier(0, 0, .2, 1) infinite; }
 
-.pop.files { width: 330px; padding: 12px; border-color: rgba(99, 102, 241, .3); }
+/* Capped like the settings popover so the host file browser and its "Show hidden files"
+   toggle stay reachable when the transfer list is long (#6). */
+.pop.files { width: 330px; padding: 12px; border-color: rgba(99, 102, 241, .3); max-height: calc(100vh - 90px); overflow-y: auto; }
 .pop-icon {
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
   width: 28px; height: 28px; border-radius: 8px;

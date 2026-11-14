@@ -3,16 +3,16 @@
 
 use std::path::PathBuf;
 
-use dalker_core::FileAccess;
+use dalker_core::{FileAccess, PlatformError};
 
 /// The account this process runs as, with its home and Downloads folders.
-pub fn open_file_access() -> Result<FileAccess, String> {
+pub fn open_file_access() -> Result<FileAccess, PlatformError> {
     // SAFETY: getuid never fails; getpwuid returns null or a pointer valid until the next
     // call on this thread, and is read right away.
     let (user, home) = unsafe {
         let pw = libc::getpwuid(libc::getuid());
         if pw.is_null() {
-            return Err("unknown user".into());
+            return Err(PlatformError::Fatal("unknown user".into()));
         }
         let name = std::ffi::CStr::from_ptr((*pw).pw_name)
             .to_string_lossy()
@@ -23,7 +23,9 @@ pub fn open_file_access() -> Result<FileAccess, String> {
         (name, PathBuf::from(dir))
     };
     if user == "root" {
-        return Err("file transfers need a signed-in user, not root".into());
+        return Err(PlatformError::Unsupported(
+            "file transfers need a signed-in user, not root".into(),
+        ));
     }
     let downloads = home.join("Downloads");
     Ok(FileAccess {

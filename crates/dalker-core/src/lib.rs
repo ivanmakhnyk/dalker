@@ -22,7 +22,7 @@ pub mod mock;
 pub mod traits;
 
 pub use clipboard::{Clipboard, ClipboardError, MockClipboard, MAX_CLIPBOARD_BYTES};
-pub use error::{CaptureError, InputError};
+pub use error::{CaptureError, InputError, PlatformError};
 pub use files::FileAccess;
 pub use frame::{DisplayInfo, PixelFormat, RawFrame};
 pub use input::{InputEvent, InputTracker, MouseButton, NormPoint};

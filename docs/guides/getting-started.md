@@ -144,7 +144,9 @@ has everything else.
 
   <img src="../images/widget-settings.png" alt="The viewer's Settings panel" width="368">
 - **Move the toolbar** by dragging its handle (double-click the handle to put it back), or fold it
-  away with the arrow.
+  away with the arrow. To keep it out of the way, turn on Gear → **Auto-hide the toolbar**: it
+  folds away a few seconds after the pointer leaves it, and comes back when you move the pointer
+  to the top edge of the screen or tap the small tab there.
 - **Disconnect** with the red button. The frame on the host disappears.
 
 ![Dalker showing a Windows desktop](../images/viewer-windows.jpg)

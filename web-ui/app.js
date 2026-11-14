@@ -72,6 +72,7 @@ function setStatus(text, cls) {
   $("btn-disconnect").hidden = !live;
   $("btn-fullscreen").hidden = cls !== "connected";
   updateSessionGroup();
+  applyAutoHide();
   $("btn-cad").hidden = !info || !["windows", "linux"].includes(info.os);
   if (cls !== "connected") { closePopover("pop-keys"); closePopover("pop-clip"); closePopover("pop-settings"); closePopover("pop-files"); }
   if (cls === "connected") {
@@ -204,17 +205,26 @@ toolbar.addEventListener("keydown", (e) => {
 });
 
 // Collapse into a tab at the top edge, and back.
-$("btn-collapse").addEventListener("click", () => {
+function collapseToolbar() {
   closePopovers();
+  pointerNear = false;
   toolbar.hidden = true;
   notch.hidden = false;
-  stage.focus({ preventScroll: true });
-});
-notch.addEventListener("click", () => {
+}
+function showToolbar() {
+  autoHidden = false;
   notch.hidden = true;
   toolbar.hidden = false;
   clampToolbar();
+  scheduleAutoHide();
+}
+$("btn-collapse").addEventListener("click", () => {
+  clearTimeout(autoHideTimer);
+  autoHidden = false;
+  collapseToolbar();
+  stage.focus({ preventScroll: true });
 });
+notch.addEventListener("click", showToolbar);
 
 // Drag the toolbar by its grip; double-click the grip to put it back at top center.
 const grip = $("grip");
@@ -1004,7 +1014,7 @@ renderClip();
 // this browser.
 
 const SETTINGS_KEY = "dalker.settings";
-const DEFAULTS = { fps: 0, bw: 1, scale: 1, view: "fit", keyboard: "hardware", invertWheel: false, keepAlive: false, keepAliveSec: 60 }; // fps 0 = the host's maximum
+const DEFAULTS = { fps: 0, bw: 1, scale: 1, view: "fit", keyboard: "hardware", invertWheel: false, keepAlive: false, keepAliveSec: 60, autoHide: false }; // fps 0 = the host's maximum
 const AWAKE_CHOICES = [30, 60, 120, 300];
 let prefs = { ...DEFAULTS };
 let applied = null; // the host's last settings_applied
@@ -1073,6 +1083,7 @@ function renderSettings() {
   $("set-clip").checked = clip.auto;
   $("set-wheel").checked = prefs.invertWheel;
   $("set-awake").checked = prefs.keepAlive;
+  $("set-autohide").checked = prefs.autoHide;
   $("set-awake-row").hidden = !prefs.keepAlive;
   renderSeg("set-awake-sec", AWAKE_CHOICES.map((v) => [v, v < 60 ? `${v}s` : `${v / 60} min`, `Press F15 on the host after ${v} seconds without input`]),
     prefs.keepAliveSec, (v) => { prefs.keepAliveSec = v; });
@@ -1103,6 +1114,7 @@ window.addEventListener("resize", applyView);
 $("set-clip").addEventListener("change", (e) => setClipAuto(e.target.checked));
 $("set-wheel").addEventListener("change", (e) => { prefs.invertWheel = e.target.checked; savePrefs(); });
 $("set-awake").addEventListener("change", (e) => { prefs.keepAlive = e.target.checked; savePrefs(); renderSettings(); });
+$("set-autohide").addEventListener("change", (e) => { prefs.autoHide = e.target.checked; savePrefs(); applyAutoHide(); });
 
 // The keyboard mode is in Settings and in the keys menu.
 function renderKeyboardMode(id) {
@@ -1127,10 +1139,74 @@ $("set-reset").addEventListener("click", () => {
   applyView();
   sendStreamSettings();
   setClipAuto(true);
+  applyAutoHide();
   renderSettings();
   renderKeyboardMode("keys-kbd");
 });
 $("set-done").addEventListener("click", () => { closePopover("pop-settings"); stage.focus({ preventScroll: true }); });
+
+// "Auto-hide the toolbar": while connected, the toolbar folds into the notch after a few
+// seconds without the pointer near it, and comes back when the pointer reaches the top edge of
+// the screen (or leaves the page through it) or on a tap of the notch. It stays while a menu is
+// open, while it has keyboard focus and while it is being dragged. Folding it away by hand
+// keeps it folded until the notch is clicked.
+
+const AUTO_HIDE_MS = 3000;
+const NEAR_PX = 48; // how close counts as "near" the bar
+const EDGE_PX = 6; // the strip along the top edge that brings it back
+let autoHidden = false;
+let autoHideTimer = 0;
+let pointerNear = false;
+
+function toolbarBusy() {
+  return pointerNear || !!drag || toolbar.matches(":hover") || toolbar.contains(document.activeElement) ||
+    Object.keys(POPOVERS).some((id) => !$(id).hidden);
+}
+
+function scheduleAutoHide() {
+  clearTimeout(autoHideTimer);
+  if (!prefs.autoHide || state !== "connected" || toolbar.hidden) return;
+  autoHideTimer = setTimeout(() => {
+    if (toolbarBusy()) { scheduleAutoHide(); return; }
+    autoHidden = true;
+    collapseToolbar();
+  }, AUTO_HIDE_MS);
+}
+
+// Called when the setting or the connection changes.
+function applyAutoHide() {
+  if (prefs.autoHide && state === "connected") { scheduleAutoHide(); return; }
+  clearTimeout(autoHideTimer);
+  if (autoHidden) showToolbar();
+}
+
+function nearBar(x, y) {
+  const r = toolbar.querySelector(".bar").getBoundingClientRect();
+  const dx = Math.max(r.left - x, 0, x - r.right);
+  const dy = Math.max(r.top - y, 0, y - r.bottom);
+  return Math.hypot(dx, dy) <= NEAR_PX;
+}
+
+document.addEventListener("pointermove", (e) => {
+  if (!prefs.autoHide) return;
+  // A finger on the screen is controlling the host, not looking for the toolbar.
+  if (e.pointerType === "touch") { pointerNear = false; return; }
+  if (autoHidden) {
+    if (e.clientY - stage.getBoundingClientRect().top <= EDGE_PX) showToolbar();
+    return;
+  }
+  if (toolbar.hidden) return;
+  pointerNear = nearBar(e.clientX, e.clientY);
+  if (pointerNear) scheduleAutoHide();
+}, true);
+// A quick flick out of the window can skip the top strip; leaving through the top counts too.
+document.documentElement.addEventListener("pointerleave", (e) => {
+  pointerNear = false;
+  if (prefs.autoHide && autoHidden && e.pointerType !== "touch" && e.clientY <= 0) showToolbar();
+});
+// Using the toolbar restarts the countdown.
+toolbar.addEventListener("pointerdown", scheduleAutoHide);
+toolbar.addEventListener("focusout", scheduleAutoHide);
 
 // ---------------------------------------------------------------- file transfer
 //

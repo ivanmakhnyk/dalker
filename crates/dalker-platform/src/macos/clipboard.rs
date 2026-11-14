@@ -1,6 +1,6 @@
 //! Host clipboard text through `NSPasteboard` (the general pasteboard).
 
-use dalker_core::{Clipboard, ClipboardError};
+use dalker_core::{Clipboard, ClipboardError, PlatformError};
 use objc2::rc::Retained;
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
 use objc2_foundation::NSString;
@@ -15,7 +15,7 @@ pub struct MacClipboard {
 unsafe impl Send for MacClipboard {}
 
 impl MacClipboard {
-    pub fn new() -> Result<Self, String> {
+    pub fn new() -> Result<Self, PlatformError> {
         Ok(Self {
             board: NSPasteboard::generalPasteboard(),
         })
