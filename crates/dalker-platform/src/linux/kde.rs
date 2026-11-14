@@ -1,6 +1,6 @@
 //! KDE Plasma pieces that only D-Bus can reach on Wayland.
 
-use dalker_core::{Clipboard, ClipboardError};
+use dalker_core::{Clipboard, ClipboardError, PlatformError};
 use zbus::blocking::{Connection, Proxy};
 
 use super::gnome::name_has_owner;
@@ -25,9 +25,11 @@ pub fn klipper_available() -> bool {
 }
 
 impl KlipperClipboard {
-    pub fn new() -> Result<Self, String> {
+    /// [`PlatformError::Transient`] while Klipper is not running.
+    pub fn new() -> Result<Self, PlatformError> {
         let mut c = Self { conn: None };
-        c.proxy().map_err(|e| e.to_string())?;
+        c.proxy()
+            .map_err(|e| PlatformError::Transient(e.to_string()))?;
         Ok(c)
     }
 

@@ -1,7 +1,9 @@
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use dalker_core::{CaptureError, DisplayInfo, PixelFormat, RawFrame, ScreenCapturer};
+use dalker_core::{
+    CaptureError, DisplayInfo, PixelFormat, PlatformError, RawFrame, ScreenCapturer,
+};
 use x11rb::connection::Connection;
 use x11rb::protocol::shm::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{ConnectionExt as _, ImageFormat, ImageOrder, Window};
@@ -43,15 +45,16 @@ fn backend<E: std::fmt::Display>(ctx: &'static str) -> impl FnOnce(E) -> Capture
 
 impl X11Capturer {
     /// Connects to `$DISPLAY` and prepares capture of the default screen.
-    pub fn new() -> Result<Self, CaptureError> {
+    pub fn new() -> Result<Self, PlatformError> {
         if super::is_wayland_session() {
             tracing::warn!(
                 "Wayland session detected: X11 capture will only see XWayland windows. \
                  Log in with an Xorg session for full-desktop capture."
             );
         }
+        // The X server may not be up yet (login screen starting): try again later.
         let (conn, screen_num) = x11rb::connect(None).map_err(|e| {
-            CaptureError::Unsupported(format!(
+            PlatformError::Transient(format!(
                 "cannot connect to X server (is $DISPLAY set?): {e}"
             ))
         })?;
@@ -61,7 +64,7 @@ impl X11Capturer {
         let depth = screen.root_depth;
 
         if setup.image_byte_order != ImageOrder::LSB_FIRST {
-            return Err(CaptureError::Unsupported(
+            return Err(PlatformError::Unsupported(
                 "big-endian X server image order".into(),
             ));
         }
@@ -72,7 +75,7 @@ impl X11Capturer {
             .map(|f| f.bits_per_pixel)
             .unwrap_or(0);
         if !(depth == 24 || depth == 32) || bpp != 32 {
-            return Err(CaptureError::Unsupported(format!(
+            return Err(PlatformError::Unsupported(format!(
                 "unsupported root visual: depth {depth}, {bpp} bits per pixel (need 24/32 @ 32 bpp)"
             )));
         }

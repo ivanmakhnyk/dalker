@@ -15,7 +15,7 @@ use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use dalker_core::ViewerIndicator;
+use dalker_core::{PlatformError, ViewerIndicator};
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_output, wl_region, wl_registry, wl_shm, wl_shm_pool, wl_surface,
 };
@@ -480,12 +480,14 @@ pub struct LayerBorder {
 }
 
 impl LayerBorder {
-    pub fn new() -> Result<Self, String> {
+    /// [`PlatformError::Unsupported`] when the compositor has no wlr-layer-shell (GNOME,
+    /// for one); [`PlatformError::Transient`] while there is no compositor to talk to yet.
+    pub fn new() -> Result<Self, PlatformError> {
         let active = Arc::new(AtomicBool::new(false));
         let shown = Arc::new(AtomicBool::new(false));
         let alive = Arc::new(AtomicBool::new(true));
         let stop = Arc::new(AtomicBool::new(false));
-        let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
+        let (ready_tx, ready_rx) = mpsc::channel::<Result<(), PlatformError>>();
         let (a, l, s) = (Arc::clone(&active), Arc::clone(&alive), Arc::clone(&stop));
         let v = Arc::clone(&shown);
         let thread = std::thread::Builder::new()
@@ -495,17 +497,17 @@ impl LayerBorder {
                     Ok(c) => c,
                     Err(e) => {
                         l.store(false, Ordering::SeqCst);
-                        let _ = ready_tx.send(Err(e));
+                        let _ = ready_tx.send(Err(PlatformError::Transient(e)));
                         return;
                     }
                 };
                 if state.layer_shell.is_none() || state.compositor.is_none() || state.shm.is_none()
                 {
                     l.store(false, Ordering::SeqCst);
-                    let _ = ready_tx.send(Err(
+                    let _ = ready_tx.send(Err(PlatformError::Unsupported(
                         "the Wayland compositor has no wlr-layer-shell, so the red border can't be drawn"
                             .into(),
-                    ));
+                    )));
                     return;
                 }
                 let _ = ready_tx.send(Ok(()));
@@ -515,7 +517,7 @@ impl LayerBorder {
                 v.store(false, Ordering::SeqCst);
                 l.store(false, Ordering::SeqCst);
             })
-            .map_err(|e| format!("spawn border thread: {e}"))?;
+            .map_err(|e| PlatformError::Fatal(format!("spawn border thread: {e}")))?;
         let mut border = Self {
             active,
             shown,
@@ -529,7 +531,9 @@ impl LayerBorder {
             Err(_) => {
                 border.stop.store(true, Ordering::SeqCst);
                 border.thread.take();
-                Err("the Wayland compositor did not answer".into())
+                Err(PlatformError::Transient(
+                    "the Wayland compositor did not answer".into(),
+                ))
             }
         }
     }

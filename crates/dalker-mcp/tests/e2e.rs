@@ -2,14 +2,16 @@
 //! `--capture mock` pairing: injected input is drawn on the test pattern).
 
 use std::collections::{BTreeSet, HashMap};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::Engine;
+use dalker_core::files::FileAccessFactory;
 use dalker_core::{
-    Clipboard, InputEvent, InputInjector, InputTracker, MockCapturer, MockClipboard, MockInjector,
-    MouseButton, RawFrame, ScreenCapturer,
+    Clipboard, FileAccess, InputEvent, InputInjector, InputTracker, MockCapturer, MockClipboard,
+    MockInjector, MouseButton, RawFrame, ScreenCapturer,
 };
 use dalker_mcp::tokens::{self, parse_scopes};
 use dalker_mcp::{
@@ -35,6 +37,7 @@ struct MockDesktop {
     next_id: AtomicU64,
     clipboard: Mutex<MockClipboard>,
     commands: Mutex<Vec<(u64, HostCommand)>>,
+    file_home: Mutex<Option<PathBuf>>,
 }
 
 impl MockDesktop {
@@ -49,6 +52,7 @@ impl MockDesktop {
             next_id: AtomicU64::new(1),
             clipboard: Mutex::new(MockClipboard::new()),
             commands: Mutex::default(),
+            file_home: Mutex::new(None),
         });
         let weak = Arc::downgrade(&me);
         let paired = injector.clone();
@@ -117,6 +121,17 @@ impl DesktopHandle for MockDesktop {
             .get_text()
             .map_err(|e| e.to_string());
         Box::pin(async move { text })
+    }
+    fn file_access(&self) -> Option<FileAccessFactory> {
+        let home = self.file_home.lock().unwrap().clone()?;
+        Some(Arc::new(move || {
+            Ok(FileAccess {
+                user: "tester".into(),
+                home: home.clone(),
+                downloads: home.join("Downloads"),
+                guard: Box::new(()),
+            })
+        }))
     }
 }
 
@@ -222,20 +237,26 @@ async fn click_then_screenshot_shows_the_pointer() {
         "get_host_info",
         "screenshot",
         "wait",
+        "wait_for_screen_change",
         "mouse_move",
         "click",
         "drag",
         "scroll",
         "type_text",
+        "paste_text",
         "press_keys",
+        "send_ctrl_alt_del",
         "release_all",
         "clipboard_get",
         "clipboard_set",
+        "list_files",
+        "read_file",
+        "upload_file",
     ];
     assert_eq!(
         tools,
         expected.iter().map(|s| s.to_string()).collect(),
-        "the 12 v1 tools"
+        "the 18 v2 tools"
     );
     assert_eq!(
         host.desktop.viewers.load(Ordering::SeqCst),
@@ -721,4 +742,209 @@ async fn an_agent_that_goes_away_gives_its_slot_back() {
         host.server.session_count() == 0
     })
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn files_tools_and_scope() {
+    let home = std::env::temp_dir().join(format!("dalker-mcp-files-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join("Documents")).unwrap();
+    std::fs::create_dir_all(home.join("Downloads")).unwrap();
+    std::fs::write(home.join("Documents/hello.txt"), b"hello world").unwrap();
+    std::fs::write(home.join("Downloads/note.txt"), b"existing").unwrap();
+
+    let (no_files_secret, no_files_rec) = token("nofiles", "view,input,clipboard");
+    let (files_secret, files_rec) = token("withfiles", "files");
+    let host = start(vec![no_files_rec, files_rec]).await;
+    *host.desktop.file_home.lock().unwrap() = Some(home.clone());
+
+    let no_files = connect(&host.url, &no_files_secret).await;
+    let denied = call(&no_files, "list_files", serde_json::json!({})).await;
+    assert_eq!(denied.is_error, Some(true));
+    assert!(text(&denied).contains("`files` scope"));
+    let _ = no_files.cancel().await;
+
+    let client = connect(&host.url, &files_secret).await;
+    let listed = call(
+        &client,
+        "list_files",
+        serde_json::json!({"path": "Documents"}),
+    )
+    .await;
+    assert_ne!(listed.is_error, Some(true));
+    let listed_json: serde_json::Value = serde_json::from_str(&text(&listed)).unwrap();
+    assert_eq!(listed_json["entries"][0]["name"], "hello.txt");
+
+    let read_res = call(
+        &client,
+        "read_file",
+        serde_json::json!({"path": "Documents/hello.txt", "offset": 6, "limit": 5}),
+    )
+    .await;
+    assert_ne!(read_res.is_error, Some(true));
+    let read_json: serde_json::Value = serde_json::from_str(&text(&read_res)).unwrap();
+    assert_eq!(read_json["content"], "world");
+    assert_eq!(read_json["eof"], true);
+
+    let up_res = call(
+        &client,
+        "upload_file",
+        serde_json::json!({"name": "note.txt", "content": "new content"}),
+    )
+    .await;
+    assert_ne!(up_res.is_error, Some(true));
+    let up_json: serde_json::Value = serde_json::from_str(&text(&up_res)).unwrap();
+    assert_eq!(up_json["name"], "note (1).txt");
+    assert_eq!(
+        std::fs::read_to_string(home.join("Downloads/note (1).txt")).unwrap(),
+        "new content"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("Downloads/note.txt")).unwrap(),
+        "existing"
+    );
+
+    let _ = client.cancel().await;
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn paste_text_and_ctrl_alt_del() {
+    let (only_clip_secret, only_clip_rec) = token("cliponly", "clipboard");
+    let (full_secret, full_rec) = token("full", "view,input,clipboard");
+    let host = start(vec![only_clip_rec, full_rec]).await;
+
+    let clip_only = connect(&host.url, &only_clip_secret).await;
+    let denied = call(
+        &clip_only,
+        "paste_text",
+        serde_json::json!({"text": "hello"}),
+    )
+    .await;
+    assert_eq!(denied.is_error, Some(true));
+    assert!(text(&denied).contains("`input` scope"));
+    let _ = clip_only.cancel().await;
+
+    let client = connect(&host.url, &full_secret).await;
+    let pasted = call(
+        &client,
+        "paste_text",
+        serde_json::json!({"text": "fast paste text"}),
+    )
+    .await;
+    assert_ne!(pasted.is_error, Some(true));
+    assert_eq!(
+        host.desktop
+            .clipboard
+            .lock()
+            .unwrap()
+            .get_text()
+            .unwrap()
+            .as_deref(),
+        Some("fast paste text")
+    );
+    {
+        let cmds = host.desktop.commands.lock().unwrap();
+        assert!(cmds.iter().any(|(_, c)| matches!(
+            c,
+            HostCommand::Input(InputEvent::Key { code, down: true }) if code == "KeyV"
+        )));
+    }
+
+    let cad = call(&client, "send_ctrl_alt_del", serde_json::json!({})).await;
+    assert_ne!(cad.is_error, Some(true));
+    {
+        let cmds = host.desktop.commands.lock().unwrap();
+        assert!(cmds
+            .iter()
+            .any(|(_, c)| matches!(c, HostCommand::Input(InputEvent::SecureAttention))));
+    }
+    let _ = client.cancel().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wait_for_screen_change_detects_updates() {
+    let (secret, rec) = token("viewer", "view,input");
+    let host = start(vec![rec]).await;
+    let client = connect(&host.url, &secret).await;
+
+    // Wait for a change while moving the mouse (MockCapturer draws the pointer overlay on input).
+    let desk = Arc::clone(&host.desktop);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        desk.send(
+            1,
+            HostCommand::Input(InputEvent::MouseMove { x: 0.75, y: 0.75 }),
+        );
+    });
+    let res = call(
+        &client,
+        "wait_for_screen_change",
+        serde_json::json!({"timeout_ms": 2000, "screenshot": true}),
+    )
+    .await;
+    assert_ne!(res.is_error, Some(true));
+    assert!(text(&res).contains(r#""changed":true"#));
+    let _ = client.cancel().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn screen_resource_read_and_subscribe() {
+    let (secret, rec) = token("viewer", "view");
+    let host = start(vec![rec]).await;
+
+    let mut raw = RawClient::new(&host.url, &secret);
+    raw.initialize().await;
+    let stream = raw.open_stream().await;
+
+    let list_resp = raw
+        .post(serde_json::json!({"jsonrpc": "2.0", "id": 10, "method": "resources/list"}))
+        .await;
+    assert!(list_resp.contains("dalker://screen"), "{list_resp}");
+
+    let read_resp = raw
+        .post(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "resources/read",
+            "params": {"uri": "dalker://screen"}
+        }))
+        .await;
+    assert!(read_resp.contains("image/jpeg"), "{read_resp}");
+
+    let sub_resp = raw
+        .post(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "resources/subscribe",
+            "params": {"uri": "dalker://screen"}
+        }))
+        .await;
+    assert!(!sub_resp.contains("error"), "{sub_resp}");
+
+    // Trigger a frame change; MockCapturer runs at 30 FPS and draws moving pattern or mouse.
+    host.desktop.send(
+        1,
+        HostCommand::Input(InputEvent::MouseMove { x: 0.2, y: 0.2 }),
+    );
+
+    let mut stream = stream;
+    let mut buf = String::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let mut got_update = false;
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(Ok(Some(chunk))) =
+            tokio::time::timeout(Duration::from_millis(300), stream.chunk()).await
+        {
+            buf.push_str(&String::from_utf8_lossy(&chunk));
+            if buf.contains("notifications/resources/updated") && buf.contains("dalker://screen") {
+                got_update = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        got_update,
+        "expected resources/updated notification, got: {buf}"
+    );
 }

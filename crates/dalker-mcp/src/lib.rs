@@ -33,9 +33,13 @@ use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Router;
+use dalker_core::files::FileAccessFactory;
 use dalker_core::{InputEvent, RawFrame};
+use rmcp::model::ResourceUpdatedNotificationParam;
+use rmcp::service::Peer;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
+use rmcp::RoleServer;
 use tokio::sync::watch;
 
 pub use session::RateLimits;
@@ -90,6 +94,10 @@ pub trait DesktopHandle: Send + Sync + 'static {
     }
     /// Reads the host's clipboard text now (`None` when it holds no text).
     fn read_clipboard(&self) -> BoxFuture<Result<Option<String>, String>>;
+    /// Opens the signed-in user's home/Downloads folder for file tools (`None` when unavailable).
+    fn file_access(&self) -> Option<FileAccessFactory> {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +135,10 @@ pub(crate) struct Shared {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     /// Open HTTP requests, by token id.
     links: Mutex<HashMap<String, Link>>,
+    /// Peers subscribed to `dalker://screen` updates, by token id.
+    screen_subscribers: Mutex<HashMap<String, Peer<RoleServer>>>,
+    /// Whether the `dalker://screen` watcher task has been spawned.
+    screen_watcher_started: AtomicBool,
     /// Set from the host ("Disconnect AI agents"): no tool call is served until cleared.
     blocked: AtomicBool,
 }
@@ -218,12 +230,85 @@ impl Shared {
         };
         let mut n = 0;
         for s in ended {
+            self.screen_subscribers.lock().unwrap().remove(&s.token_id);
             if s.close() {
                 tracing::info!(token = %s.token_name, session = s.id, "AI agent disconnected: {why}");
                 n += 1;
             }
         }
         n
+    }
+
+    pub(crate) fn subscribe_screen(self: &Arc<Self>, token_id: String, peer: Peer<RoleServer>) {
+        self.screen_subscribers
+            .lock()
+            .unwrap()
+            .insert(token_id, peer);
+        if !self.screen_watcher_started.swap(true, Ordering::SeqCst) {
+            let shared = Arc::clone(self);
+            tokio::spawn(async move {
+                shared.run_screen_watcher().await;
+            });
+        }
+    }
+
+    pub(crate) fn unsubscribe_screen(&self, token_id: &str) {
+        self.screen_subscribers.lock().unwrap().remove(token_id);
+    }
+
+    async fn run_screen_watcher(self: Arc<Self>) {
+        const MIN_NOTIFY_INTERVAL: Duration = Duration::from_millis(500);
+        let mut frames = self.desktop.frames();
+        let mut last_frame = frames.borrow_and_update().clone();
+        let mut last_notify = Instant::now() - MIN_NOTIFY_INTERVAL;
+        while frames.changed().await.is_ok() {
+            let next = frames.borrow_and_update().clone();
+            let Some(ref cur) = next else {
+                continue;
+            };
+            let changed = match &last_frame {
+                Some(prev) => session::frames_differ(prev, cur),
+                None => true,
+            };
+            if !changed || !self.desktop.screen_ready() {
+                continue;
+            }
+            let elapsed = last_notify.elapsed();
+            if elapsed < MIN_NOTIFY_INTERVAL {
+                tokio::time::sleep(MIN_NOTIFY_INTERVAL - elapsed).await;
+                if let Some(latest) = frames.borrow_and_update().clone() {
+                    last_frame = Some(latest);
+                } else {
+                    last_frame = next;
+                }
+            } else {
+                last_frame = next;
+            }
+            last_notify = Instant::now();
+            let peers: Vec<(String, Peer<RoleServer>)> = self
+                .screen_subscribers
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            if peers.is_empty() {
+                continue;
+            }
+            let mut dead = Vec::new();
+            for (token_id, peer) in peers {
+                let param = ResourceUpdatedNotificationParam::new("dalker://screen");
+                if peer.notify_resource_updated(param).await.is_err() {
+                    dead.push(token_id);
+                }
+            }
+            if !dead.is_empty() {
+                let mut subs = self.screen_subscribers.lock().unwrap();
+                for k in dead {
+                    subs.remove(&k);
+                }
+            }
+        }
     }
 
     fn request_opened(&self, token_id: &str) {
@@ -307,6 +392,8 @@ impl McpServer {
                 config,
                 sessions: Mutex::new(HashMap::new()),
                 links: Mutex::new(HashMap::new()),
+                screen_subscribers: Mutex::new(HashMap::new()),
+                screen_watcher_started: AtomicBool::new(false),
                 blocked: AtomicBool::new(false),
             }),
         }

@@ -359,6 +359,8 @@ pub struct WebRtcEngine {
     api: Arc<std::sync::RwLock<Arc<API>>>,
     stun: Option<Arc<PublicIp>>,
     config: WebRtcConfig,
+    /// The host's encoder settings (its limits for every viewer); starts as `config.encoder`.
+    host_encoder: watch::Sender<EncoderSettings>,
     next_id: AtomicU64,
     files: Option<FileAccessFactory>,
 }
@@ -413,10 +415,23 @@ impl WebRtcEngine {
         Ok(Self {
             api,
             stun,
+            host_encoder: watch::channel(config.encoder).0,
             config,
             next_id: AtomicU64::new(1),
             files: None,
         })
+    }
+
+    /// The host's current encoder settings: the most a viewer can ask for.
+    pub fn encoder(&self) -> EncoderSettings {
+        *self.host_encoder.borrow()
+    }
+
+    /// Changes the host's encoder settings. Running sessions switch at once (each keeps what
+    /// its viewer asked for, within the new limits, and is told the new limits); new sessions
+    /// start with them.
+    pub fn set_encoder(&self, settings: EncoderSettings) {
+        self.host_encoder.send_replace(settings);
     }
 
     /// Offers file transfers to viewers (their `"files"` channel), run as the user `access`
@@ -489,10 +504,13 @@ impl WebRtcEngine {
             });
         }
 
-        // This viewer's encoder settings: the host's, until the viewer asks for others.
-        let base_settings = self.config.encoder;
-        let (settings_tx, settings_rx) = watch::channel(base_settings);
+        // This viewer's encoder settings: the host's, until the viewer asks for others. The
+        // host's can change while the session runs (Dalker Settings); the viewer's last
+        // request is then applied again within the new limits.
+        let mut host_settings = self.host_encoder.subscribe();
+        let (settings_tx, settings_rx) = watch::channel(*host_settings.borrow_and_update());
         let settings_tx = Arc::new(settings_tx);
+        let last_request: Arc<std::sync::Mutex<settings::Request>> = Arc::default();
 
         // Control DataChannel → input worker; host clipboard → viewer; stream settings.
         // The "files" channel carries file transfers.
@@ -501,11 +519,16 @@ impl WebRtcEngine {
             let control = control.clone();
             let files = self.files.clone();
             let control_dc = Arc::clone(&control_dc);
+            let settings_tx = Arc::clone(&settings_tx);
+            let host_settings = host_settings.clone();
+            let last_request = Arc::clone(&last_request);
             pc.on_data_channel(Box::new(move |dc| {
                 let control = control.clone();
                 let control_dc = Arc::clone(&control_dc);
                 let clipboard = clipboard.clone();
                 let settings_tx = Arc::clone(&settings_tx);
+                let host_settings = host_settings.clone();
+                let last_request = Arc::clone(&last_request);
                 let files = files.clone();
                 Box::pin(async move {
                     if dc.label() == FILES_CHANNEL {
@@ -535,7 +558,9 @@ impl WebRtcEngine {
                     let dc_weak = Arc::downgrade(&dc);
                     dc.on_message(Box::new(move |msg: DataChannelMessage| {
                         if let Some(req) = settings::parse(&msg.data) {
+                            let base_settings = *host_settings.borrow();
                             let applied = settings::apply(&base_settings, &req);
+                            *last_request.lock().unwrap() = req;
                             tracing::info!(
                                 session = id,
                                 fps = applied.max_fps,
@@ -678,6 +703,39 @@ impl WebRtcEngine {
                             stun.check.notify_one();
                         }
                         let _ = pc.close().await;
+                    }
+                }
+            });
+        }
+
+        // New host limits: this viewer's request again, within them, and the viewer is told.
+        // Ends with the encoder (the only receiver of `settings_tx`).
+        {
+            let settings_tx = Arc::clone(&settings_tx);
+            let last_request = Arc::clone(&last_request);
+            let control_dc = Arc::clone(&control_dc);
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        changed = host_settings.changed() => if changed.is_err() { return },
+                        _ = settings_tx.closed() => return,
+                    }
+                    let base = *host_settings.borrow_and_update();
+                    let applied = settings::apply(&base, &last_request.lock().unwrap());
+                    tracing::info!(
+                        session = id,
+                        fps = applied.max_fps,
+                        kbps = applied.bitrate_bps / 1000,
+                        downscale = applied.downscale,
+                        "host stream limits changed"
+                    );
+                    settings_tx.send_replace(applied);
+                    let dc = control_dc.lock().unwrap().clone();
+                    if let Some(dc) = dc.filter(|dc| dc.ready_state() == RTCDataChannelState::Open)
+                    {
+                        let _ = dc
+                            .send_text(settings::applied_message(&base, &applied))
+                            .await;
                     }
                 }
             });

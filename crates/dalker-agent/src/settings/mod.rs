@@ -1,5 +1,6 @@
-//! `dalkerd settings`: the host's settings window. Web access (on/off, port, password) and
-//! the MCP server (on/off, port, tokens and what each may do), all stored in the config file.
+//! `dalkerd settings`: the host's settings window. Web access (on/off, port, password, stream
+//! limits) and the MCP server (on/off, port, tokens and what each may do), all stored in the
+//! config file.
 //!
 //! The config file belongs to the administrators (it holds the password and token hashes):
 //! * Windows: the window runs elevated (it relaunches itself through UAC) and edits the file.
@@ -92,6 +93,10 @@ pub struct Saved {
     /// `DALKER_MCP_PUBLIC_URL`: where agents reach the MCP server through a reverse proxy.
     pub mcp_public_url: Option<String>,
     pub password_set: bool,
+    /// `DALKER_FPS`, `DALKER_BITRATE_KBPS`, `DALKER_MAX_WIDTH` (defaults where missing).
+    pub stream: crate::stream::Limits,
+    /// Whether the file sets any stream limit (the window's "Custom stream limits" switch).
+    pub stream_custom: bool,
     pub tokens: Vec<TokenRecord>,
     /// The tokens themselves, by id, for those made since they are kept (copy again later).
     pub secrets: std::collections::BTreeMap<String, String>,
@@ -134,6 +139,12 @@ impl Saved {
                 .map(str::trim)
                 .filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("auto"))
                 .map(str::to_owned),
+            stream: crate::stream::Limits::from_config(
+                &pairs,
+                crate::stream::Limits::default(),
+                &[],
+            ),
+            stream_custom: crate::stream::KEYS.iter().any(|k| get(k).is_some()),
             password_set: get(KEY_PASSWORD_HASH).is_some_and(|v| !v.is_empty())
                 || get(KEY_PASSWORD).is_some_and(|v| !v.is_empty()),
             secrets: pairs
@@ -224,7 +235,7 @@ pub fn with_permissions(
     clipboard: bool,
 ) -> Result<TokenRecord, String> {
     // A view-only token stays view-only while only its clipboard permission changes.
-    let scopes = if !remote_control && remote_of(record) == Remote::ViewOnly {
+    let mut scopes = if !remote_control && remote_of(record) == Remote::ViewOnly {
         let mut s = BTreeSet::from([Scope::View]);
         if clipboard {
             s.insert(Scope::Clipboard);
@@ -233,6 +244,9 @@ pub fn with_permissions(
     } else {
         scopes_for(remote_control, clipboard)?
     };
+    if record.scopes.contains(&Scope::Files) {
+        scopes.insert(Scope::Files);
+    }
     Ok(TokenRecord {
         scopes,
         ..record.clone()
@@ -281,6 +295,18 @@ mod tests {
         ));
         assert!(!s.web && s.mcp && s.password_set);
         assert_eq!(s.bind.port(), 8080);
+        assert_eq!(s.stream, crate::stream::Limits::default());
+        assert!(!s.stream_custom);
+        let s = Saved::parse("DALKER_FPS=60\nDALKER_BITRATE_KBPS=12000\nDALKER_MAX_WIDTH=0\n");
+        assert_eq!(
+            s.stream,
+            crate::stream::Limits {
+                fps: 60,
+                bitrate_kbps: 12000,
+                max_width: 0
+            }
+        );
+        assert!(s.stream_custom);
     }
 
     #[test]

@@ -69,6 +69,7 @@ function render(s) {
   $("mcp-version").textContent = $("version").textContent;
   $("mcp-version").hidden = !s.version || host;
   if (s.blocked) return showBlocked(s.blocked);
+  $("copy-diagnostics").hidden = !host;
   $("blocked").hidden = true;
   $("tabs").hidden = !host;
   const shown = host ? tab : "mcp";
@@ -99,6 +100,7 @@ function render(s) {
       : `${ICON.alert}<span>${esc(tr("settings.pw.none"))}</span>`;
     $("pw-hint").textContent = tr("settings.pw.hint", { n: s.min_password });
     $("web-port-default").textContent = tr("settings.default", { port: 8742 });
+    renderStream(s.stream);
     renderSharing(s.screen_sharing);
   }
 
@@ -152,6 +154,7 @@ document.querySelector(".tabs").addEventListener("keydown", (e) => {
 });
 
 function showBlocked(text) {
+  $("copy-diagnostics").hidden = true;
   $("tabs").hidden = true;
   $("blocked").hidden = false;
   $("blocked").textContent = text;
@@ -206,6 +209,106 @@ function pickAddress(urls) {
 function isLocal(host) {
   return host === "127.0.0.1" || host === "::1";
 }
+
+// ---------------------------------------------------------------- stream limits
+
+// The most frame rate and bitrate every viewer gets, and the width wider screens are scaled
+// down to (0 = full size). The running agent applies them to open streams too.
+const STREAM = [["stream-fps", "fps"], ["stream-bitrate", "bitrate_kbps"], ["stream-width", "max_width"]];
+let streamDirty = false;
+// Opened with the switch but not applied yet: the file still has no limits of its own.
+let streamOpen = false;
+
+function renderStream(st) {
+  if (!st) return;
+  const d = st.default;
+  $("stream-default").textContent = tr("settings.stream.default", { fps: d.fps, kbps: d.bitrate_kbps, px: d.max_width });
+  // Collapsed while the defaults apply; expanded once the host sets its own limits.
+  const open = st.custom || streamOpen;
+  setSwitch("stream-enabled", open);
+  $("stream-fields").hidden = !open;
+  $("stream-off-hint").hidden = open;
+  $("stream-off-hint").textContent =
+    tr("settings.stream.offHint", { fps: d.fps, kbps: d.bitrate_kbps, px: d.max_width });
+  for (const [id, key] of STREAM) {
+    if (!streamDirty && !STREAM.some(([i]) => document.activeElement === $(i))) $(id).value = String(st[key]);
+  }
+  validateStream();
+}
+
+function streamValues() {
+  const out = {};
+  for (const [id, key] of STREAM) {
+    const v = $(id).value.trim();
+    out[key] = /^\d{1,6}$/.test(v) ? Number(v) : null;
+  }
+  return out;
+}
+
+function validateStream() {
+  const st = state && state.stream;
+  if (!st) return false;
+  const v = streamValues();
+  const r = st.range;
+  const within = (x, [lo, hi]) => x !== null && x >= lo && x <= hi;
+  let err = "", bad = "";
+  if (!within(v.fps, r.fps)) [bad, err] = ["stream-fps", tr("settings.stream.badFps", { min: r.fps[0], max: r.fps[1] })];
+  else if (!within(v.bitrate_kbps, r.bitrate_kbps)) [bad, err] = ["stream-bitrate", tr("settings.stream.badBitrate", { min: r.bitrate_kbps[0], max: r.bitrate_kbps[1] })];
+  else if (v.max_width !== 0 && !within(v.max_width, r.max_width)) {
+    [bad, err] = ["stream-width", tr("settings.stream.badWidth", { min: r.max_width[0], max: r.max_width[1] })];
+  }
+  $("stream-error").textContent = err;
+  for (const [id] of STREAM) $(id).classList.toggle("invalid", id === bad);
+  const same = STREAM.every(([, key]) => v[key] === st[key]);
+  $("stream-apply").disabled = !!err || same;
+  return !err;
+}
+
+$("stream-enabled").addEventListener("change", async (e) => {
+  const sw = e.target;
+  if (sw.checked) {
+    // Nothing changes until Apply: the fields start at the limits in force.
+    streamOpen = true;
+    render(state);
+    $("stream-fps").focus();
+    return;
+  }
+  streamOpen = false;
+  streamDirty = false;
+  if (!state.stream.custom) return render(state);
+  sw.dataset.pending = "1";
+  sw.disabled = true;
+  try {
+    const d = state.stream.default;
+    applyResult(await api("POST", "/api/settings/stream", { custom: false }),
+      tr("settings.stream.reset", { fps: d.fps, kbps: d.bitrate_kbps, px: d.max_width }));
+  } catch (err) {
+    sw.checked = true;
+    message(err.message, false);
+  } finally {
+    delete sw.dataset.pending;
+    sw.disabled = false;
+  }
+});
+
+for (const [id] of STREAM) {
+  $(id).addEventListener("input", () => { streamDirty = true; validateStream(); });
+  $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") $("stream-apply").click(); });
+}
+$("stream-apply").addEventListener("click", async () => {
+  if (!validateStream()) return;
+  const v = streamValues();
+  $("stream-apply").disabled = true;
+  try {
+    const data = await api("POST", "/api/settings/stream", v);
+    streamDirty = false;
+    streamOpen = false;
+    applyResult(data, tr("settings.stream.applied", { fps: v.fps, kbps: v.bitrate_kbps }));
+  } catch (err) {
+    $("stream-error").textContent = err.message;
+    validateStream();
+  }
+});
 
 // KDE Plasma, sway and other portal desktops ask the person at the computer to allow
 // screen sharing. Doing it here, ahead of time, spares a remote viewer a black screen.
@@ -648,17 +751,34 @@ function toast(text, bad = false) {
 async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text);
-    return;
+    return true;
   } catch {
     const ta = document.createElement("textarea");
     ta.value = text;
     ta.style.cssText = "position:fixed;opacity:0;top:0;left:0";
     document.body.appendChild(ta);
     ta.select();
-    document.execCommand("copy");
-    ta.remove();
+    try {
+      return document.execCommand("copy");
+    } finally {
+      ta.remove();
+    }
   }
 }
+
+$("copy-diagnostics").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const { report } = await api("GET", "/api/settings/diagnostics");
+    if (!await copyText(report)) throw new Error(tr("settings.diag.clipFailed"));
+    toast(tr("settings.diag.copied"));
+  } catch (e) {
+    toast(tr("settings.diag.failed", { error: e.message }), true);
+  } finally {
+    button.disabled = false;
+  }
+});
 
 // ---------------------------------------------------------------- language
 //

@@ -34,7 +34,8 @@ device, and you are on its desktop. No account, no cloud service, no app on the 
 - **Just a browser.** Chrome, Edge, Firefox or Safari on a laptop, tablet or another PC. Nothing to
   install where you sit.
 - **Fast and sharp.** The picture travels directly between the two computers, without passing
-  through anyone's server, at up to 120 frames per second.
+  through anyone's server: 30 frames per second out of the box, up to 120 when you raise the limit
+  in Dalker Settings.
 - **Your computer, your rules.** Dalker runs on your own network. There is no sign-up and no
   outside service in between; one password protects access.
 - **You always know.** While anyone is connected, a red frame is drawn around the screen. It can't
@@ -98,10 +99,10 @@ there is no extension to load; instead the desktop asks once to **Share** the sc
 time someone connects (see [Which Linux desktops work?](#questions)).
 
 **macOS:** open the `.pkg`. The first time, macOS blocks it because it isn't notarized: open
-**System Settings → Privacy & Security** and click **Open Anyway**. When Dalker starts, allow it
-under **Screen & System Audio Recording** and **Accessibility** in the same settings page (its
-menu bar icon shows a warning sign and links to both until they are on), then choose
-**Restart Dalker** in that menu.
+**System Settings → Privacy & Security** and click **Open Anyway**. In the **Set up Dalker**
+window, open each permission's settings and allow Dalker under **Screen & System Audio Recording**
+and **Accessibility**. Choose **Restart Dalker**, then **Continue to Password**. The menu bar's
+**Set Up Permissions…** item reopens the setup window.
 
 Dalker now runs in the background and starts with the computer (on macOS, when you sign in).
 
@@ -189,7 +190,9 @@ differs from the remote computer's, choose *Direct text* to type exactly what yo
 
 The gear sets the frame rate, bandwidth and resolution for your session, fit-to-window or 1:1
 view, natural scrolling, a keep-alive that stops the remote computer from sleeping while you
-watch, and auto-hiding the toolbar (it comes back when the pointer reaches the top edge).
+watch, and auto-hiding the toolbar (it comes back when the pointer reaches the top edge). The
+stream choices go up to the limits set on the remote computer (30 fps and 6 Mbit/s by default; see
+[Settings](#settings)).
 
 <img src="docs/images/widget-settings.png" alt="The viewer's settings: stream, display, keyboard and mouse" width="401">
 
@@ -208,6 +211,10 @@ use **Keys → Ctrl + Alt + Del**, then type the Windows password.
 
 - **Web Remote Access:** turn browser access on or off, change the port (8742 by default) and the
   access password. Changing the password signs everyone out.
+- **Stream limits** (on the same tab, under **Set my own stream limits**): the most frame rate (30 fps by default, up to 120) and
+  bitrate (6000 kbit/s by default) every viewer gets, and the width wider screens are scaled down
+  to (1920 pixels by default; 0 sends them at full size). Viewers can choose less for their own
+  session. Open streams switch to new limits too.
 - **AI Agents (MCP):** let AI assistants use the computer, with their own access tokens; see below.
 
 Changes apply within a few seconds; nothing needs a restart.

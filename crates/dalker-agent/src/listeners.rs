@@ -32,6 +32,7 @@ pub struct Startup {
     pub bind: SocketAddr,
     pub mcp: bool,
     pub mcp_bind: SocketAddr,
+    /// Config keys the file can't change (the stream limits' too, see `stream.rs`).
     pub pinned: Vec<&'static str>,
 }
 

@@ -19,7 +19,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use dalker_core::{
-    CaptureError, Clipboard, ClipboardError, DisplayInfo, RawFrame, ScreenCapturer, ViewerIndicator,
+    CaptureError, Clipboard, ClipboardError, DisplayInfo, PlatformError, RawFrame, ScreenCapturer,
+    ViewerIndicator,
 };
 use zbus::blocking::fdo::DBusProxy;
 use zbus::blocking::{Connection, Proxy};
@@ -370,6 +371,7 @@ pub struct GnomeBorder {
     active: Arc<AtomicBool>,
     /// The extension answered the last `SetActive(true)`.
     shown: Arc<AtomicBool>,
+    label: Arc<std::sync::Mutex<Option<String>>>,
     stop: Arc<AtomicBool>,
     /// The person at the host chose "Disconnect everyone" in the extension's panel menu.
     disconnect: Arc<AtomicBool>,
@@ -377,30 +379,35 @@ pub struct GnomeBorder {
 }
 
 impl GnomeBorder {
-    pub fn new() -> Result<Self, String> {
-        let conn = Connection::session().map_err(|e| format!("no D-Bus session bus: {e}"))?;
+    /// [`PlatformError::Transient`] while the shell or its extension is not there (still
+    /// starting, the screen locked, waiting for the next login).
+    pub fn new() -> Result<Self, PlatformError> {
+        let conn = Connection::session()
+            .map_err(|e| PlatformError::Transient(format!("no D-Bus session bus: {e}")))?;
         if !name_has_owner(&conn, BUS_NAME) {
             if screen_locked() {
-                return Err(
+                return Err(PlatformError::Transient(
                     "the screen is locked (GNOME turns extensions off on the lock screen; \
                             the desktop is served again once it is unlocked)"
                         .into(),
-                );
+                ));
             }
-            return Err(
+            return Err(PlatformError::Transient(
                 "GNOME Shell extension dalker-border@ivanmakhnyk.github.io is not running \
                  (it is loaded at login: log out and back in after installing)"
                     .to_string(),
-            );
+            ));
         }
         let active = Arc::new(AtomicBool::new(false));
         let shown = Arc::new(AtomicBool::new(false));
+        let label = Arc::new(std::sync::Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
         let disconnect = Arc::new(AtomicBool::new(false));
-        let (c, a, v, s) = (
+        let (c, a, v, l, s) = (
             conn.clone(),
             Arc::clone(&active),
             Arc::clone(&shown),
+            Arc::clone(&label),
             Arc::clone(&stop),
         );
         let d = Arc::clone(&disconnect);
@@ -412,12 +419,19 @@ impl GnomeBorder {
             .spawn(move || {
                 let proxy = Proxy::new(&c, BUS_NAME, BORDER_PATH, BORDER).ok();
                 let mut last = false;
+                let mut last_label: Option<String> = None;
                 while !s.load(Ordering::SeqCst) {
                     let now = a.load(Ordering::SeqCst);
+                    let cur_label = l.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     if !now {
                         v.store(false, Ordering::SeqCst);
                     }
                     if let Some(p) = &proxy {
+                        if cur_label != last_label || (now && !last) {
+                            let _ =
+                                p.call_method("SetLabel", &(cur_label.as_deref().unwrap_or(""),));
+                            last_label = cur_label.clone();
+                        }
                         if now || last {
                             // The extension draws the frame before it answers.
                             let ok = p.call_method("SetActive", &(now,)).is_ok();
@@ -442,6 +456,7 @@ impl GnomeBorder {
                     while waited < period
                         && !s.load(Ordering::SeqCst)
                         && a.load(Ordering::SeqCst) == now
+                        && *l.lock().unwrap_or_else(|e| e.into_inner()) == cur_label
                     {
                         std::thread::sleep(Duration::from_millis(10));
                         waited += Duration::from_millis(10);
@@ -449,14 +464,16 @@ impl GnomeBorder {
                 }
                 v.store(false, Ordering::SeqCst);
                 if let Some(p) = &proxy {
+                    let _ = p.call_method("SetLabel", &("",));
                     let _ = p.call_method("SetActive", &(false,));
                 }
             })
-            .map_err(|e| format!("spawn border thread: {e}"))?;
+            .map_err(|e| PlatformError::Fatal(format!("spawn border thread: {e}")))?;
         Ok(Self {
             conn,
             active,
             shown,
+            label,
             stop,
             disconnect,
             heartbeat: Some(heartbeat),
@@ -484,6 +501,10 @@ impl ViewerIndicator for GnomeBorder {
     fn take_disconnect_request(&self) -> bool {
         self.disconnect.swap(false, Ordering::SeqCst)
     }
+
+    fn set_label(&self, label: Option<&str>) {
+        *self.label.lock().unwrap_or_else(|e| e.into_inner()) = label.map(str::to_owned);
+    }
 }
 
 impl Drop for GnomeBorder {
@@ -509,9 +530,11 @@ pub struct GnomeClipboard {
 }
 
 impl GnomeClipboard {
-    pub fn new() -> Result<Self, String> {
+    /// [`PlatformError::Transient`] while the extension is not running.
+    pub fn new() -> Result<Self, PlatformError> {
         let mut c = Self { conn: None };
-        c.proxy().map_err(|e| e.to_string())?;
+        c.proxy()
+            .map_err(|e| PlatformError::Transient(e.to_string()))?;
         Ok(c)
     }
 

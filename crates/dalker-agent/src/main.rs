@@ -17,8 +17,10 @@
 
 mod cli;
 mod config_watch;
+mod diagnostics;
 mod listeners;
 mod settings;
+mod stream;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -29,7 +31,8 @@ use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, FromArgMatches};
 use dalker_core::{
     CaptureError, Clipboard, ClipboardError, DisplayInfo, InputEvent, InputInjector, InputTracker,
-    MockCapturer, MockClipboard, MockInjector, RawFrame, ScreenCapturer, MAX_CLIPBOARD_BYTES,
+    MockCapturer, MockClipboard, MockInjector, PlatformError, RawFrame, ScreenCapturer,
+    MAX_CLIPBOARD_BYTES,
 };
 use dalker_mcp::tokens::{self, TokenRecord};
 use dalker_mcp::{HostCommand, McpServer};
@@ -53,6 +56,14 @@ fn main() -> Result<()> {
     };
     let matches = Cli::command().get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    if matches!(cli.command, Some(Command::Diagnostics)) {
+        use std::io::Write;
+
+        let config = settings::store::read_file(&config_path);
+        let report = diagnostics::collect(config.as_deref().ok(), Some(cli.capture), None);
+        std::io::stdout().lock().write_all(report.as_bytes())?;
+        return Ok(());
+    }
     if let Some(e) = config_error {
         if matches!(cli.command, None | Some(Command::Service)) {
             return Err(e);
@@ -68,11 +79,7 @@ fn main() -> Result<()> {
     }
     if service && std::env::var_os(LOG_DIR_ENV).is_none() {
         // SYSTEM's own profile is a poor place for logs; the agent inherits this too.
-        let base = std::env::var_os("ProgramData").unwrap_or_else(|| r"C:\ProgramData".into());
-        std::env::set_var(
-            LOG_DIR_ENV,
-            std::path::Path::new(&base).join("Dalker").join("logs"),
-        );
+        std::env::set_var(LOG_DIR_ENV, service_log_dir());
     }
     init_logging(if service { "service.log" } else { "dalker.log" });
     install_panic_hook();
@@ -165,14 +172,17 @@ fn main() -> Result<()> {
     if loaded.is_some() {
         tracing::info!(config = %config_path.display(), "loaded config");
     }
-    // The listener settings the config file may change while the agent runs: not those given
-    // on the command line or as environment variables of their own.
+    // The listener settings and stream limits the config file may change while the agent runs:
+    // not those given on the command line or as environment variables of their own.
     let from_file = loaded.unwrap_or_default();
     let pinned = [
         ("web", listeners::KEY_WEB),
         ("bind", listeners::KEY_BIND),
         ("mcp", listeners::KEY_MCP),
         ("mcp_bind", listeners::KEY_MCP_BIND),
+        ("fps", stream::KEY_FPS),
+        ("bitrate_kbps", stream::KEY_BITRATE_KBPS),
+        ("max_width", stream::KEY_MAX_WIDTH),
     ]
     .into_iter()
     .filter(|(id, key)| match matches.value_source(id) {
@@ -201,6 +211,11 @@ fn main() -> Result<()> {
 
 /// Overrides where log files go (set by the service for itself and the agent it starts).
 const LOG_DIR_ENV: &str = "DALKER_LOG_DIR";
+
+fn service_log_dir() -> std::path::PathBuf {
+    let base = std::env::var_os("ProgramData").unwrap_or_else(|| r"C:\ProgramData".into());
+    std::path::Path::new(&base).join("Dalker").join("logs")
+}
 
 /// Folder for the agent's own files (log): `DALKER_LOG_DIR`, else per user
 /// (`%LOCALAPPDATA%\\Dalker` on Windows, `~/Library/Logs/Dalker` on macOS).
@@ -366,6 +381,7 @@ fn start_menu_bar(
     exit: &Arc<tokio::sync::Notify>,
     disconnect_all: Arc<dyn Fn() + Send + Sync>,
     config: &watch::Receiver<config_watch::Snapshot>,
+    needs_password: bool,
 ) -> Option<dalker_platform::macos::MenuBar> {
     let web = Arc::clone(status);
     let exit = Arc::clone(exit);
@@ -375,6 +391,7 @@ fn start_menu_bar(
         on_disconnect: Box::new(move || disconnect_all()),
         on_exit: Box::new(move || exit.notify_one()),
         language: host_language(config.clone())(),
+        needs_password,
     };
     match dalker_platform::macos::MenuBar::start(cfg) {
         Ok(m) => {
@@ -499,9 +516,11 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                     tracing::info!(backend = probe.name(), display = ?probe.display(), "capture backend ready");
                     capture_name = probe.name().to_string();
                 }
-                Some(Err(e)) => {
-                    tracing::warn!("no screen to capture yet ({e}); serving anyway and retrying")
-                }
+                Some(Err(e)) => FailureLog::default().failed(
+                    "no screen to capture yet",
+                    &e,
+                    "serving anyway and retrying",
+                ),
             }
             let injector = match dalker_platform::create_injector() {
                 Ok(i) => {
@@ -509,7 +528,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                     Some(i)
                 }
                 Err(e) => {
-                    tracing::error!("input injection disabled (view-only): {e}");
+                    FailureLog::default().failed("input injection disabled", &e, "view-only");
                     None
                 }
             };
@@ -552,19 +571,17 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
     let input_available = injector.is_some();
     spawn_input_thread(injector, control_rx, display_rx, clipboard_requests.clone())?;
 
+    let limits = stream::Limits {
+        fps: cli.fps,
+        bitrate_kbps: cli.bitrate_kbps,
+        max_width: cli.max_width,
+    };
     let engine = Arc::new(
         WebRtcEngine::new(WebRtcConfig {
             ice_servers: cli.stun.clone(),
             udp_port: cli.udp_port,
             public_ips: cli.public_ip.clone(),
-            encoder: dalker_webrtc::EncoderSettings {
-                bitrate_bps: cli.bitrate_kbps * 1000,
-                max_fps: cli.fps as f32,
-                max_width: cli.max_width,
-                keyframe_interval: cli.fps * 10,
-                downscale: 1,
-                strict_bitrate: false,
-            },
+            encoder: limits.encoder(),
             ..Default::default()
         })
         .await?
@@ -589,17 +606,15 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
             "ice_servers": cli.stun,
             // Viewers can send files to the host and fetch files from it.
             "files": true,
-            // The most a viewer can ask for in its stream settings.
-            "stream": {
-                "max_fps": cli.fps,
-                "max_bitrate_kbps": cli.bitrate_kbps,
-                "max_downscale": dalker_webrtc::settings::MAX_DOWNSCALE,
-            },
+            // "stream", the most a viewer can ask for, is added by `info()`: the host can
+            // change it while the agent runs.
         }),
         border_ready: Arc::clone(&border_ready),
         refused_until: std::sync::Mutex::new(None),
         input_available,
         clipboard_requests,
+        file_access: Arc::new(dalker_platform::open_file_access),
+        mcp_active: Arc::new(AtomicUsize::new(0)),
         next_mcp_id: AtomicU64::new(1),
     });
     let mcp = mcp_server(&cli, &signaling);
@@ -618,42 +633,40 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
     // appears later (login screen, user session).
     if cli.capture == CaptureMode::Native {
         let active = Arc::clone(&signaling.active);
+        let mcp_active = Arc::clone(&signaling.mcp_active);
         let ready = Arc::clone(&border_ready);
         let shown = Arc::clone(&border_shown);
         let disconnect_all = Arc::clone(&disconnect_all);
         tokio::spawn(async move {
             let mut indicator: Option<Box<dyn dalker_core::ViewerIndicator>> = None;
-            let mut last_err = String::new();
+            let mut failures = FailureLog::default();
             let mut last_on = false;
+            let mut last_mcp_on = false;
             loop {
                 if indicator.is_none() {
                     let create =
                         || dalker_platform::create_indicator(dalker_platform::Desktop::detect());
-                    match tokio::task::spawn_blocking(create).await {
-                        Ok(Ok(i)) => {
+                    let created = tokio::task::spawn_blocking(create)
+                        .await
+                        .unwrap_or_else(|e| {
+                            Err(PlatformError::Fatal(format!(
+                                "the border backend failed: {e}"
+                            )))
+                        });
+                    match created {
+                        Ok(i) => {
                             tracing::info!(backend = i.name(), "remote-session border ready");
                             indicator = Some(i);
                             last_on = false;
-                            last_err.clear();
+                            last_mcp_on = false;
+                            failures.recovered();
                             ready.store(true, Ordering::SeqCst);
                         }
-                        Ok(Err(e)) => {
-                            if e != last_err {
-                                tracing::warn!(
-                                    "remote-session border unavailable ({e}); the desktop is not served until it can be shown"
-                                );
-                                last_err = e;
-                            }
-                        }
-                        Err(e) => {
-                            let e = format!("the border backend failed: {e}");
-                            if e != last_err {
-                                tracing::error!(
-                                    "{e}; the desktop is not served until the border can be shown"
-                                );
-                                last_err = e;
-                            }
-                        }
+                        Err(e) => failures.failed(
+                            "remote-session border unavailable",
+                            &e,
+                            "the desktop is not served until it can be shown",
+                        ),
                     }
                 }
                 if indicator.as_ref().is_some_and(|i| !i.healthy()) {
@@ -661,13 +674,16 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                     shown.store(false, Ordering::SeqCst);
                     ready.store(false, Ordering::SeqCst);
                     indicator = None;
-                    last_err.clear();
+                    failures.recovered();
                 }
                 if let Some(i) = &indicator {
                     let on = active.load(Ordering::SeqCst) > 0;
-                    if on != last_on {
+                    let mcp_on = mcp_active.load(Ordering::SeqCst) > 0;
+                    if on != last_on || mcp_on != last_mcp_on {
+                        i.set_label((on && mcp_on).then_some("AI agent"));
                         i.set_active(on);
                         last_on = on;
+                        last_mcp_on = mcp_on;
                     }
                     // Frames flow only once the backend reports the border drawn.
                     shown.store(on && i.shown(), Ordering::SeqCst);
@@ -703,7 +719,13 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
     let _menu_bar = if cli.no_tray {
         None
     } else {
-        start_menu_bar(&status, &exit, Arc::clone(&disconnect_all), &config)
+        start_menu_bar(
+            &status,
+            &exit,
+            Arc::clone(&disconnect_all),
+            &config,
+            cli.password_hash.is_none() && cli.password.is_none(),
+        )
     };
 
     // Without a readable file at start, tokens and listeners come from the environment and
@@ -711,6 +733,17 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
     let follow_file = followed_config_file().is_some();
     if follow_file {
         tokio::spawn(follow_mcp_tokens(config.clone(), mcp.clone()));
+    }
+    let stream_pinned = startup.pinned.clone();
+    if follow_file {
+        // Stream limits (Dalker Settings): running streams switch to them too.
+        let engine = Arc::clone(&signaling.engine);
+        tokio::spawn(stream::follow_config(
+            config.clone(),
+            limits,
+            stream_pinned,
+            move |l| engine.set_encoder(l.encoder()),
+        ));
     }
     let (wanted_tx, wanted_rx) = watch::channel(startup.wanted());
     if follow_file {
@@ -1070,10 +1103,12 @@ impl dalker_mcp::DesktopHandle for Agent {
                 self.max_sessions
             ));
         }
+        self.mcp_active.fetch_add(1, Ordering::SeqCst);
         Ok(MCP_SESSION_BASE + self.next_mcp_id.fetch_add(1, Ordering::SeqCst))
     }
 
     fn close_viewer(&self, id: u64) {
+        self.mcp_active.fetch_sub(1, Ordering::SeqCst);
         let n = self.active.fetch_sub(1, Ordering::SeqCst) - 1;
         tracing::info!(session = id, remaining = n, "AI agent left");
     }
@@ -1116,6 +1151,10 @@ impl dalker_mcp::DesktopHandle for Agent {
             }
         })
     }
+
+    fn file_access(&self) -> Option<dalker_core::files::FileAccessFactory> {
+        Some(Arc::clone(&self.file_access))
+    }
 }
 
 // ------------------------------------------------------------------ signaling
@@ -1139,6 +1178,8 @@ struct Agent {
     refused_until: std::sync::Mutex<Option<Instant>>,
     input_available: bool,
     clipboard_requests: std::sync::mpsc::Sender<ClipboardRequest>,
+    file_access: dalker_core::files::FileAccessFactory,
+    mcp_active: Arc<AtomicUsize>,
     next_mcp_id: AtomicU64,
 }
 
@@ -1273,6 +1314,13 @@ impl SignalingHandler for Agent {
 
     fn info(&self) -> serde_json::Value {
         let mut info = self.info.clone();
+        // The most a viewer can ask for in its stream settings.
+        let limits = self.engine.encoder();
+        info["stream"] = serde_json::json!({
+            "max_fps": limits.max_fps.round() as u32,
+            "max_bitrate_kbps": limits.bitrate_bps / 1000,
+            "max_downscale": dalker_webrtc::settings::MAX_DOWNSCALE,
+        });
         info["locked"] = serde_json::Value::Bool(dalker_platform::screen_locked());
         info
     }
@@ -1292,7 +1340,7 @@ fn may_capture(
         && border_shown.load(Ordering::SeqCst)
 }
 
-type CaptureFactory = Box<dyn Fn() -> Result<Box<dyn ScreenCapturer>, CaptureError> + Send>;
+type CaptureFactory = Box<dyn Fn() -> Result<Box<dyn ScreenCapturer>, PlatformError> + Send>;
 
 fn spawn_capture_thread(
     factory: CaptureFactory,
@@ -1305,6 +1353,7 @@ fn spawn_capture_thread(
         .name("dalker-capture".into())
         .spawn(move || {
             let mut capturer: Option<Box<dyn ScreenCapturer>> = None;
+            let mut failures = FailureLog::default();
             loop {
                 // Idle: release the capture backend entirely. Recreating it on
                 // demand also guarantees DXGI hands us a fresh full frame.
@@ -1320,11 +1369,12 @@ fn spawn_capture_thread(
                     None => match factory() {
                         Ok(c) => {
                             tracing::info!(backend = c.name(), display = ?c.display(), "capture started");
+                            failures.recovered();
                             display.send_replace(Some(c.display()));
                             capturer.insert(c)
                         }
                         Err(e) => {
-                            tracing::warn!("capture init failed, retrying: {e}");
+                            failures.failed("capture init failed", &e, "retrying");
                             std::thread::sleep(Duration::from_secs(1));
                             continue;
                         }
@@ -1428,7 +1478,7 @@ fn spawn_input_thread(
 
 // ------------------------------------------------------------------ clipboard
 
-type ClipboardFactory = Box<dyn Fn() -> Result<Box<dyn Clipboard>, String> + Send>;
+type ClipboardFactory = Box<dyn Fn() -> Result<Box<dyn Clipboard>, PlatformError> + Send>;
 
 /// What the clipboard thread is asked to do.
 enum ClipboardRequest {
@@ -1515,7 +1565,7 @@ fn spawn_clipboard_thread(
                             });
                             clip = Some(c);
                         }
-                        Err(why) => fail(&mut clip, &mut next_open, why),
+                        Err(e) => fail(&mut clip, &mut next_open, e.to_string()),
                     }
                 }
                 if let Some(ClipboardRequest::Get(reply)) = request {
@@ -1604,6 +1654,41 @@ fn spawn_clipboard_thread(
     Ok(set_tx)
 }
 
+/// Logs a backend that could not be opened, once per kind of failure: a retry loop that keeps
+/// failing the same way only says so again at debug level. The kind decides how loud (a
+/// transient wait is info, an unsupported desktop a warning, an unexpected failure an error),
+/// never the message, which may change from one attempt to the next.
+#[derive(Default)]
+struct FailureLog {
+    last: Option<PlatformError>,
+}
+
+impl FailureLog {
+    /// `what` failed with `e`; `meanwhile` says what the agent does about it.
+    fn failed(&mut self, what: &str, e: &PlatformError, meanwhile: &str) {
+        if !self.is_news(e) {
+            tracing::debug!("{what} ({e}); {meanwhile}");
+        } else {
+            match e {
+                PlatformError::Transient(_) => tracing::info!("{what} ({e}); {meanwhile}"),
+                PlatformError::Unsupported(_) => tracing::warn!("{what} ({e}); {meanwhile}"),
+                PlatformError::Fatal(_) => tracing::error!("{what} ({e}); {meanwhile}"),
+            }
+        }
+        self.last = Some(e.clone());
+    }
+
+    /// The backend opened: the next failure is news again.
+    fn recovered(&mut self) {
+        self.last = None;
+    }
+
+    /// Whether `e` is a different kind of failure than the last one, or the first.
+    fn is_news(&self, e: &PlatformError) -> bool {
+        !self.last.as_ref().is_some_and(|l| l.same_kind(e))
+    }
+}
+
 /// Logs injection failures where people look (warn), without one line per mouse move:
 /// a new or changed error is logged at once, a repeating one at most every
 /// [`InjectErrorLog::REPEAT`] with a count of what was suppressed in between.
@@ -1677,6 +1762,21 @@ mod tests {
         viewers.store(0, Ordering::SeqCst);
         assert!(!may_capture(&frames, &viewers, &shown), "viewer left");
         drop(rx);
+    }
+
+    #[test]
+    fn failures_log_again_only_when_the_kind_changes() {
+        let mut log = FailureLog::default();
+        let starting = PlatformError::Transient("GNOME is starting".into());
+        assert!(log.is_news(&starting), "the first failure");
+        log.failed("border", &starting, "waiting");
+        assert!(
+            !log.is_news(&PlatformError::Transient("the screen is locked".into())),
+            "same kind, other words"
+        );
+        assert!(log.is_news(&PlatformError::Fatal("GNOME is starting".into())));
+        log.recovered();
+        assert!(log.is_news(&starting), "news again after it worked");
     }
 
     #[test]
