@@ -363,6 +363,7 @@ fn start_menu_bar(
     status: &Arc<listeners::Status>,
     exit: &Arc<tokio::sync::Notify>,
     disconnect_all: Arc<dyn Fn() + Send + Sync>,
+    needs_password: bool,
 ) -> Option<dalker_platform::macos::MenuBar> {
     let web = Arc::clone(status);
     let exit = Arc::clone(exit);
@@ -371,6 +372,7 @@ fn start_menu_bar(
         on_settings: Box::new(open_settings_window),
         on_disconnect: Box::new(move || disconnect_all()),
         on_exit: Box::new(move || exit.notify_one()),
+        needs_password,
     };
     match dalker_platform::macos::MenuBar::start(cfg) {
         Ok(m) => {
@@ -696,7 +698,12 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
     let _menu_bar = if cli.no_tray {
         None
     } else {
-        start_menu_bar(&status, &exit, Arc::clone(&disconnect_all))
+        start_menu_bar(
+            &status,
+            &exit,
+            Arc::clone(&disconnect_all),
+            cli.password_hash.is_none() && cli.password.is_none(),
+        )
     };
 
     // Without a readable file at start, tokens and listeners come from the environment and
