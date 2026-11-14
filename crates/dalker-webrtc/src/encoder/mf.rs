@@ -63,6 +63,15 @@ fn vendor_name(vendor_id: &str, friendly: &str) -> String {
     }
 }
 
+/// Which hardware encoder to try first: NVIDIA, then the rest in Media Foundation's order.
+fn vendor_rank(vendor_id: &str) -> u8 {
+    if vendor_id.to_ascii_uppercase().contains("10DE") {
+        0
+    } else {
+        1
+    }
+}
+
 fn string_attr(attrs: &IMFAttributes, key: &GUID) -> String {
     let mut value = PWSTR::null();
     let mut len = 0;
@@ -151,10 +160,19 @@ impl MfEncoder {
         if encoders.is_empty() {
             bail!("no hardware H.264 encoder for Media Foundation");
         }
+        // Media Foundation lists an integrated GPU's encoder first on a PC that also has an
+        // NVIDIA card (a Radeon 780M before an RTX 4070 SUPER); NVENC goes first instead.
+        let mut encoders: Vec<_> = encoders
+            .into_iter()
+            .map(|a| {
+                let vendor = string_attr(&a, &MFT_ENUM_HARDWARE_VENDOR_ID_Attribute);
+                let friendly = string_attr(&a, &MFT_FRIENDLY_NAME_Attribute);
+                (a, vendor, friendly)
+            })
+            .collect();
+        encoders.sort_by_key(|(_, vendor, _)| vendor_rank(vendor));
         let mut errors = Vec::new();
-        for activate in encoders {
-            let vendor = string_attr(&activate, &MFT_ENUM_HARDWARE_VENDOR_ID_Attribute);
-            let friendly = string_attr(&activate, &MFT_FRIENDLY_NAME_Attribute);
+        for (activate, vendor, friendly) in encoders {
             match Self::open_one(activate.clone(), config) {
                 Ok(enc) => {
                     tracing::info!(vendor, mft = friendly, "Media Foundation H.264 encoder");
@@ -551,6 +569,9 @@ mod tests {
         assert_eq!(vendor_name("VEN_8086", ""), "Intel Quick Sync");
         assert_eq!(vendor_name("VEN_1002", "AMDh264Encoder"), "AMD AMF");
         assert_eq!(vendor_name("", "Some Encoder"), "Some Encoder");
+        let mut ids = ["VEN_1002", "VEN_10DE", "VEN_8086"];
+        ids.sort_by_key(|v| vendor_rank(v));
+        assert_eq!(ids, ["VEN_10DE", "VEN_1002", "VEN_8086"]);
     }
 
     /// Encodes on this machine's GPU when it has a hardware encoder (`DALKER_TEST_MF=1` makes

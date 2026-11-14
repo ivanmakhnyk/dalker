@@ -194,6 +194,7 @@ fn open_hardware(config: &Config) -> Result<(Box<dyn Backend>, String)> {
 /// luma plane with rows `y_pitch` bytes apart, `uv` the interleaved chroma plane with rows
 /// `uv_pitch` apart. Rows and columns past the picture (a surface padded to whole
 /// macroblocks) repeat the last row and column, so the padding costs few bits.
+#[cfg(any(windows, target_os = "linux", test))]
 pub(crate) fn write_nv12(
     yuv: &I420,
     y: &mut [u8],
@@ -216,7 +217,7 @@ pub(crate) fn write_nv12(
         let r = row.min(ch - 1) * cw;
         let (us, vs) = (&yuv.u[r..r + cw], &yuv.v[r..r + cw]);
         let dst = &mut uv[row * uv_pitch..][..uv_pitch];
-        for (i, pair) in dst.chunks_exact_mut(2).enumerate() {
+        for (i, pair) in dst.as_chunks_mut::<2>().0.iter_mut().enumerate() {
             let x = i.min(cw - 1);
             pair[0] = us[x];
             pair[1] = vs[x];
@@ -225,11 +226,13 @@ pub(crate) fn write_nv12(
 }
 
 /// Whether an Annex-B stream holds an SPS NAL unit.
+#[cfg(any(windows, target_os = "linux", test))]
 pub(crate) fn has_sps(annex_b: &[u8]) -> bool {
     nal_types(annex_b).any(|t| t == 7)
 }
 
 /// The NAL unit types in an Annex-B stream, in order.
+#[cfg(any(windows, target_os = "linux", test))]
 pub(crate) fn nal_types(annex_b: &[u8]) -> impl Iterator<Item = u8> + '_ {
     let mut i = 0;
     std::iter::from_fn(move || {
