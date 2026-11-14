@@ -2,8 +2,7 @@
 //! quit.
 //!
 //! While Screen Recording or Accessibility is not allowed, the icon turns into a warning sign
-//! and the menu starts with what is missing: items that open the right System Settings pane,
-//! and **Restart Dalker**, because Screen Recording only applies to a newly started process.
+//! and the menu opens a setup window with shortcuts to the right System Settings panes.
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,9 +13,10 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
+    NSApplication, NSBackingStoreType, NSButton, NSImage, NSMenu, NSMenuItem, NSStatusBar,
+    NSStatusItem, NSTextField, NSVariableStatusItemLength, NSWindow, NSWindowStyleMask,
 };
-use objc2_foundation::{NSObjectProtocol, NSString};
+use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 
 use super::main_thread::{on_main, on_main_async};
 use super::permissions;
@@ -97,6 +97,8 @@ pub struct MenuBarConfig {
     /// Ends every viewer's and AI agent's session (no password needed).
     pub on_disconnect: Box<dyn Fn() + Send>,
     pub on_exit: Box<dyn Fn() + Send>,
+    /// Opens the setup window on first launch of the installed app until a password is set.
+    pub needs_password: bool,
 }
 
 define_class!(
@@ -124,6 +126,25 @@ define_class!(
 
         #[unsafe(method(openSettings:))]
         fn open_settings(&self, _sender: Option<&AnyObject>) {
+            (self.ivars().on_settings)();
+        }
+
+        #[unsafe(method(openSetup:))]
+        fn open_setup(&self, _sender: Option<&AnyObject>) {
+            INSTALLED.with(|i| {
+                if let Some(installed) = i.borrow().as_ref() {
+                    installed.present_setup(self.mtm());
+                }
+            });
+        }
+
+        #[unsafe(method(continueSetup:))]
+        fn continue_setup(&self, _sender: Option<&AnyObject>) {
+            INSTALLED.with(|i| {
+                if let Some(installed) = i.borrow().as_ref() {
+                    installed.setup.window.orderOut(None);
+                }
+            });
             (self.ivars().on_settings)();
         }
 
@@ -164,19 +185,138 @@ struct Installed {
     item: Retained<NSStatusItem>,
     _menu: Retained<NSMenu>,
     _target: Retained<MenuTarget>,
-    /// The items shown only while a permission is missing.
-    setup: SetupItems,
+    setup: SetupWindow,
 }
 
-struct SetupItems {
-    heading: Retained<NSMenuItem>,
-    screen_recording: Retained<NSMenuItem>,
-    accessibility: Retained<NSMenuItem>,
-    restart: Retained<NSMenuItem>,
-    separator: Retained<NSMenuItem>,
+struct SetupWindow {
+    window: Retained<NSWindow>,
+    screen_status: Retained<NSTextField>,
+    accessibility_status: Retained<NSTextField>,
+    screen_settings: Retained<NSButton>,
+    accessibility_settings: Retained<NSButton>,
+    restart: Retained<NSButton>,
+    continue_button: Retained<NSButton>,
     /// Screen Recording was off when Dalker started. Capture in this process won't work even
     /// once it is turned on, so Restart stays in the menu.
     restart_needed: bool,
+}
+
+impl SetupWindow {
+    fn new(mtm: MainThreadMarker, target: &MenuTarget, restart_needed: bool) -> Self {
+        let rect = |x, y, w, h| NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
+        // SAFETY: the window is built and retained on the main thread.
+        let window = unsafe {
+            NSWindow::initWithContentRect_styleMask_backing_defer(
+                mtm.alloc(),
+                rect(0.0, 0.0, 560.0, 208.0),
+                NSWindowStyleMask::Titled | NSWindowStyleMask::Closable,
+                NSBackingStoreType::Buffered,
+                false,
+            )
+        };
+        // SAFETY: SetupWindow retains the window and may show it again after closing.
+        unsafe { window.setReleasedWhenClosed(false) };
+        window.setTitle(&NSString::from_str("Set up Dalker"));
+        let content = window.contentView().expect("setup window content view");
+        let label = |title, y, width| {
+            let field = NSTextField::labelWithString(&NSString::from_str(title), mtm);
+            field.setFrame(rect(20.0, y, width, 22.0));
+            content.addSubview(&field);
+            field
+        };
+        let button = |title, action, x, y, width| {
+            // SAFETY: all selectors belong to MenuTarget, retained by Installed.
+            let button = unsafe {
+                NSButton::buttonWithTitle_target_action(
+                    &NSString::from_str(title),
+                    Some(target),
+                    Some(action),
+                    mtm,
+                )
+            };
+            button.setFrame(rect(x, y, width, 32.0));
+            content.addSubview(&button);
+            button
+        };
+        label(
+            "Allow Dalker to show your screen and use your mouse and keyboard.",
+            169.0,
+            520.0,
+        );
+        let screen_status = label("", 127.0, 380.0);
+        let accessibility_status = label("", 83.0, 380.0);
+        let screen_settings = button(
+            "Open Settings…",
+            sel!(openScreenRecording:),
+            400.0,
+            126.0,
+            140.0,
+        );
+        let accessibility_settings = button(
+            "Open Settings…",
+            sel!(openAccessibility:),
+            400.0,
+            82.0,
+            140.0,
+        );
+        if restart_needed {
+            label(
+                "After allowing Screen Recording in System Settings, restart Dalker.",
+                55.0,
+                520.0,
+            );
+        }
+        let restart = button("Restart Dalker", sel!(restart:), 246.0, 18.0, 140.0);
+        let continue_button = button(
+            "Continue to Password",
+            sel!(continueSetup:),
+            386.0,
+            18.0,
+            154.0,
+        );
+        window.center();
+        Self {
+            window,
+            screen_status,
+            accessibility_status,
+            screen_settings,
+            accessibility_settings,
+            restart,
+            continue_button,
+            restart_needed,
+        }
+    }
+
+    fn update(&self, now: Permissions) {
+        let screen_status = match (now.screen_recording, self.restart_needed) {
+            (true, false) => "Screen & System Audio Recording: Allowed",
+            (true, true) => "Screen & System Audio Recording: Restart required",
+            (false, _) => "Screen & System Audio Recording: Permission needed",
+        };
+        self.screen_status
+            .setStringValue(&NSString::from_str(screen_status));
+        self.accessibility_status
+            .setStringValue(&NSString::from_str(if now.accessibility {
+                "Accessibility: Allowed"
+            } else {
+                "Accessibility: Permission needed"
+            }));
+        self.screen_settings.setEnabled(!now.screen_recording);
+        self.accessibility_settings.setEnabled(!now.accessibility);
+        // macOS can keep reporting denial to the current process after the toggle is on.
+        self.restart
+            .setEnabled(self.restart_needed || !now.screen_recording);
+        self.continue_button
+            .setEnabled(now.all() && !self.restart_needed);
+    }
+}
+
+impl Installed {
+    fn present_setup(&self, mtm: MainThreadMarker) {
+        self.setup.update(Permissions::now());
+        self.setup.window.makeKeyAndOrderFront(None);
+        NSApplication::sharedApplication(mtm).activate();
+    }
 }
 
 thread_local! {
@@ -185,6 +325,8 @@ thread_local! {
 }
 
 fn install(mtm: MainThreadMarker, cfg: MenuBarConfig) {
+    let first_run = cfg.needs_password && app_bundle().is_some();
+    let now = Permissions::now();
     let target: Retained<MenuTarget> = {
         let this = MenuTarget::alloc(mtm).set_ivars(cfg);
         // SAFETY: NSObject's `init` on a freshly allocated object.
@@ -208,19 +350,8 @@ fn install(mtm: MainThreadMarker, cfg: MenuBarConfig) {
         menu.addItem(&item);
         item
     };
-    // Without an action the heading is shown greyed out, as a label.
-    let setup = SetupItems {
-        heading: entry("Dalker needs your permission:", None),
-        screen_recording: entry("Allow Screen Recording…", Some(sel!(openScreenRecording:))),
-        accessibility: entry("Allow Accessibility…", Some(sel!(openAccessibility:))),
-        restart: entry("Restart Dalker", Some(sel!(restart:))),
-        separator: {
-            let item = NSMenuItem::separatorItem(mtm);
-            menu.addItem(&item);
-            item
-        },
-        restart_needed: !permissions::screen_recording(false),
-    };
+    entry("Set Up Permissions…", Some(sel!(openSetup:)));
+    let setup = SetupWindow::new(mtm, &target, !now.screen_recording);
     entry("Open Dalker in Browser", Some(sel!(openViewer:)));
     entry("Dalker Settings…", Some(sel!(openSettings:)));
     menu.addItem(&NSMenuItem::separatorItem(mtm));
@@ -235,20 +366,17 @@ fn install(mtm: MainThreadMarker, cfg: MenuBarConfig) {
         _target: target,
         setup,
     };
-    show(mtm, &installed, Permissions::now());
+    show(mtm, &installed, now);
+    if first_run {
+        installed.present_setup(mtm);
+    }
     INSTALLED.with(|i| *i.borrow_mut() = Some(installed));
 }
 
 /// Shows the icon and the setup items for these permissions.
 fn show(mtm: MainThreadMarker, installed: &Installed, now: Permissions) {
-    let s = &installed.setup;
-    let restart = s.restart_needed || !now.screen_recording;
-    let setup = !now.all() || restart;
-    s.heading.setHidden(!setup);
-    s.separator.setHidden(!setup);
-    s.screen_recording.setHidden(now.screen_recording);
-    s.restart.setHidden(!restart);
-    s.accessibility.setHidden(now.accessibility);
+    let setup = !now.all() || installed.setup.restart_needed;
+    installed.setup.update(now);
 
     let Some(button) = installed.item.button(mtm) else {
         return;
