@@ -386,14 +386,53 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   font-weight: 500;
   text-align: left;
 }
-.keylist button:hover { background: rgba(30, 41, 59, .8); border-color: #334155; color: #fff; }
+.keylist button:hover:not(:disabled) { background: rgba(30, 41, 59, .8); border-color: #334155; color: #fff; }
+.keylist button:disabled { opacity: .45; cursor: not-allowed; }
 .keylist kbd {
   font: 10px var(--mono);
   padding: 2px 6px;
   border-radius: 4px;
   background: #1e293b;
   color: var(--muted);
+  white-space: nowrap;
 }
+.pop.keys { width: 272px; max-height: calc(100vh - 90px); overflow-y: auto; }
+.key-sep { height: 1px; margin: 4px 0; background: rgba(30, 41, 59, .8); }
+.key-folder { border-radius: 8px; border: 1px solid rgba(30, 41, 59, .6); background: rgba(15, 23, 42, .25); }
+.key-folder summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: #cbd5e1;
+  user-select: none;
+}
+.key-folder summary::-webkit-details-marker { display: none; }
+.key-folder summary::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform .15s;
+  flex: none;
+}
+.key-folder[open] summary::before { transform: rotate(45deg); }
+.key-folder summary:hover { color: #fff; }
+.key-folder-label { flex: 1; min-width: 0; }
+.key-badge {
+  font: 10px var(--mono);
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, .18);
+  color: #a5b4fc;
+}
+.key-folder-body { display: flex; flex-direction: column; gap: 4px; padding: 0 6px 6px; }
 
 /* Collapsed toolbar: a small tab at the top edge. */
 #notch {

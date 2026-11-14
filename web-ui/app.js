@@ -73,7 +73,7 @@ function setStatus(text, cls) {
   $("btn-fullscreen").hidden = cls !== "connected";
   updateSessionGroup();
   applyAutoHide();
-  $("btn-cad").hidden = !info || !["windows", "linux"].includes(info.os);
+  updateKeysCapabilities();
   if (cls !== "connected") { closePopover("pop-keys"); closePopover("pop-clip"); closePopover("pop-settings"); closePopover("pop-files"); }
   if (cls === "connected") {
     if (!wasConnected) showHint();
@@ -542,25 +542,135 @@ async function updateStats() {
 
 $("btn-connect").addEventListener("click", () => { slotRetries = 0; connect(); });
 $("btn-disconnect").addEventListener("click", () => { clearTimeout(slotRetryTimer); slotRetries = 0; quickDrops = 0; disconnect(); });
-// Ctrl+Alt+Del cannot be sent as keys (the browser's OS would act on it first).
-$("btn-cad").addEventListener("click", () => {
+const KEY_FOLDERS = [
+  {
+    os: "windows",
+    label: "Windows",
+    items: [
+      { label: "Ctrl + Alt + Del", kbd: "Secure", action: "secure_attention", title: "Send Ctrl+Alt+Del to the host (Windows sign-in and lock screen)", pinned: true },
+      { label: "Lock", kbd: "Win + L", combo: "MetaLeft KeyL", title: "Lock the host (Win + L)", pinned: true },
+      { label: "Windows key", kbd: "Win", combo: "MetaLeft", title: "Press the Windows key", pinned: true },
+      { label: "Alt + Tab", kbd: "Switch", combo: "AltLeft Tab", title: "Switch windows (Alt + Tab)", pinned: true },
+      { label: "Task Manager", kbd: "Ctrl+Shift+Esc", combo: "ControlLeft ShiftLeft Escape", title: "Open Task Manager (Ctrl + Shift + Esc)", pinned: true },
+      { label: "Task View", kbd: "Win + Tab", combo: "MetaLeft Tab", title: "Open Task View (Win + Tab)" },
+      { label: "Run", kbd: "Win + R", combo: "MetaLeft KeyR", title: "Open Run dialog (Win + R)" },
+      { label: "Show Desktop", kbd: "Win + D", combo: "MetaLeft KeyD", title: "Toggle desktop (Win + D)" },
+    ],
+  },
+  {
+    os: "macos",
+    label: "macOS",
+    items: [
+      { label: "Lock Screen", kbd: "⌃ + ⌘ + Q", combo: "ControlLeft MetaLeft KeyQ", title: "Lock screen (Control + Command + Q)", pinned: true },
+      { label: "Command key", kbd: "⌘", combo: "MetaLeft", title: "Press the Command key", pinned: true },
+      { label: "App Switcher", kbd: "⌘ + Tab", combo: "MetaLeft Tab", title: "Switch applications (Command + Tab)", pinned: true },
+      { label: "Spotlight", kbd: "⌘ + Space", combo: "MetaLeft Space", title: "Open Spotlight Search (Command + Space)", pinned: true },
+      { label: "Force Quit", kbd: "⌘ + ⌥ + Esc", combo: "MetaLeft AltLeft Escape", title: "Force Quit Applications (Command + Option + Esc)", pinned: true },
+      { label: "Option key", kbd: "⌥", combo: "AltLeft", title: "Press the Option key" },
+      { label: "Control key", kbd: "⌃", combo: "ControlLeft", title: "Press the Control key" },
+      { label: "Mission Control", kbd: "⌃ + ↑", combo: "ControlLeft ArrowUp", title: "Open Mission Control (Control + Up)" },
+      { label: "Quit App", kbd: "⌘ + Q", combo: "MetaLeft KeyQ", title: "Quit active application (Command + Q)" },
+      { label: "Close Window", kbd: "⌘ + W", combo: "MetaLeft KeyW", title: "Close active window (Command + W)" },
+      { label: "Screenshot", kbd: "⌘ + ⇧ + 4", combo: "MetaLeft ShiftLeft Digit4", title: "Capture screenshot selection (Command + Shift + 4)" },
+    ],
+  },
+  {
+    os: "linux",
+    label: "Linux",
+    items: [
+      { label: "Ctrl + Alt + Del", kbd: "System", action: "secure_attention", title: "Send Ctrl+Alt+Del to the host (GNOME: log out / power off dialog)", pinned: true },
+      { label: "Lock", kbd: "Super + L", combo: "MetaLeft KeyL", title: "Lock the host (Super + L)", pinned: true },
+      { label: "Super key", kbd: "Super", combo: "MetaLeft", title: "Press the Super key", pinned: true },
+      { label: "Alt + Tab", kbd: "Switch", combo: "AltLeft Tab", title: "Switch windows (Alt + Tab)", pinned: true },
+      { label: "Terminal", kbd: "Ctrl+Alt+T", combo: "ControlLeft AltLeft KeyT", title: "Open terminal (Ctrl + Alt + T)", pinned: true },
+      { label: "Run Command", kbd: "Alt + F2", combo: "AltLeft F2", title: "Open Run Command dialog (Alt + F2)" },
+      { label: "Workspace Left", kbd: "Ctrl+Alt+←", combo: "ControlLeft AltLeft ArrowLeft", title: "Switch to previous workspace (Ctrl + Alt + Left)" },
+      { label: "Workspace Right", kbd: "Ctrl+Alt+→", combo: "ControlLeft AltLeft ArrowRight", title: "Switch to next workspace (Ctrl + Alt + Right)" },
+    ],
+  },
+];
+
+function createKeyButton(item) {
+  const b = document.createElement("button");
+  if (item.action) b.dataset.action = item.action;
+  if (item.combo) b.dataset.combo = item.combo;
+  if (item.title) b.title = item.title;
+  const label = document.createElement("span");
+  label.textContent = item.label;
+  const kbd = document.createElement("kbd");
+  kbd.textContent = item.kbd;
+  b.append(label, kbd);
+  return b;
+}
+
+function updateKeysCapabilities() {
+  const cadSupported = !!info && ["windows", "linux"].includes(info.os);
+  document.querySelectorAll('#pop-keys [data-action="secure_attention"]').forEach((b) => {
+    b.disabled = !cadSupported;
+    if (!cadSupported && info) b.title = "Ctrl+Alt+Del is only supported on Windows and Linux hosts";
+  });
+}
+
+function renderKeysMenu() {
+  const list = $("keys-list");
+  list.replaceChildren();
+  const hostOs = info?.os;
+  const activeFolder = KEY_FOLDERS.find((f) => f.os === hostOs) || KEY_FOLDERS[0];
+
+  for (const item of activeFolder.items.filter((i) => i.pinned)) {
+    list.append(createKeyButton(item));
+  }
+  list.append(createKeyButton({ label: "Esc", kbd: "Cancel", combo: "Escape", title: "Send Escape" }));
+
+  const sep = document.createElement("div");
+  sep.className = "key-sep";
+  list.append(sep);
+
+  for (const folder of KEY_FOLDERS) {
+    const details = document.createElement("details");
+    details.className = "key-folder";
+    const summary = document.createElement("summary");
+    const title = document.createElement("span");
+    title.className = "key-folder-label";
+    title.textContent = folder.label;
+    summary.append(title);
+    if (folder.os === hostOs) {
+      const badge = document.createElement("span");
+      badge.className = "key-badge";
+      badge.textContent = "Current";
+      summary.append(badge);
+    }
+    const body = document.createElement("div");
+    body.className = "key-folder-body";
+    for (const item of folder.items) body.append(createKeyButton(item));
+    details.append(summary, body);
+    list.append(details);
+  }
+  updateKeysCapabilities();
+}
+
+renderKeysMenu();
+
+// Key combinations the local OS or browser would catch before reaching the host.
+$("keys-list").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b || b.disabled) return;
   closePopovers();
-  if (!dc || dc.readyState !== "open") {
-    setStatus("not connected: Ctrl+Alt+Del was not sent", "error");
+  if (b.dataset.action === "secure_attention") {
+    if (!dc || dc.readyState !== "open") {
+      setStatus("not connected: Ctrl+Alt+Del was not sent", "error");
+      return;
+    }
+    send({ type: "secure_attention" });
+    stage.focus({ preventScroll: true });
     return;
   }
-  send({ type: "secure_attention" });
-  stage.focus({ preventScroll: true });
-});
-// Other combinations the local OS or browser would catch: press in order, release in reverse.
-document.querySelectorAll("#pop-keys [data-combo]").forEach((b) => {
-  b.addEventListener("click", () => {
-    closePopovers();
+  if (b.dataset.combo) {
     const codes = b.dataset.combo.split(" ");
     codes.forEach((code) => send({ type: "key", code, down: true }));
     codes.slice().reverse().forEach((code) => send({ type: "key", code, down: false }));
     stage.focus({ preventScroll: true });
-  });
+  }
 });
 $("btn-fullscreen").addEventListener("click", async () => {
   if (document.fullscreenElement) { await document.exitFullscreen().catch(() => {}); return; }
@@ -1683,7 +1793,7 @@ async function start() {
   $("pop-host").textContent = info.hostname || "Dalker";
   $("s-system").textContent = [info.os, info.capture].filter(Boolean).join(" · ") || "–";
   $("s-version").textContent = info.version ? `Dalker ${info.version}` : "–";
-  if (info.os === "linux") $("btn-cad").title = "Send Ctrl+Alt+Del to the host (GNOME: log out / power off dialog)";
+  renderKeysMenu();
   $("set-version").textContent = info.version ? `v${info.version}` : "";
   $("btn-files").hidden = !info.files;
   renderSettings();
