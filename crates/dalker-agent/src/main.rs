@@ -17,6 +17,7 @@
 
 mod cli;
 mod config_watch;
+mod diagnostics;
 mod listeners;
 mod settings;
 mod stream;
@@ -55,6 +56,14 @@ fn main() -> Result<()> {
     };
     let matches = Cli::command().get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    if matches!(cli.command, Some(Command::Diagnostics)) {
+        use std::io::Write;
+
+        let config = settings::store::read_file(&config_path);
+        let report = diagnostics::collect(config.as_deref().ok(), Some(cli.capture), None);
+        std::io::stdout().lock().write_all(report.as_bytes())?;
+        return Ok(());
+    }
     if let Some(e) = config_error {
         if matches!(cli.command, None | Some(Command::Service)) {
             return Err(e);
@@ -70,11 +79,7 @@ fn main() -> Result<()> {
     }
     if service && std::env::var_os(LOG_DIR_ENV).is_none() {
         // SYSTEM's own profile is a poor place for logs; the agent inherits this too.
-        let base = std::env::var_os("ProgramData").unwrap_or_else(|| r"C:\ProgramData".into());
-        std::env::set_var(
-            LOG_DIR_ENV,
-            std::path::Path::new(&base).join("Dalker").join("logs"),
-        );
+        std::env::set_var(LOG_DIR_ENV, service_log_dir());
     }
     init_logging(if service { "service.log" } else { "dalker.log" });
     install_panic_hook();
@@ -206,6 +211,11 @@ fn main() -> Result<()> {
 
 /// Overrides where log files go (set by the service for itself and the agent it starts).
 const LOG_DIR_ENV: &str = "DALKER_LOG_DIR";
+
+fn service_log_dir() -> std::path::PathBuf {
+    let base = std::env::var_os("ProgramData").unwrap_or_else(|| r"C:\ProgramData".into());
+    std::path::Path::new(&base).join("Dalker").join("logs")
+}
 
 /// Folder for the agent's own files (log): `DALKER_LOG_DIR`, else per user
 /// (`%LOCALAPPDATA%\\Dalker` on Windows, `~/Library/Logs/Dalker` on macOS).

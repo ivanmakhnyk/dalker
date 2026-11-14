@@ -27,6 +27,34 @@ pub use input::SendInputInjector;
 pub use overlay::BorderOverlay;
 pub use tray::{AiAgentsMenu, Tray, TrayConfig};
 
+/// Session attached to the physical console, if one is active.
+pub fn console_session_id() -> Option<u32> {
+    use windows::Win32::System::RemoteDesktop::WTSGetActiveConsoleSessionId;
+
+    let id = unsafe { WTSGetActiveConsoleSessionId() };
+    (id != u32::MAX).then_some(id)
+}
+
+/// Returns the kernel version independently of the executable's compatibility manifest.
+pub fn os_version() -> Option<(u32, u32, u32)> {
+    use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
+
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn RtlGetVersion(version: *mut OSVERSIONINFOW) -> i32;
+    }
+
+    let mut version = OSVERSIONINFOW {
+        dwOSVersionInfoSize: std::mem::size_of::<OSVERSIONINFOW>() as u32,
+        ..Default::default()
+    };
+    (unsafe { RtlGetVersion(&mut version) } == 0).then_some((
+        version.dwMajorVersion,
+        version.dwMinorVersion,
+        version.dwBuildNumber,
+    ))
+}
+
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };

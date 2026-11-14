@@ -28,6 +28,10 @@ pub trait Store: Send {
     fn edit(&mut self, set: &[(String, String)], remove: &[String]) -> Result<(), String>;
     /// The file, for the window's footer.
     fn path(&self) -> &Path;
+    /// On Linux, the administrator helper can read the service journal for the host window.
+    fn diagnostic_journal(&mut self) -> Option<String> {
+        None
+    }
 }
 
 pub struct FileStore {
@@ -56,7 +60,7 @@ impl Store for FileStore {
     }
 }
 
-fn read_file(path: &Path) -> Result<String, String> {
+pub(crate) fn read_file(path: &Path) -> Result<String, String> {
     match std::fs::read_to_string(path) {
         Ok(t) => Ok(t),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
@@ -157,6 +161,10 @@ fn user_ids(name: &str) -> Option<(u32, u32)> {
 fn handle(path: &Path, allowed: Allowed, req: &Value) -> Value {
     let result = match req["op"].as_str() {
         Some("read") => read_file(path).map(|text| json!({ "ok": true, "text": text })),
+        #[cfg(target_os = "linux")]
+        Some("diagnostic-journal") if allowed == Allowed::All => {
+            Ok(json!({ "events": crate::diagnostics::journal_events() }))
+        }
         Some("edit") => parse_edit(req, allowed).and_then(|(set, remove)| {
             // No logging here: the log goes to stdout, which carries the answers.
             cli::edit_config(path, &set, &remove)
@@ -293,6 +301,13 @@ impl Store for HelperStore {
 
     fn path(&self) -> &Path {
         &self.path
+    }
+
+    #[cfg(target_os = "linux")]
+    fn diagnostic_journal(&mut self) -> Option<String> {
+        self.call(json!({ "op": "diagnostic-journal" })).ok()?["events"]
+            .as_str()
+            .map(str::to_owned)
     }
 }
 

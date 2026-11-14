@@ -154,6 +154,8 @@ fn parse_cookie_secure(s: &str) -> Result<dalker_web::CookieSecure, String> {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Print a host diagnostics report for bug reports.
+    Diagnostics,
     /// Print an argon2 hash for DALKER_PASSWORD_HASH. Reads stdin if no argument.
     HashPassword { password: Option<String> },
     /// Store a new login password (as an argon2 hash) in the config file.
