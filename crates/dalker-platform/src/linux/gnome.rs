@@ -19,7 +19,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use dalker_core::{
-    CaptureError, Clipboard, ClipboardError, DisplayInfo, RawFrame, ScreenCapturer, ViewerIndicator,
+    CaptureError, Clipboard, ClipboardError, DisplayInfo, PlatformError, RawFrame, ScreenCapturer,
+    ViewerIndicator,
 };
 use zbus::blocking::fdo::DBusProxy;
 use zbus::blocking::{Connection, Proxy};
@@ -377,21 +378,24 @@ pub struct GnomeBorder {
 }
 
 impl GnomeBorder {
-    pub fn new() -> Result<Self, String> {
-        let conn = Connection::session().map_err(|e| format!("no D-Bus session bus: {e}"))?;
+    /// [`PlatformError::Transient`] while the shell or its extension is not there (still
+    /// starting, the screen locked, waiting for the next login).
+    pub fn new() -> Result<Self, PlatformError> {
+        let conn = Connection::session()
+            .map_err(|e| PlatformError::Transient(format!("no D-Bus session bus: {e}")))?;
         if !name_has_owner(&conn, BUS_NAME) {
             if screen_locked() {
-                return Err(
+                return Err(PlatformError::Transient(
                     "the screen is locked (GNOME turns extensions off on the lock screen; \
                             the desktop is served again once it is unlocked)"
                         .into(),
-                );
+                ));
             }
-            return Err(
+            return Err(PlatformError::Transient(
                 "GNOME Shell extension dalker-border@ivanmakhnyk.github.io is not running \
                  (it is loaded at login: log out and back in after installing)"
                     .to_string(),
-            );
+            ));
         }
         let active = Arc::new(AtomicBool::new(false));
         let shown = Arc::new(AtomicBool::new(false));
@@ -452,7 +456,7 @@ impl GnomeBorder {
                     let _ = p.call_method("SetActive", &(false,));
                 }
             })
-            .map_err(|e| format!("spawn border thread: {e}"))?;
+            .map_err(|e| PlatformError::Fatal(format!("spawn border thread: {e}")))?;
         Ok(Self {
             conn,
             active,
@@ -509,9 +513,11 @@ pub struct GnomeClipboard {
 }
 
 impl GnomeClipboard {
-    pub fn new() -> Result<Self, String> {
+    /// [`PlatformError::Transient`] while the extension is not running.
+    pub fn new() -> Result<Self, PlatformError> {
         let mut c = Self { conn: None };
-        c.proxy().map_err(|e| e.to_string())?;
+        c.proxy()
+            .map_err(|e| PlatformError::Transient(e.to_string()))?;
         Ok(c)
     }
 

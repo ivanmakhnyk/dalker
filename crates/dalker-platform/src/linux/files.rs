@@ -10,7 +10,7 @@ use std::ffi::{CStr, CString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use dalker_core::FileAccess;
+use dalker_core::{FileAccess, PlatformError};
 
 struct Account {
     name: String,
@@ -189,11 +189,12 @@ fn user_groups(acct: &Account) -> Vec<libc::gid_t> {
     }
 }
 
-pub fn open_file_access() -> Result<FileAccess, String> {
+pub fn open_file_access() -> Result<FileAccess, PlatformError> {
     let euid = unsafe { libc::geteuid() };
     if euid != 0 {
         // Already the user (GNOME on Wayland, or started by hand).
-        let acct = account_by_uid(euid).ok_or("unknown user")?;
+        let acct =
+            account_by_uid(euid).ok_or_else(|| PlatformError::Fatal("unknown user".into()))?;
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or(acct.home);
@@ -204,12 +205,16 @@ pub fn open_file_access() -> Result<FileAccess, String> {
             guard: Box::new(()),
         });
     }
-    let name = desktop_user().ok_or("Nobody is signed in on the host.")?;
-    let acct = account_by_name(&name).ok_or_else(|| format!("unknown user {name}"))?;
+    let name = desktop_user()
+        .ok_or_else(|| PlatformError::Transient("Nobody is signed in on the host.".into()))?;
+    let acct = account_by_name(&name)
+        .ok_or_else(|| PlatformError::Fatal(format!("unknown user {name}")))?;
     if acct.uid == 0 {
-        return Err("The host's desktop runs as root; file transfer is off.".into());
+        return Err(PlatformError::Unsupported(
+            "The host's desktop runs as root; file transfer is off.".into(),
+        ));
     }
-    let guard = FsIdentity::assume(&acct)?;
+    let guard = FsIdentity::assume(&acct).map_err(PlatformError::Fatal)?;
     let downloads = downloads_dir(&acct.home);
     Ok(FileAccess {
         user: acct.name,

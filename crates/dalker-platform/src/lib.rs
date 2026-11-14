@@ -9,11 +9,14 @@
 //! | macOS   | ScreenCaptureKit (main display)          | `CGEventPost` (HID level)     |
 //!
 //! Use [`create_capturer`] / [`create_injector`] to get the backend for the
-//! current OS without any `cfg` at the call site. On macOS the agent must also run inside
-//! [`run_app`], which keeps the main thread for AppKit.
+//! current OS without any `cfg` at the call site. Every factory fails with a
+//! [`PlatformError`], whose kind (not its text) tells callers how to retry and log. On
+//! macOS the agent must also run inside [`run_app`], which keeps the main thread for AppKit.
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use dalker_core::CaptureError;
 use dalker_core::{
-    CaptureError, Clipboard, FileAccess, InputError, InputInjector, ScreenCapturer, ViewerIndicator,
+    Clipboard, FileAccess, InputInjector, PlatformError, ScreenCapturer, ViewerIndicator,
 };
 
 pub mod icon;
@@ -115,13 +118,32 @@ pub fn run_app<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> R {
     }
 }
 
+/// The error for a backend this OS doesn't have.
+#[allow(dead_code)]
+fn not_on_this_os(what: &str, desktop: Desktop) -> PlatformError {
+    PlatformError::Unsupported(format!(
+        "no {what} for {desktop:?} on {}",
+        std::env::consts::OS
+    ))
+}
+
+/// The error while nobody is signed in to a Linux host yet.
+fn no_session_yet() -> PlatformError {
+    PlatformError::Transient("no desktop session yet (nobody signed in)".into())
+}
+
 /// Creates the native screen capturer for `desktop` (see [`Desktop::detect`]).
-pub fn create_capturer(desktop: Desktop) -> Result<Box<dyn ScreenCapturer>, CaptureError> {
+pub fn create_capturer(desktop: Desktop) -> Result<Box<dyn ScreenCapturer>, PlatformError> {
     match desktop {
         #[cfg(target_os = "windows")]
         Desktop::Windows => Ok(Box::new(windows::DxgiCapturer::new()?)),
+        // ScreenCaptureKit is only "unsupported" until Screen Recording is allowed.
         #[cfg(target_os = "macos")]
-        Desktop::Mac => Ok(Box::new(macos::SckCapturer::new()?)),
+        Desktop::Mac => match macos::SckCapturer::new() {
+            Ok(c) => Ok(Box::new(c)),
+            Err(CaptureError::Unsupported(why)) => Err(PlatformError::Transient(why)),
+            Err(e) => Err(e.into()),
+        },
         #[cfg(target_os = "linux")]
         Desktop::Gnome => Ok(Box::new(linux::gnome::GnomeCapturer::new()?)),
         #[cfg(target_os = "linux")]
@@ -129,22 +151,17 @@ pub fn create_capturer(desktop: Desktop) -> Result<Box<dyn ScreenCapturer>, Capt
             // XWayland only shows X11 apps, so never pretend to capture the desktop with it.
             match linux::portal::PortalCapturer::new() {
                 Ok(c) => Ok(Box::new(c)),
-                Err(CaptureError::Unsupported(why)) => Err(CaptureError::Unsupported(format!(
+                Err(CaptureError::Unsupported(why)) => Err(PlatformError::Unsupported(format!(
                     "Wayland session without a usable screen cast (no GNOME; xdg-desktop-portal: {why})"
                 ))),
-                Err(e) => Err(e),
+                Err(e) => Err(e.into()),
             }
         }
         #[cfg(target_os = "linux")]
         Desktop::X11 => Ok(Box::new(linux::X11Capturer::new()?)),
-        Desktop::None => Err(CaptureError::Unsupported(
-            "no desktop session yet (nobody signed in)".into(),
-        )),
+        Desktop::None => Err(no_session_yet()),
         #[allow(unreachable_patterns)]
-        other => Err(CaptureError::Unsupported(format!(
-            "{other:?} is not a desktop of {}",
-            std::env::consts::OS
-        ))),
+        other => Err(not_on_this_os("screen capture", other)),
     }
 }
 
@@ -193,7 +210,7 @@ pub fn allow_screen_sharing_now() -> Result<bool, String> {
 }
 
 /// Creates the native input injector for this OS.
-pub fn create_injector() -> Result<Box<dyn InputInjector>, InputError> {
+pub fn create_injector() -> Result<Box<dyn InputInjector>, PlatformError> {
     #[cfg(target_os = "windows")]
     {
         return Ok(Box::new(windows::SendInputInjector::new()));
@@ -207,7 +224,7 @@ pub fn create_injector() -> Result<Box<dyn InputInjector>, InputError> {
         return Ok(Box::new(macos::CgInjector::new()?));
     }
     #[allow(unreachable_code)]
-    Err(InputError::Unsupported(std::env::consts::OS.to_string()))
+    Err(not_on_this_os("input injection", Desktop::detect()))
 }
 
 /// Opens the host's clipboard (text), shared with viewers. Call it on the thread that will
@@ -216,7 +233,7 @@ pub fn create_injector() -> Result<Box<dyn InputInjector>, InputError> {
 /// Errors when there is none to share: Linux needs GNOME Shell with the Dalker extension, or
 /// KDE Plasma's Klipper (Wayland lets nothing else reach the clipboard); other desktops are
 /// not supported yet.
-pub fn create_clipboard(desktop: Desktop) -> Result<Box<dyn Clipboard>, String> {
+pub fn create_clipboard(desktop: Desktop) -> Result<Box<dyn Clipboard>, PlatformError> {
     match desktop {
         #[cfg(target_os = "windows")]
         Desktop::Windows => Ok(Box::new(windows::WinClipboard::new()?)),
@@ -233,7 +250,7 @@ pub fn create_clipboard(desktop: Desktop) -> Result<Box<dyn Clipboard>, String> 
             Ok(Box::new(linux::gnome::GnomeClipboard::new()?))
         }
         #[allow(unreachable_patterns)]
-        _ => Err(format!("no clipboard support for {}", std::env::consts::OS)),
+        other => Err(not_on_this_os("clipboard", other)),
     }
 }
 
@@ -241,8 +258,8 @@ pub fn create_clipboard(desktop: Desktop) -> Result<Box<dyn Clipboard>, String> 
 /// [`FileAccess`]): the signed-in user, never SYSTEM or root. When the agent runs as that
 /// user already, that is the agent's own account.
 ///
-/// Errors when nobody is signed in (the sign-in screen is up).
-pub fn open_file_access() -> Result<FileAccess, String> {
+/// [`PlatformError::Transient`] when nobody is signed in (the sign-in screen is up).
+pub fn open_file_access() -> Result<FileAccess, PlatformError> {
     #[cfg(target_os = "windows")]
     {
         return windows::files::open_file_access();
@@ -256,17 +273,14 @@ pub fn open_file_access() -> Result<FileAccess, String> {
         return macos::files::open_file_access();
     }
     #[allow(unreachable_code)]
-    Err(format!(
-        "no file transfer support for {}",
-        std::env::consts::OS
-    ))
+    Err(not_on_this_os("file transfer", Desktop::detect()))
 }
 
 /// Creates the on-screen "remote session active" indicator (red screen border).
 ///
 /// Errors if it cannot be drawn; callers serving a real desktop must treat that
 /// as fatal rather than run without a visible indicator.
-pub fn create_indicator(desktop: Desktop) -> Result<Box<dyn ViewerIndicator>, String> {
+pub fn create_indicator(desktop: Desktop) -> Result<Box<dyn ViewerIndicator>, PlatformError> {
     match desktop {
         #[cfg(target_os = "windows")]
         Desktop::Windows => Ok(Box::new(windows::BorderOverlay::new()?)),
@@ -280,20 +294,18 @@ pub fn create_indicator(desktop: Desktop) -> Result<Box<dyn ViewerIndicator>, St
         #[cfg(target_os = "linux")]
         Desktop::PortalWayland => match linux::wayland::LayerBorder::new() {
             Ok(b) => Ok(Box::new(b)),
-            // GNOME that is still starting has no layer-shell either: say what it needs.
+            // GNOME that is still starting has no layer-shell either: say what it needs, and
+            // keep the layer-shell's kind (the GNOME border is only a guess here).
             Err(layer) => match linux::gnome::GnomeBorder::new() {
                 Ok(b) => Ok(Box::new(b)),
-                Err(gnome) => Err(format!("{layer} (GNOME: {gnome})")),
+                Err(gnome) => Err(layer.map_message(|m| format!("{m} (GNOME: {gnome})"))),
             },
         },
         #[cfg(target_os = "linux")]
         Desktop::X11 => Ok(Box::new(linux::BorderOverlay::new()?)),
-        Desktop::None => Err("no desktop session yet (nobody signed in)".into()),
+        Desktop::None => Err(no_session_yet()),
         #[allow(unreachable_patterns)]
-        _ => Err(format!(
-            "no on-screen indicator for {}",
-            std::env::consts::OS
-        )),
+        other => Err(not_on_this_os("on-screen indicator", other)),
     }
 }
 
