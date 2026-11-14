@@ -68,6 +68,7 @@ function render(s) {
   $("mcp-version").textContent = $("version").textContent;
   $("mcp-version").hidden = !s.version || host;
   if (s.blocked) return showBlocked(s.blocked);
+  $("copy-diagnostics").hidden = !host;
   $("blocked").hidden = true;
   $("tabs").hidden = !host;
   const shown = host ? tab : "mcp";
@@ -151,6 +152,7 @@ document.querySelector(".tabs").addEventListener("keydown", (e) => {
 });
 
 function showBlocked(text) {
+  $("copy-diagnostics").hidden = true;
   $("tabs").hidden = true;
   $("blocked").hidden = false;
   $("blocked").textContent = text;
@@ -740,17 +742,34 @@ function toast(text, bad = false) {
 async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text);
-    return;
+    return true;
   } catch {
     const ta = document.createElement("textarea");
     ta.value = text;
     ta.style.cssText = "position:fixed;opacity:0;top:0;left:0";
     document.body.appendChild(ta);
     ta.select();
-    document.execCommand("copy");
-    ta.remove();
+    try {
+      return document.execCommand("copy");
+    } finally {
+      ta.remove();
+    }
   }
 }
+
+$("copy-diagnostics").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const { report } = await api("GET", "/api/settings/diagnostics");
+    if (!await copyText(report)) throw new Error("Clipboard copy failed.");
+    toast("Diagnostics copied.");
+  } catch (e) {
+    toast(`Could not copy diagnostics. ${e.message}`, true);
+  } finally {
+    button.disabled = false;
+  }
+});
 
 // ---------------------------------------------------------------- start
 

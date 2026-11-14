@@ -9,6 +9,7 @@
 //! | Route | Body | |
 //! |---|---|---|
 //! | `GET /api/settings` | | the whole state ([`state_json`]) |
+//! | `GET /api/settings/diagnostics` | | host only: shareable diagnostics text |
 //! | `POST /api/settings/web` | `{enabled?, port?}` | host only |
 //! | `POST /api/settings/password` | `{password, repeat}` | host only |
 //! | `POST /api/settings/mcp` | `{enabled?, port?, remote?}` | host only |
@@ -114,6 +115,7 @@ impl Api {
     pub fn router(self) -> Router {
         Router::new()
             .route("/api/settings", get(get_state))
+            .route("/api/settings/diagnostics", get(get_diagnostics))
             .route("/api/settings/web", post(set_web))
             .route("/api/settings/password", post(set_password))
             .route("/api/settings/mcp", post(set_mcp))
@@ -198,6 +200,22 @@ where
 
 fn bad(msg: impl Into<String>) -> (StatusCode, String) {
     (StatusCode::BAD_REQUEST, msg.into())
+}
+
+async fn get_diagnostics(State(api): ApiState, headers: HeaderMap) -> Response {
+    let mut response = guarded(api, headers, true, |api| {
+        let (config, journal) = {
+            let mut store = api.store.lock().unwrap();
+            (store.read().ok(), store.diagnostic_journal())
+        };
+        Ok(json!({ "report": crate::diagnostics::collect(config.as_deref(), None, journal.as_deref()) }))
+    })
+    .await;
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
 }
 
 fn saved_or_500(r: Result<Saved, String>) -> Result<Saved, (StatusCode, String)> {
@@ -942,6 +960,8 @@ mod tests {
             "the host's file path is not shown to viewers"
         );
         assert!(v["screen_sharing"].is_null(), "a host-only setting");
+        let (s, _) = call(&app, "GET", "/api/settings/diagnostics", Value::Null).await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
         for (uri, body) in [
             ("/api/settings/web", json!({"enabled": false})),
             ("/api/settings/stream", json!({"fps": 60})),
@@ -972,6 +992,27 @@ mod tests {
             app.clone().oneshot(req).await.unwrap().status(),
             StatusCode::UNAUTHORIZED
         );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn diagnostics_require_the_host_key_and_exclude_secrets() {
+        let path = temp("diagnostics");
+        std::fs::write(&path, "DALKER_WEB=off\nDALKER_PASSWORD=test-password\n").unwrap();
+        let app = app(&path, Access::Host);
+        let req = Request::builder()
+            .uri("/api/settings/diagnostics")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(req).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let (status, value) = call(&app, "GET", "/api/settings/diagnostics", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        let report = value["report"].as_str().unwrap();
+        assert!(report.contains("DALKER_WEB=off"));
+        assert!(!report.contains("test-password"));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }
