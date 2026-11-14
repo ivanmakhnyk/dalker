@@ -210,7 +210,7 @@ use **Keys → Ctrl + Alt + Del**, then type the Windows password.
 
 - **Web Remote Access:** turn browser access on or off, change the port (8742 by default) and the
   access password. Changing the password signs everyone out.
-- **Stream limits** (on the same tab): the most frame rate (30 fps by default, up to 120) and
+- **Stream limits** (on the same tab, under **Set my own stream limits**): the most frame rate (30 fps by default, up to 120) and
   bitrate (6000 kbit/s by default) every viewer gets, and the width wider screens are scaled down
   to (1920 pixels by default; 0 sends them at full size). Viewers can choose less for their own
   session. Open streams switch to new limits too.

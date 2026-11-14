@@ -14,6 +14,8 @@ use crate::config_watch;
 pub const KEY_FPS: &str = "DALKER_FPS";
 pub const KEY_BITRATE_KBPS: &str = "DALKER_BITRATE_KBPS";
 pub const KEY_MAX_WIDTH: &str = "DALKER_MAX_WIDTH";
+/// All three keys.
+pub const KEYS: [&str; 3] = [KEY_FPS, KEY_BITRATE_KBPS, KEY_MAX_WIDTH];
 
 pub const DEFAULT_FPS: u32 = 30;
 pub const DEFAULT_BITRATE_KBPS: u32 = 6000;

@@ -67,7 +67,8 @@ is the web client's **AI agents** panel (robot button in the toolbar).
 
 - **Web remote access:** turn the web server on or off, its HTTP port (default 8742), the access
   password (shown or hidden while typing; only an Argon2 hash is stored), and the stream limits
-  (`DALKER_FPS`, `DALKER_BITRATE_KBPS`, `DALKER_MAX_WIDTH`).
+  (`DALKER_FPS`, `DALKER_BITRATE_KBPS`, `DALKER_MAX_WIDTH`; collapsed until **Set my own stream
+  limits** is on, and turning it off removes the three keys so the defaults apply).
 - **AI agents (MCP):** turn the MCP server on or off, its port (default 8743), and its access tokens:
   generate one, copy it again at any time, copy a ready **MCP config** (JSON for Claude Code,
   Cursor/LM Studio/Windsurf or Claude Desktop), switch its remote control (screenshots, mouse,

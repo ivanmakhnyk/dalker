@@ -215,11 +215,20 @@ function isLocal(host) {
 // down to (0 = full size). The running agent applies them to open streams too.
 const STREAM = [["stream-fps", "fps"], ["stream-bitrate", "bitrate_kbps"], ["stream-width", "max_width"]];
 let streamDirty = false;
+// Opened with the switch but not applied yet: the file still has no limits of its own.
+let streamOpen = false;
 
 function renderStream(st) {
   if (!st) return;
   const d = st.default;
   $("stream-default").textContent = `Default: ${d.fps} fps · ${d.bitrate_kbps} kbit/s · ${d.max_width} px`;
+  // Collapsed while the defaults apply; expanded once the host sets its own limits.
+  const open = st.custom || streamOpen;
+  setSwitch("stream-enabled", open);
+  $("stream-fields").hidden = !open;
+  $("stream-off-hint").hidden = open;
+  $("stream-off-hint").textContent =
+    `Viewers get up to ${d.fps} fps at up to ${d.bitrate_kbps} kbit/s, and screens wider than ${d.max_width} pixels are scaled down. Turn this on to raise or lower these limits.`;
   for (const [id, key] of STREAM) {
     if (!streamDirty && !STREAM.some(([i]) => document.activeElement === $(i))) $(id).value = String(st[key]);
   }
@@ -254,6 +263,33 @@ function validateStream() {
   return !err;
 }
 
+$("stream-enabled").addEventListener("change", async (e) => {
+  const sw = e.target;
+  if (sw.checked) {
+    // Nothing changes until Apply: the fields start at the limits in force.
+    streamOpen = true;
+    render(state);
+    $("stream-fps").focus();
+    return;
+  }
+  streamOpen = false;
+  streamDirty = false;
+  if (!state.stream.custom) return render(state);
+  sw.dataset.pending = "1";
+  sw.disabled = true;
+  try {
+    const d = state.stream.default;
+    applyResult(await api("POST", "/api/settings/stream", { custom: false }),
+      `Stream limits back to the defaults: ${d.fps} fps, ${d.bitrate_kbps} kbit/s, ${d.max_width} px. Open streams switch within a few seconds.`);
+  } catch (err) {
+    sw.checked = true;
+    message(err.message, false);
+  } finally {
+    delete sw.dataset.pending;
+    sw.disabled = false;
+  }
+});
+
 for (const [id] of STREAM) {
   $(id).addEventListener("input", () => { streamDirty = true; validateStream(); });
   $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") $("stream-apply").click(); });
@@ -265,6 +301,7 @@ $("stream-apply").addEventListener("click", async () => {
   try {
     const data = await api("POST", "/api/settings/stream", v);
     streamDirty = false;
+    streamOpen = false;
     applyResult(data, `Viewers now get up to ${v.fps} fps at up to ${v.bitrate_kbps} kbit/s. Open streams switch within a few seconds.`);
   } catch (err) {
     $("stream-error").textContent = err.message;

@@ -92,6 +92,8 @@ pub struct Saved {
     pub password_set: bool,
     /// `DALKER_FPS`, `DALKER_BITRATE_KBPS`, `DALKER_MAX_WIDTH` (defaults where missing).
     pub stream: crate::stream::Limits,
+    /// Whether the file sets any stream limit (the window's "Custom stream limits" switch).
+    pub stream_custom: bool,
     pub tokens: Vec<TokenRecord>,
     /// The tokens themselves, by id, for those made since they are kept (copy again later).
     pub secrets: std::collections::BTreeMap<String, String>,
@@ -132,6 +134,7 @@ impl Saved {
                 crate::stream::Limits::default(),
                 &[],
             ),
+            stream_custom: crate::stream::KEYS.iter().any(|k| get(k).is_some()),
             password_set: get(KEY_PASSWORD_HASH).is_some_and(|v| !v.is_empty())
                 || get(KEY_PASSWORD).is_some_and(|v| !v.is_empty()),
             secrets: pairs
@@ -274,6 +277,7 @@ mod tests {
         assert!(!s.web && s.mcp && s.password_set);
         assert_eq!(s.bind.port(), 8080);
         assert_eq!(s.stream, crate::stream::Limits::default());
+        assert!(!s.stream_custom);
         let s = Saved::parse("DALKER_FPS=60\nDALKER_BITRATE_KBPS=12000\nDALKER_MAX_WIDTH=0\n");
         assert_eq!(
             s.stream,
@@ -283,6 +287,7 @@ mod tests {
                 max_width: 0
             }
         );
+        assert!(s.stream_custom);
     }
 
     #[test]

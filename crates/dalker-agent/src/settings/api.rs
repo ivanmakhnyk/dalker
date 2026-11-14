@@ -12,7 +12,7 @@
 //! | `POST /api/settings/web` | `{enabled?, port?}` | host only |
 //! | `POST /api/settings/password` | `{password, repeat}` | host only |
 //! | `POST /api/settings/mcp` | `{enabled?, port?, remote?}` | host only |
-//! | `POST /api/settings/stream` | `{fps?, bitrate_kbps?, max_width?}` | host only: stream limits |
+//! | `POST /api/settings/stream` | `{custom?, fps?, bitrate_kbps?, max_width?}` | host only: stream limits; `custom: false` goes back to the defaults |
 //! | `POST /api/settings/tokens` | `{name, remote, clipboard}` | → `{token, state}` |
 //! | `PATCH /api/settings/tokens/{id}` | `{remote, clipboard}` | |
 //! | `DELETE /api/settings/tokens/{id}` | | |
@@ -258,6 +258,7 @@ pub fn state_json(api: &Api, saved: &Saved) -> Value {
             "status": status(saved.mcp, live.mcp),
         },
         "stream": {
+            "custom": saved.stream_custom,
             "fps": saved.stream.fps,
             "bitrate_kbps": saved.stream.bitrate_kbps,
             "max_width": saved.stream.max_width,
@@ -475,9 +476,16 @@ async fn set_mcp(State(api): ApiState, headers: HeaderMap, Json(body): Json<Valu
 }
 
 /// The stream limits every viewer gets: the most frame rate and bitrate, and the width wider
-/// screens are scaled down to. The agent applies them to running streams too.
+/// screens are scaled down to. The agent applies them to running streams too. `custom: false`
+/// removes them from the file, so the defaults apply.
 async fn set_stream(State(api): ApiState, headers: HeaderMap, Json(body): Json<Value>) -> Response {
     guarded(api, headers, true, move |api| {
+        if body["custom"].as_bool() == Some(false) {
+            let remove: Vec<String> = stream::KEYS.iter().map(|k| k.to_string()).collect();
+            let saved = saved_or_500(api.edit(&[], &remove))?;
+            tracing::info!("stream limits back to the defaults in the settings");
+            return Ok(json!({ "state": state_json(api, &saved) }));
+        }
         type Parse = fn(&str) -> Result<u32, String>;
         let fields: [(&str, &str, &str, Parse); 3] = [
             ("fps", stream::KEY_FPS, "Frame rate", stream::parse_fps),
@@ -744,7 +752,7 @@ mod tests {
         let (_, v) = call(&app, "GET", "/api/settings", Value::Null).await;
         assert_eq!(
             v["stream"],
-            json!({"fps": 30, "bitrate_kbps": 6000, "max_width": 1920,
+            json!({"custom": false, "fps": 30, "bitrate_kbps": 6000, "max_width": 1920,
                    "default": {"fps": 30, "bitrate_kbps": 6000, "max_width": 1920},
                    "range": {"fps": [1, 120], "bitrate_kbps": [250, 100000], "max_width": [320, 16384]}})
         );
@@ -786,6 +794,25 @@ mod tests {
                 .contains("DALKER_FPS=60"),
             "unchanged"
         );
+        let (s, v) = call(
+            &app,
+            "POST",
+            "/api/settings/stream",
+            json!({"custom": false}),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(
+            (
+                &v["state"]["stream"]["custom"],
+                &v["state"]["stream"]["fps"]
+            ),
+            (&json!(false), &json!(30)),
+            "back to the defaults"
+        );
+        assert!(!std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("DALKER_FPS"));
 
         // Tokens: create, copy again, change, revoke.
         let (s, v) = call(

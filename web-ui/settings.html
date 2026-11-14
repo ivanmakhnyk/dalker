@@ -147,6 +147,12 @@
           <span class="label">Stream Limits</span>
           <span class="hint-mono" id="stream-default"></span>
         </div>
+        <label class="switch-box switch-inline stream-switch">
+          <span>Set my own stream limits</span>
+          <input type="checkbox" id="stream-enabled" class="switch">
+        </label>
+        <p class="hint" id="stream-off-hint" hidden></p>
+        <div id="stream-fields" hidden>
         <div class="stream-grid">
           <div>
             <label class="label-sm" for="stream-fps">Frame rate</label>
@@ -176,6 +182,7 @@
           <button class="btn-primary" id="stream-apply" disabled>
             <svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span>Apply</span>
           </button>
+        </div>
         </div>
       </div>
 
