@@ -582,6 +582,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
             udp_port: cli.udp_port,
             public_ips: cli.public_ip.clone(),
             encoder: limits.encoder(),
+            encoder_backend: cli.encoder.backend(),
             ..Default::default()
         })
         .await?

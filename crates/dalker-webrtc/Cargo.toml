@@ -16,3 +16,19 @@ serde.workspace = true
 serde_json.workspace = true
 webrtc.workspace = true
 openh264.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# dlopen of libva for the VA-API hardware encoder.
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies.windows]
+# The Media Foundation hardware H.264 encoder.
+workspace = true
+features = [
+    "Win32_Foundation",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+]

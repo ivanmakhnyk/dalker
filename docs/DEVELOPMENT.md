@@ -88,6 +88,7 @@ Settings); a flag wins over the file, and the agent then doesn't follow the file
 | `--fps` (`DALKER_FPS`) | `30` | max frame rate (1–120) |
 | `--bitrate-kbps` (`DALKER_BITRATE_KBPS`) | `6000` | H.264 target bitrate in kbit/s, the most a viewer gets (250–100000) |
 | `--max-width` (`DALKER_MAX_WIDTH`) | `1920` | downscale wider screens; `0` = always native |
+| `--encoder auto\|hardware\|software` (`DALKER_ENCODER`) | `auto` | H.264 encoder: `auto` uses the GPU's encoder (Media Foundation with NVIDIA NVENC, Intel Quick Sync or AMD AMF on Windows, VA-API on Linux) and falls back to OpenH264 on the CPU when there is none or it fails; `hardware` never falls back; `software` is always OpenH264. The viewer's connection details show which one a session uses |
 | `--udp-port` | ephemeral | single UDP port for all WebRTC traffic |
 | `--public-ip` | – | extra host ICE candidate (repeatable); with `--udp-port` and no `--public-ip`, a `stun:` server is asked for it at startup, every 10 minutes and after a viewer fails to connect |
 | `--stun` | – | STUN/TURN server URL for non-LAN use (repeatable) |
@@ -119,7 +120,9 @@ client's settings, within these host limits.
     Wayland capture (GNOME, KDE, sway...) needs `gstreamer1.0-tools` and
     `gstreamer1.0-pipewire`; other Wayland desktops than GNOME also need `xdg-desktop-portal` with
     their desktop's backend (`xdg-desktop-portal-kde`, `xdg-desktop-portal-wlr`...). The Wayland
-    client code is pure Rust too, so no `libwayland-dev` is needed.
+    client code is pure Rust too, so no `libwayland-dev` is needed. The VA-API hardware encoder
+    loads `libva` at run time (`libva2`, `libva-drm2` and the GPU's VA-API driver, such as
+    `intel-media-va-driver` or `mesa-va-drivers`), so no `libva-dev` is needed either.
   - **macOS** (14 or later, Apple silicon): Xcode Command Line Tools (`xcode-select --install`)
     and `brew install nasm`. No Apple Developer account is needed.
 
@@ -294,7 +297,7 @@ permissions.
 ### What rights the agent runs with
 
 One `dalkerd` process does everything: the web server (axum), WebRTC (SDP, ICE, DTLS, SCTP,
-SRTP in webrtc-rs), DataChannel messages, the OpenH264 encoder, the MCP server, capture, input
+SRTP in webrtc-rs), DataChannel messages, the H.264 encoder, the MCP server, capture, input
 and the border. All of it runs with the rights of that one process:
 
 | Host | Runs as |
@@ -465,7 +468,8 @@ dalker/
 │   │                                Klipper clipboard (KDE)
 │   │                       macOS:   ScreenCaptureKit, CGEventPost, AppKit border and menu
 │   │                                bar, NSPasteboard
-│   ├── dalker-webrtc     webrtc-rs pipeline: BGRA→I420 + OpenH264 encoder, H.264 track,
+│   ├── dalker-webrtc     webrtc-rs pipeline: BGRA→I420 + H.264 encoder (Media Foundation
+│   │                       or VA-API on the GPU, OpenH264 otherwise), H.264 track,
 │   │                       "control" and "files" DataChannels, clipboard sync
 │   ├── dalker-web        axum server: Argon2 login, session cookies, /api/offer signaling,
 │   │                       embedded web client (rust-embed)
@@ -483,7 +487,7 @@ dalker/
  Browser                                   Host (dalkerd)
  ───────                                   ────────────────
  POST /api/offer  ── HTTP (axum) ───────▶  login check, SDP answer
- <video>  ◀────── WebRTC H.264 track ────  capture → I420 → OpenH264
+ <video>  ◀────── WebRTC H.264 track ────  capture → I420 → GPU encoder / OpenH264
  "control" DC  ── mouse / keys / text ──▶  SendInput / uinput
  "control" DC  ◀────── clipboard ───────▶  session clipboard
  "files"   DC  ◀───── file transfer ────▶  user's Downloads / home folder

@@ -5,7 +5,8 @@
 //!
 //! The same channel carries the text clipboard both ways (see [`clipboard`]), the
 //! viewer's stream settings (see [`settings`]) and, when the host ends a session, the
-//! reason (see [`EndReason`]). File transfers use a second channel,
+//! reason (see [`EndReason`]), and the encoder the session uses (see [`ActiveEncoder`]).
+//! File transfers use a second channel,
 //! `"files"` (see [`files`]).
 //!
 //! Signaling is a single non-trickle offer/answer exchange: the browser sends
@@ -52,7 +53,7 @@ use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSampl
 use webrtc::track::track_local::TrackLocal;
 
 pub use clipboard::{ClipboardState, ClipboardWatch};
-pub use encoder::EncoderSettings;
+pub use encoder::{ActiveEncoder, EncoderBackend, EncoderSettings};
 pub use files::{FileAccessFactory, FILES_CHANNEL};
 
 /// Label of the DataChannel that carries input events.
@@ -134,6 +135,8 @@ pub struct WebRtcConfig {
     /// viewer reaches a port-forwarded VM on.
     pub public_ips: Vec<String>,
     pub encoder: EncoderSettings,
+    /// Hardware or software H.264 encoding.
+    pub encoder_backend: EncoderBackend,
     /// A viewer that has not reached `Connected` this long after the answer was sent is
     /// dropped, so a browser that can never complete ICE does not hold a viewer slot (and the
     /// on-screen border) until the ICE agent finally gives up. `None` = 20 s.
@@ -512,6 +515,9 @@ impl WebRtcEngine {
         let settings_tx = Arc::new(settings_tx);
         let last_request: Arc<std::sync::Mutex<settings::Request>> = Arc::default();
 
+        // The encoder the session uses, set by the encoder thread, for the viewer.
+        let (active_tx, active_rx) = watch::channel::<Option<ActiveEncoder>>(None);
+
         // Control DataChannel → input worker; host clipboard → viewer; stream settings.
         // The "files" channel carries file transfers.
         let control_dc: ControlSlot = Arc::default();
@@ -522,7 +528,9 @@ impl WebRtcEngine {
             let settings_tx = Arc::clone(&settings_tx);
             let host_settings = host_settings.clone();
             let last_request = Arc::clone(&last_request);
+            let active_rx = active_rx.clone();
             pc.on_data_channel(Box::new(move |dc| {
+                let active_rx = active_rx.clone();
                 let control = control.clone();
                 let control_dc = Arc::clone(&control_dc);
                 let clipboard = clipboard.clone();
@@ -599,8 +607,10 @@ impl WebRtcEngine {
                         Box::pin(async {})
                     }));
                     let dc2 = Arc::clone(&dc);
+                    let active = active_rx.clone();
                     dc.on_open(Box::new(move || {
                         Box::pin(async move {
+                            tokio::spawn(forward_encoder(Arc::clone(&dc2), active));
                             tokio::spawn(clipboard::forward_to_viewer(id, dc2, clipboard));
                         })
                     }));
@@ -744,11 +754,14 @@ impl WebRtcEngine {
         // Encoder thread (OpenH264 is blocking, keep it off the async runtime).
         let runtime = tokio::runtime::Handle::current();
         let thread_stop = Arc::clone(&stop);
+        let backend = self.config.encoder_backend;
         let spawned = std::thread::Builder::new()
             .name(format!("dalker-enc-{id}"))
             .spawn(move || {
                 encode_loop(
                     id,
+                    backend,
+                    active_tx,
                     settings_rx,
                     frames,
                     track,
@@ -825,8 +838,32 @@ const IDLE_REFRESH: Duration = Duration::from_millis(500);
 /// settings and the stop flag again.
 const FRAME_POLL: Duration = Duration::from_millis(20);
 
+/// Sends the viewer the session's encoder ([`ActiveEncoder::message`]) now and whenever it
+/// changes. Ends with the channel or the encoder thread.
+async fn forward_encoder(
+    dc: Arc<RTCDataChannel>,
+    mut active: watch::Receiver<Option<ActiveEncoder>>,
+) {
+    loop {
+        let current = active.borrow_and_update().clone();
+        if let Some(enc) = current {
+            if dc.ready_state() != RTCDataChannelState::Open
+                || dc.send_text(enc.message()).await.is_err()
+            {
+                return;
+            }
+        }
+        if active.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn encode_loop(
     id: SessionId,
+    backend: encoder::EncoderBackend,
+    active: watch::Sender<Option<ActiveEncoder>>,
     mut settings: watch::Receiver<EncoderSettings>,
     mut frames: FrameWatch,
     track: Arc<TrackLocalStaticSample>,
@@ -835,7 +872,7 @@ fn encode_loop(
     runtime: tokio::runtime::Handle,
 ) {
     let current = *settings.borrow_and_update();
-    let mut enc = encoder::H264Encoder::new(current);
+    let mut enc = encoder::H264Encoder::with_backend(current, backend);
     let frame_interval = |s: &EncoderSettings| Duration::from_secs_f32(1.0 / s.max_fps.max(1.0));
     let mut interval = frame_interval(&current);
     let mut last_sent = Instant::now();
@@ -882,6 +919,9 @@ fn encode_loop(
                 }
                 Ok(None) => {}
                 Err(e) => tracing::warn!(session = id, "encode failed: {e:#}"),
+            }
+            if enc.active() != active.borrow().as_ref() {
+                active.send_replace(enc.active().cloned());
             }
         }
 
