@@ -310,6 +310,9 @@ fn serve_asset(path: &str) -> Response {
 }
 
 #[cfg(test)]
+mod i18n_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use axum::body::Body;

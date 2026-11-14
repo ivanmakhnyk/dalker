@@ -20,6 +20,7 @@ use objc2_foundation::{NSObjectProtocol, NSString};
 
 use super::main_thread::{on_main, on_main_async};
 use super::permissions;
+use crate::i18n::tr;
 
 /// How often the permissions are checked again while the menu bar item is up.
 const PERMISSION_POLL: Duration = Duration::from_secs(2);
@@ -97,6 +98,8 @@ pub struct MenuBarConfig {
     /// Ends every viewer's and AI agent's session (no password needed).
     pub on_disconnect: Box<dyn Fn() + Send>,
     pub on_exit: Box<dyn Fn() + Send>,
+    /// The language of the menu ([`crate::i18n`]); it is built once, when Dalker starts.
+    pub language: &'static str,
 }
 
 define_class!(
@@ -166,6 +169,7 @@ struct Installed {
     _target: Retained<MenuTarget>,
     /// The items shown only while a permission is missing.
     setup: SetupItems,
+    lang: &'static str,
 }
 
 struct SetupItems {
@@ -185,6 +189,8 @@ thread_local! {
 }
 
 fn install(mtm: MainThreadMarker, cfg: MenuBarConfig) {
+    let lang = cfg.language;
+    let t = |key: &str| tr(lang, key, &[]);
     let target: Retained<MenuTarget> = {
         let this = MenuTarget::alloc(mtm).set_ivars(cfg);
         // SAFETY: NSObject's `init` on a freshly allocated object.
@@ -210,10 +216,10 @@ fn install(mtm: MainThreadMarker, cfg: MenuBarConfig) {
     };
     // Without an action the heading is shown greyed out, as a label.
     let setup = SetupItems {
-        heading: entry("Dalker needs your permission:", None),
-        screen_recording: entry("Allow Screen Recording…", Some(sel!(openScreenRecording:))),
-        accessibility: entry("Allow Accessibility…", Some(sel!(openAccessibility:))),
-        restart: entry("Restart Dalker", Some(sel!(restart:))),
+        heading: entry(&t("menu.permission"), None),
+        screen_recording: entry(&t("menu.screenRecording"), Some(sel!(openScreenRecording:))),
+        accessibility: entry(&t("menu.accessibility"), Some(sel!(openAccessibility:))),
+        restart: entry(&t("menu.restart"), Some(sel!(restart:))),
         separator: {
             let item = NSMenuItem::separatorItem(mtm);
             menu.addItem(&item);
@@ -221,11 +227,11 @@ fn install(mtm: MainThreadMarker, cfg: MenuBarConfig) {
         },
         restart_needed: !permissions::screen_recording(false),
     };
-    entry("Open Dalker in Browser", Some(sel!(openViewer:)));
-    entry("Dalker Settings…", Some(sel!(openSettings:)));
+    entry(&t("menu.open"), Some(sel!(openViewer:)));
+    entry(&t("menu.settings"), Some(sel!(openSettings:)));
     menu.addItem(&NSMenuItem::separatorItem(mtm));
-    entry("Disconnect Everyone", Some(sel!(disconnectAll:)));
-    entry("Quit Dalker", Some(sel!(quit:)));
+    entry(&t("menu.disconnect"), Some(sel!(disconnectAll:)));
+    entry(&t("menu.quit"), Some(sel!(quit:)));
 
     let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
     item.setMenu(Some(&menu));
@@ -234,6 +240,7 @@ fn install(mtm: MainThreadMarker, cfg: MenuBarConfig) {
         _menu: menu,
         _target: target,
         setup,
+        lang,
     };
     show(mtm, &installed, Permissions::now());
     INSTALLED.with(|i| *i.borrow_mut() = Some(installed));
@@ -254,16 +261,16 @@ fn show(mtm: MainThreadMarker, installed: &Installed, now: Permissions) {
         return;
     };
     let (symbol, tip) = if !setup {
-        ("display", "Dalker")
+        ("display", "Dalker".to_owned())
     } else {
         (
             "exclamationmark.triangle",
-            "Dalker needs a permission, or a restart to use it",
+            tr(installed.lang, "menu.needsPermission", &[]),
         )
     };
     let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
         &NSString::from_str(symbol),
-        Some(&NSString::from_str(tip)),
+        Some(&NSString::from_str(&tip)),
     );
     match image {
         Some(image) => {
@@ -276,7 +283,7 @@ fn show(mtm: MainThreadMarker, installed: &Installed, now: Permissions) {
             "Dalker"
         })),
     }
-    button.setToolTip(Some(&NSString::from_str(tip)));
+    button.setToolTip(Some(&NSString::from_str(&tip)));
 }
 
 /// Checks the permissions every [`PERMISSION_POLL`] and updates the menu when they change,

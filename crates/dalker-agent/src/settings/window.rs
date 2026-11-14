@@ -11,18 +11,28 @@ use std::time::Duration;
 
 use axum::http::HeaderMap;
 use axum::routing::get;
+use dalker_platform::i18n;
 use rand::TryRng;
 
 use super::api::{Access, Api, Live};
 use super::store::Store;
+use super::Saved;
 
-const TITLE: &str = "Dalker Settings";
 /// Header that carries the per-launch key (the page reads it from its URL's fragment).
 const KEY_HEADER: &str = "x-dalker-key";
 
 /// Shows the window until it is closed. `store` is where the config file is read and written,
 /// or why it can't be (shown on the page).
-pub fn show(store: Result<Box<dyn Store>, String>, no_window: bool) {
+pub fn show(mut store: Result<Box<dyn Store>, String>, no_window: bool) {
+    // The window's title and error messages; the page picks its language itself (i18n.js).
+    let lang = i18n::current(
+        store
+            .as_mut()
+            .ok()
+            .and_then(|s| s.read().ok())
+            .and_then(|text| Saved::parse(&text).language)
+            .as_deref(),
+    );
     let mut raw = [0u8; 24];
     rand::rngs::SysRng
         .try_fill_bytes(&mut raw)
@@ -90,8 +100,19 @@ pub fn show(store: Result<Box<dyn Store>, String>, no_window: bool) {
         .expect("spawn settings server");
     let addr = match addr_rx.recv() {
         Ok(Ok(a)) => a,
-        Ok(Err(e)) => return report(&format!("The settings could not start: {e}")),
-        Err(_) => return report("The settings could not start."),
+        Ok(Err(e)) => {
+            return report(
+                lang,
+                &i18n::tr(lang, "settings.cantStart", &[("error", &e)]),
+            )
+        }
+        Err(_) => {
+            let e = "the server did not start";
+            return report(
+                lang,
+                &i18n::tr(lang, "settings.cantStart", &[("error", &e)]),
+            );
+        }
     };
     let url = format!("http://{addr}/#key={key}");
     if no_window {
@@ -100,8 +121,8 @@ pub fn show(store: Result<Box<dyn Store>, String>, no_window: bool) {
             std::thread::park();
         }
     }
-    if let Err(e) = open_window(&url) {
-        report(&format!("The settings window could not be opened: {e}"));
+    if let Err(e) = open_window(&url, &i18n::tr(lang, "settings.title", &[])) {
+        report(lang, &i18n::tr(lang, "settings.cantOpen", &[("error", &e)]));
     }
 }
 
@@ -246,12 +267,15 @@ impl Drop for InstanceFile {
     }
 }
 
-fn report(msg: &str) {
+fn report(lang: &str, msg: &str) {
     tracing::error!("{msg}");
     #[cfg(windows)]
-    dalker_platform::windows::settings::error_box(msg);
+    dalker_platform::windows::settings::error_box(&i18n::tr(lang, "settings.title", &[]), msg);
     #[cfg(not(windows))]
-    eprintln!("dalkerd settings: {msg}");
+    {
+        let _ = lang;
+        eprintln!("dalkerd settings: {msg}");
+    }
 }
 
 fn constant_eq(a: &str, b: &str) -> bool {
@@ -263,7 +287,7 @@ fn constant_eq(a: &str, b: &str) -> bool {
 }
 
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-fn open_window(url: &str) -> Result<(), String> {
+fn open_window(url: &str, title: &str) -> Result<(), String> {
     use tao::dpi::LogicalSize;
     use tao::event::{Event, WindowEvent};
     use tao::event_loop::{ControlFlow, EventLoopBuilder};
@@ -290,7 +314,7 @@ fn open_window(url: &str) -> Result<(), String> {
         .unwrap_or(680.0)
         .clamp(560.0, 820.0);
     let window = WindowBuilder::new()
-        .with_title(TITLE)
+        .with_title(title)
         .with_inner_size(LogicalSize::new(1000.0, height))
         .with_min_inner_size(LogicalSize::new(760.0, 560.0))
         .with_window_icon(icon)
@@ -367,7 +391,7 @@ fn raise(window: &tao::window::Window, token: Option<String>) {
 }
 
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-fn open_window(_url: &str) -> Result<(), String> {
+fn open_window(_url: &str, _title: &str) -> Result<(), String> {
     Err("no settings window on this OS".into())
 }
 
