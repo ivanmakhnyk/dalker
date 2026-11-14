@@ -368,6 +368,8 @@ impl ScreenCapturer for GnomeCapturer {
 pub struct GnomeBorder {
     conn: Connection,
     active: Arc<AtomicBool>,
+    /// The extension answered the last `SetActive(true)`.
+    shown: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     heartbeat: Option<JoinHandle<()>>,
 }
@@ -390,8 +392,14 @@ impl GnomeBorder {
             );
         }
         let active = Arc::new(AtomicBool::new(false));
+        let shown = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
-        let (c, a, s) = (conn.clone(), Arc::clone(&active), Arc::clone(&stop));
+        let (c, a, v, s) = (
+            conn.clone(),
+            Arc::clone(&active),
+            Arc::clone(&shown),
+            Arc::clone(&stop),
+        );
         // Ping every second while active; the extension hides the frame ~3 s after the
         // last ping, so a crashed agent can never leave a stale "recording" border (or,
         // more importantly, stream without one).
@@ -402,14 +410,30 @@ impl GnomeBorder {
                 let mut last = false;
                 while !s.load(Ordering::SeqCst) {
                     let now = a.load(Ordering::SeqCst);
+                    if !now {
+                        v.store(false, Ordering::SeqCst);
+                    }
                     if let Some(p) = &proxy {
                         if now || last {
-                            let _ = p.call_method("SetActive", &(now,));
+                            // The extension draws the frame before it answers.
+                            let ok = p.call_method("SetActive", &(now,)).is_ok();
+                            v.store(now && ok, Ordering::SeqCst);
                         }
                     }
                     last = now;
-                    std::thread::sleep(Duration::from_millis(if now { 1000 } else { 200 }));
+                    // While off, look often: the frame must come up quickly when a viewer
+                    // connects, since nothing is served before it does.
+                    let mut waited = Duration::ZERO;
+                    let period = Duration::from_millis(if now { 1000 } else { 50 });
+                    while waited < period
+                        && !s.load(Ordering::SeqCst)
+                        && a.load(Ordering::SeqCst) == now
+                    {
+                        std::thread::sleep(Duration::from_millis(10));
+                        waited += Duration::from_millis(10);
+                    }
                 }
+                v.store(false, Ordering::SeqCst);
                 if let Some(p) = &proxy {
                     let _ = p.call_method("SetActive", &(false,));
                 }
@@ -418,6 +442,7 @@ impl GnomeBorder {
         Ok(Self {
             conn,
             active,
+            shown,
             stop,
             heartbeat: Some(heartbeat),
         })
@@ -431,6 +456,10 @@ impl ViewerIndicator for GnomeBorder {
 
     fn set_active(&self, active: bool) {
         self.active.store(active, Ordering::SeqCst);
+    }
+
+    fn shown(&self) -> bool {
+        self.shown.load(Ordering::SeqCst)
     }
 
     fn healthy(&self) -> bool {

@@ -501,16 +501,19 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
     let (display_tx, display_rx) = watch::channel::<Option<DisplayInfo>>(None);
     let (control_tx, control_rx) = mpsc::unbounded_channel::<(SessionId, ControlMessage)>();
 
-    // Mock sources show no real screen, so they need no border; native capture is
-    // gated on the border being up (see below).
-    let border_ready = Arc::new(AtomicBool::new(cli.capture == CaptureMode::Mock));
+    // Mock sources show no real screen, so they need no border; native capture runs only
+    // while a viewer is connected and the border is actually on screen (see below).
+    let mock = cli.capture == CaptureMode::Mock;
+    let border_ready = Arc::new(AtomicBool::new(mock));
+    let border_shown = Arc::new(AtomicBool::new(mock));
+    let active = Arc::new(AtomicUsize::new(0));
     spawn_capture_thread(
         capture_factory,
         frame_tx.clone(),
         display_tx,
-        Arc::clone(&border_ready),
+        Arc::clone(&active),
+        Arc::clone(&border_shown),
     )?;
-    let active = Arc::new(AtomicUsize::new(0));
     let clipboard_factory: ClipboardFactory = match cli.capture {
         CaptureMode::Mock => {
             let clip = MockClipboard::new();
@@ -587,6 +590,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
     if cli.capture == CaptureMode::Native {
         let active = Arc::clone(&signaling.active);
         let ready = Arc::clone(&border_ready);
+        let shown = Arc::clone(&border_shown);
         tokio::spawn(async move {
             let mut indicator: Option<Box<dyn dalker_core::ViewerIndicator>> = None;
             let mut last_err = String::new();
@@ -624,6 +628,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                 }
                 if indicator.as_ref().is_some_and(|i| !i.healthy()) {
                     tracing::warn!("remote-session border went away; the desktop is not served until it is back");
+                    shown.store(false, Ordering::SeqCst);
                     ready.store(false, Ordering::SeqCst);
                     indicator = None;
                     last_err.clear();
@@ -634,8 +639,10 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
                         i.set_active(on);
                         last_on = on;
                     }
+                    // Frames flow only once the backend reports the border drawn.
+                    shown.store(on && i.shown(), Ordering::SeqCst);
                 }
-                let pause = if indicator.is_some() { 100 } else { 1000 };
+                let pause = if indicator.is_some() { 50 } else { 1000 };
                 tokio::time::sleep(Duration::from_millis(pause)).await;
             }
         });
@@ -1192,13 +1199,26 @@ impl SignalingHandler for Agent {
 
 // ------------------------------------------------------------------ capture
 
+/// Desktop frames are captured only while a viewer holds a slot and the red border is on screen.
+/// The receiver count alone is not enough: an ended MCP session's tool call can still hold one.
+fn may_capture(
+    frames: &watch::Sender<Option<Arc<RawFrame>>>,
+    viewers: &AtomicUsize,
+    border_shown: &AtomicBool,
+) -> bool {
+    frames.receiver_count() > 0
+        && viewers.load(Ordering::SeqCst) > 0
+        && border_shown.load(Ordering::SeqCst)
+}
+
 type CaptureFactory = Box<dyn Fn() -> Result<Box<dyn ScreenCapturer>, CaptureError> + Send>;
 
 fn spawn_capture_thread(
     factory: CaptureFactory,
     frames: watch::Sender<Option<Arc<RawFrame>>>,
     display: watch::Sender<Option<DisplayInfo>>,
-    border_ready: Arc<AtomicBool>,
+    viewers: Arc<AtomicUsize>,
+    border_shown: Arc<AtomicBool>,
 ) -> Result<()> {
     std::thread::Builder::new()
         .name("dalker-capture".into())
@@ -1207,7 +1227,7 @@ fn spawn_capture_thread(
             loop {
                 // Idle: release the capture backend entirely. Recreating it on
                 // demand also guarantees DXGI hands us a fresh full frame.
-                if frames.receiver_count() == 0 || !border_ready.load(Ordering::SeqCst) {
+                if !may_capture(&frames, &viewers, &border_shown) {
                     if capturer.take().is_some() {
                         tracing::info!("no viewers; capture paused");
                     }
@@ -1230,6 +1250,8 @@ fn spawn_capture_thread(
                     },
                 };
                 match cap.next_frame(Duration::from_millis(100)) {
+                    // The border may have gone off while this frame was being grabbed.
+                    Ok(Some(_)) if !may_capture(&frames, &viewers, &border_shown) => {}
                     Ok(Some(frame)) => {
                         let info = frame.display_info();
                         if *display.borrow() != Some(info) {
@@ -1553,6 +1575,28 @@ fn hostname() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_needs_a_viewer_and_the_border_on_screen() {
+        let (frames, _) = watch::channel::<Option<Arc<RawFrame>>>(None);
+        let viewers = AtomicUsize::new(0);
+        let shown = AtomicBool::new(false);
+        assert!(!may_capture(&frames, &viewers, &shown), "nobody listening");
+
+        // A receiver alone (e.g. a closed MCP session's tool call) doesn't start capture.
+        let rx = frames.subscribe();
+        assert!(!may_capture(&frames, &viewers, &shown));
+        viewers.store(1, Ordering::SeqCst);
+        assert!(
+            !may_capture(&frames, &viewers, &shown),
+            "border not drawn yet"
+        );
+        shown.store(true, Ordering::SeqCst);
+        assert!(may_capture(&frames, &viewers, &shown));
+        viewers.store(0, Ordering::SeqCst);
+        assert!(!may_capture(&frames, &viewers, &shown), "viewer left");
+        drop(rx);
+    }
 
     #[test]
     fn clipboard_helpers() {
