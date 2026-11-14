@@ -188,8 +188,8 @@ differs from the remote computer's, choose *Direct text* to type exactly what yo
 ### Your session's settings
 
 The gear sets the frame rate, bandwidth and resolution for your session, fit-to-window or 1:1
-view, natural scrolling, and a keep-alive that stops the remote computer from sleeping while you
-watch.
+view, natural scrolling, a keep-alive that stops the remote computer from sleeping while you
+watch, and auto-hiding the toolbar (it comes back when the pointer reaches the top edge).
 
 <img src="docs/images/widget-settings.png" alt="The viewer's settings: stream, display, keyboard and mouse" width="401">
 
