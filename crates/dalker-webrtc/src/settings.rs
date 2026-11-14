@@ -3,7 +3,9 @@
 //! The viewer asks for a frame rate, a bitrate and a downscale for its own stream; the host
 //! clamps them to its own limits (the agent's `--fps` and `--bitrate-kbps` are maximums) and
 //! answers with what it applied. A missing field means the host's default, so every request
-//! is complete and `{"type":"settings"}` alone resets the stream.
+//! is complete and `{"type":"settings"}` alone resets the stream. When the host's limits
+//! change while the viewer is connected (Dalker Settings), the host applies the viewer's last
+//! request again within them and sends `settings_applied` unasked.
 //! ```json
 //! {"type":"settings","fps":15,"bitrate_kbps":3000,"downscale":2}             viewer → host
 //! {"type":"settings_applied","fps":15,"bitrate_kbps":3000,"downscale":2,

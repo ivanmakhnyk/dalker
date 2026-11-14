@@ -285,6 +285,29 @@ async fn roundtrip(config: WebRtcConfig, host_ends: bool) {
     assert_eq!(applied["bitrate_kbps"], 1000);
     assert_eq!(applied["downscale"], 2);
 
+    // New host limits while connected: the viewer's request again, within them, unasked.
+    engine.set_encoder(dalker_webrtc::EncoderSettings {
+        max_fps: 120.0,
+        bitrate_bps: 500_000,
+        ..engine.encoder()
+    });
+    let applied = timeout(Duration::from_secs(5), msg_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(applied["type"], "settings_applied");
+    assert_eq!(
+        (&applied["fps"], &applied["max_fps"]),
+        (&serde_json::json!(120), &serde_json::json!(120)),
+        "the viewer asked for 144"
+    );
+    assert_eq!(
+        (&applied["bitrate_kbps"], &applied["max_bitrate_kbps"]),
+        (&serde_json::json!(500), &serde_json::json!(500)),
+        "1000 is above the new limit"
+    );
+    assert_eq!(applied["downscale"], 2);
+
     // Teardown reaches the agent so it can release held keys.
     if host_ends {
         session.end(EndReason::PasswordChanged).await;

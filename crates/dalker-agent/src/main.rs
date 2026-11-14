@@ -19,6 +19,7 @@ mod cli;
 mod config_watch;
 mod listeners;
 mod settings;
+mod stream;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -166,14 +167,17 @@ fn main() -> Result<()> {
     if loaded.is_some() {
         tracing::info!(config = %config_path.display(), "loaded config");
     }
-    // The listener settings the config file may change while the agent runs: not those given
-    // on the command line or as environment variables of their own.
+    // The listener settings and stream limits the config file may change while the agent runs:
+    // not those given on the command line or as environment variables of their own.
     let from_file = loaded.unwrap_or_default();
     let pinned = [
         ("web", listeners::KEY_WEB),
         ("bind", listeners::KEY_BIND),
         ("mcp", listeners::KEY_MCP),
         ("mcp_bind", listeners::KEY_MCP_BIND),
+        ("fps", stream::KEY_FPS),
+        ("bitrate_kbps", stream::KEY_BITRATE_KBPS),
+        ("max_width", stream::KEY_MAX_WIDTH),
     ]
     .into_iter()
     .filter(|(id, key)| match matches.value_source(id) {
@@ -534,19 +538,17 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
     let input_available = injector.is_some();
     spawn_input_thread(injector, control_rx, display_rx, clipboard_requests.clone())?;
 
+    let limits = stream::Limits {
+        fps: cli.fps,
+        bitrate_kbps: cli.bitrate_kbps,
+        max_width: cli.max_width,
+    };
     let engine = Arc::new(
         WebRtcEngine::new(WebRtcConfig {
             ice_servers: cli.stun.clone(),
             udp_port: cli.udp_port,
             public_ips: cli.public_ip.clone(),
-            encoder: dalker_webrtc::EncoderSettings {
-                bitrate_bps: cli.bitrate_kbps * 1000,
-                max_fps: cli.fps as f32,
-                max_width: cli.max_width,
-                keyframe_interval: cli.fps * 10,
-                downscale: 1,
-                strict_bitrate: false,
-            },
+            encoder: limits.encoder(),
             ..Default::default()
         })
         .await?
@@ -571,12 +573,8 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
             "ice_servers": cli.stun,
             // Viewers can send files to the host and fetch files from it.
             "files": true,
-            // The most a viewer can ask for in its stream settings.
-            "stream": {
-                "max_fps": cli.fps,
-                "max_bitrate_kbps": cli.bitrate_kbps,
-                "max_downscale": dalker_webrtc::settings::MAX_DOWNSCALE,
-            },
+            // "stream", the most a viewer can ask for, is added by `info()`: the host can
+            // change it while the agent runs.
         }),
         border_ready: Arc::clone(&border_ready),
         refused_until: std::sync::Mutex::new(None),
@@ -688,6 +686,17 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
     let follow_file = followed_config_file().is_some();
     if follow_file {
         tokio::spawn(follow_mcp_tokens(config.clone(), mcp.clone()));
+    }
+    let stream_pinned = startup.pinned.clone();
+    if follow_file {
+        // Stream limits (Dalker Settings): running streams switch to them too.
+        let engine = Arc::clone(&signaling.engine);
+        tokio::spawn(stream::follow_config(
+            config.clone(),
+            limits,
+            stream_pinned,
+            move |l| engine.set_encoder(l.encoder()),
+        ));
     }
     let (wanted_tx, wanted_rx) = watch::channel(startup.wanted());
     if follow_file {
@@ -1250,6 +1259,13 @@ impl SignalingHandler for Agent {
 
     fn info(&self) -> serde_json::Value {
         let mut info = self.info.clone();
+        // The most a viewer can ask for in its stream settings.
+        let limits = self.engine.encoder();
+        info["stream"] = serde_json::json!({
+            "max_fps": limits.max_fps.round() as u32,
+            "max_bitrate_kbps": limits.bitrate_bps / 1000,
+            "max_downscale": dalker_webrtc::settings::MAX_DOWNSCALE,
+        });
         info["locked"] = serde_json::Value::Bool(dalker_platform::screen_locked());
         info
     }

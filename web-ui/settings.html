@@ -142,6 +142,50 @@
         <p class="hint" id="web-reach"></p>
       </div>
 
+      <div class="col" id="stream-box">
+        <div class="field-head">
+          <span class="label">Stream Limits</span>
+          <span class="hint-mono" id="stream-default"></span>
+        </div>
+        <label class="switch-box switch-inline stream-switch">
+          <span>Set my own stream limits</span>
+          <input type="checkbox" id="stream-enabled" class="switch">
+        </label>
+        <p class="hint" id="stream-off-hint" hidden></p>
+        <div id="stream-fields" hidden>
+        <div class="stream-grid">
+          <div>
+            <label class="label-sm" for="stream-fps">Frame rate</label>
+            <div class="input-wrap">
+              <input id="stream-fps" class="input mono" inputmode="numeric" maxlength="3" autocomplete="off" spellcheck="false">
+              <span class="chip-in green">FPS</span>
+            </div>
+          </div>
+          <div>
+            <label class="label-sm" for="stream-bitrate">Bitrate</label>
+            <div class="input-wrap">
+              <input id="stream-bitrate" class="input mono" inputmode="numeric" maxlength="6" autocomplete="off" spellcheck="false">
+              <span class="chip-in green">KBIT/S</span>
+            </div>
+          </div>
+          <div>
+            <label class="label-sm" for="stream-width">Max width</label>
+            <div class="input-wrap">
+              <input id="stream-width" class="input mono" inputmode="numeric" maxlength="5" autocomplete="off" spellcheck="false">
+              <span class="chip-in green">PX</span>
+            </div>
+          </div>
+        </div>
+        <p class="field-error" id="stream-error"></p>
+        <div class="row-end">
+          <p class="hint" id="stream-hint">The most each viewer gets; viewers can choose less in their own settings. Wider screens are scaled down to the width (0 sends them at full size). Higher values need more bandwidth and processor time.</p>
+          <button class="btn-primary" id="stream-apply" disabled>
+            <svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span>Apply</span>
+          </button>
+        </div>
+        </div>
+      </div>
+
       <div class="col" id="share-box" hidden>
         <div class="field-head">
           <span class="label">Screen Sharing</span>

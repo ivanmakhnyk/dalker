@@ -361,6 +361,14 @@ main {
 .eye[aria-pressed="true"] .closed { display: block; }
 .pw-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 @media (max-width: 560px) { .pw-grid { grid-template-columns: 1fr; } }
+.stream-switch { margin-top: 0; }
+#stream-fields { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+#stream-fields[hidden] { display: none; }
+.stream-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+@media (max-width: 560px) { .stream-switch { margin-top: 0; }
+#stream-fields { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+#stream-fields[hidden] { display: none; }
+.stream-grid { grid-template-columns: 1fr; } }
 .field-error { margin: 0; min-height: 16px; font: 11px var(--mono); color: var(--rose-hi); }
 .row-end { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
