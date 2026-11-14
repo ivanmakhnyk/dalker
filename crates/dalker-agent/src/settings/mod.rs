@@ -62,12 +62,15 @@ pub fn run(path: &std::path::Path, elevated: bool, no_window: bool) -> Result<()
 /// Windows: starts the window again with administrator rights (UAC prompt).
 #[cfg(windows)]
 fn elevate(path: &std::path::Path, elevated: bool) {
+    use dalker_platform::i18n;
     use dalker_platform::windows::settings;
     if elevated {
-        settings::error_box(&format!(
-            "Dalker can't write its settings file:\n{}\n\nIs Dalker installed?",
-            path.display()
-        ));
+        // The file can't be read either: the system's language.
+        let lang = i18n::current(None);
+        settings::error_box(
+            &i18n::tr(lang, "settings.title", &[]),
+            &i18n::tr(lang, "settings.cantWrite", &[("path", &path.display())]),
+        );
         return;
     }
     let args = format!(
@@ -97,6 +100,9 @@ pub struct Saved {
     pub tokens: Vec<TokenRecord>,
     /// The tokens themselves, by id, for those made since they are kept (copy again later).
     pub secrets: std::collections::BTreeMap<String, String>,
+    /// `DALKER_LANGUAGE`: the language chosen for Dalker Settings and the host's menus; `None`
+    /// follows the operating system.
+    pub language: Option<String>,
 }
 
 impl Saved {
@@ -128,6 +134,10 @@ impl Saved {
             mcp_public_url: get("DALKER_MCP_PUBLIC_URL")
                 .map(str::trim)
                 .filter(|v| !v.is_empty())
+                .map(str::to_owned),
+            language: get(dalker_platform::i18n::CONFIG_KEY)
+                .map(str::trim)
+                .filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("auto"))
                 .map(str::to_owned),
             stream: crate::stream::Limits::from_config(
                 &pairs,
@@ -266,6 +276,12 @@ mod tests {
         assert_eq!(s.bind.to_string(), "0.0.0.0:8742");
         assert_eq!(s.mcp_bind.to_string(), "127.0.0.1:8743");
         assert_eq!(s.mcp_public_url, None);
+        assert_eq!(s.language, None);
+        assert_eq!(Saved::parse("DALKER_LANGUAGE=auto\n").language, None);
+        assert_eq!(
+            Saved::parse("DALKER_LANGUAGE=uk\n").language.as_deref(),
+            Some("uk")
+        );
         let s = Saved::parse(
             "DALKER_MCP_PUBLIC_URL=https://desk.example.com/mcp
 ",

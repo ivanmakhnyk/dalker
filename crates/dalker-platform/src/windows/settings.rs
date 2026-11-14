@@ -14,14 +14,15 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Shows an error message box (no parent window).
-pub fn error_box(text: &str) {
+/// Shows an error message box (no parent window) titled `title`.
+pub fn error_box(title: &str, text: &str) {
     let text = wide(text);
+    let title = wide(title);
     unsafe {
         MessageBoxW(
             None,
             PCWSTR(text.as_ptr()),
-            w!("Dalker Settings"),
+            PCWSTR(title.as_ptr()),
             MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
         );
     }

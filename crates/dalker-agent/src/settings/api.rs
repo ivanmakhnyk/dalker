@@ -19,6 +19,8 @@
 //! | `DELETE /api/settings/tokens/{id}` | | |
 //! | `GET /api/settings/tokens/{id}/secret` | | → `{token}` |
 //! | `POST /api/settings/screen-sharing` | | host only: show the portal's "share your screen" dialog now → `{allowed, state}` |
+//! | `GET /api/settings/language` | | host only → `{choice, system}` ([`language_json`]) |
+//! | `POST /api/settings/language` | `{language}` | host only: a code or `auto` → `{choice, system}` |
 //!
 //! Every change answers with the new state, so the page redraws from one source.
 
@@ -31,6 +33,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use dalker_mcp::tokens::{self, Scope};
+use dalker_platform::i18n;
 use serde_json::{json, Value};
 
 use super::store::Store;
@@ -127,6 +130,10 @@ impl Api {
             )
             .route("/api/settings/tokens/{id}/secret", get(token_secret))
             .route("/api/settings/screen-sharing", post(allow_screen_sharing))
+            .route(
+                "/api/settings/language",
+                get(get_language).post(set_language),
+            )
             .with_state(Arc::new(self))
     }
 
@@ -318,6 +325,44 @@ async fn allow_screen_sharing(State(api): ApiState, headers: HeaderMap) -> Respo
         tracing::info!(allowed, "screen sharing asked ahead of time");
         let saved = api.read().map_err(bad)?;
         Ok(json!({ "allowed": allowed, "state": state_json(api, &saved) }))
+    })
+    .await
+}
+
+/// The language of Dalker Settings and the host's menus: what was chosen (`auto` follows the
+/// system) and the operating system's preferred languages, best first. The page picks the
+/// language from these the same way the host's menus do (`dalker_platform::i18n::resolve`).
+pub fn language_json(saved: &Saved) -> Value {
+    json!({
+        "choice": saved.language.as_deref().and_then(i18n::supported).unwrap_or("auto"),
+        "system": i18n::system_languages(),
+    })
+}
+
+async fn get_language(State(api): ApiState, headers: HeaderMap) -> Response {
+    guarded(api, headers, true, move |api| {
+        let saved = api.read().map_err(bad)?;
+        Ok(language_json(&saved))
+    })
+    .await
+}
+
+async fn set_language(
+    State(api): ApiState,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    guarded(api, headers, true, move |api| {
+        let choice = body["language"].as_str().unwrap_or_default();
+        let saved = if choice.eq_ignore_ascii_case("auto") {
+            saved_or_500(api.edit(&[], &[i18n::CONFIG_KEY.to_owned()]))?
+        } else {
+            let code = i18n::supported(choice)
+                .ok_or_else(|| bad(format!("Dalker has no translation for “{choice}”.")))?;
+            saved_or_500(api.edit(&[(i18n::CONFIG_KEY.to_owned(), code.to_owned())], &[]))?
+        };
+        tracing::info!(language = ?saved.language, "language changed in the settings");
+        Ok(language_json(&saved))
     })
     .await
 }
@@ -950,6 +995,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn host_chooses_the_language() {
+        let path = temp("language");
+        let app = app(&path, Access::Host);
+        let (s, v) = call(&app, "GET", "/api/settings/language", Value::Null).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(v["choice"], "auto");
+        assert!(v["system"].is_array());
+        let (s, v) = call(
+            &app,
+            "POST",
+            "/api/settings/language",
+            json!({"language": "pt-br"}),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["choice"], "pt-BR", "saved as listed");
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("DALKER_LANGUAGE=pt-BR"));
+        let (s, v) = call(
+            &app,
+            "POST",
+            "/api/settings/language",
+            json!({"language": "xx"}),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+        let (_, v) = call(&app, "GET", "/api/settings/language", Value::Null).await;
+        assert_eq!(v["choice"], "pt-BR", "unchanged");
+        let (s, v) = call(
+            &app,
+            "POST",
+            "/api/settings/language",
+            json!({"language": "auto"}),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(v["choice"], "auto");
+        assert!(!std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("DALKER_LANGUAGE"));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
     async fn web_clients_manage_tokens_only() {
         let path = temp("tokens");
         let app = app(&path, Access::Tokens);
@@ -972,10 +1062,17 @@ mod tests {
                 json!({"password": "long-enough", "repeat": "long-enough"}),
             ),
             ("/api/settings/screen-sharing", Value::Null),
+            ("/api/settings/language", json!({"language": "uk"})),
         ] {
             let (s, _) = call(&app, "POST", uri, body).await;
             assert_eq!(s, StatusCode::FORBIDDEN, "{uri}");
         }
+        let (s, _) = call(&app, "GET", "/api/settings/language", Value::Null).await;
+        assert_eq!(
+            s,
+            StatusCode::FORBIDDEN,
+            "the viewer's browser decides there"
+        );
         let (s, _) = call(
             &app,
             "POST",

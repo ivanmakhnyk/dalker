@@ -5,6 +5,8 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+// Strings in the viewer's language (i18n.js, loaded first).
+const tr = I18N.t;
 const video = $("screen");
 const stage = $("stage");
 const toolbar = $("toolbar");
@@ -19,7 +21,10 @@ let statsTimer = null;
 let lockTimer = null;
 let info = {};
 let state = "idle";
-let statusText = "disconnected";
+// What the status says, as a string key and its parameters, so it can be shown again in
+// another language.
+let statusKey = "viewer.status.disconnected";
+let statusParams = {};
 let lastRtt = null;
 let hintTimer = null;
 let hintFadeTimer = null;
@@ -60,12 +65,14 @@ function hideHint() {
   $("hint-esc").hidden = true;
 }
 
-function setStatus(text, cls) {
+function setStatus(key, cls, params = {}) {
   const wasConnected = state === "connected";
   state = cls;
-  statusText = text;
+  statusKey = key;
+  statusParams = params;
+  const text = tr(key, params);
   // Connected, the pill shows the round trip once it is measured; otherwise the state.
-  statusEl.textContent = cls === "connected" && lastRtt !== null ? `${lastRtt.toFixed(0)} ms` : text;
+  statusEl.textContent = cls === "connected" && lastRtt !== null ? tr("viewer.status.ms", { n: I18N.number(lastRtt) }) : text;
   $("btn-status").className = `pill ${cls}`;
   notch.className = cls;
   $("pop-status").querySelector(".status-mark").setAttribute("class", `status-mark ${cls}`);
@@ -300,7 +307,8 @@ $("login-form").addEventListener("submit", async (e) => {
     $("login").close();
     await start();
   } catch (err) {
-    $("login-error").textContent = err.status === 401 ? "Wrong password" : err.message;
+    $("login-error").textContent = err.status === 401 ? tr("viewer.login.wrong")
+      : err.status === 503 ? tr("viewer.login.noPassword") : err.message;
     $("login-form").querySelector(".pw-field").classList.add("bad");
     $("login-password").select();
   } finally {
@@ -313,7 +321,7 @@ $("login-show").addEventListener("click", () => {
   const show = field.type === "password";
   field.type = show ? "text" : "password";
   $("login-show").setAttribute("aria-pressed", String(show));
-  $("login-show").title = $("login-show").ariaLabel = show ? "Hide password" : "Show password";
+  $("login-show").title = $("login-show").ariaLabel = tr(show ? "viewer.login.hide" : "viewer.login.show");
   field.focus();
 });
 // Login is mandatory: don't let Esc dismiss the dialog.
@@ -335,7 +343,7 @@ async function connect() {
   clearTimeout(slotRetryTimer);
   disconnect();
   connectedAt = 0;
-  setStatus("connecting…", "connecting");
+  setStatus("viewer.status.connecting", "connecting");
   pc = new RTCPeerConnection({ iceServers: (info.ice_servers || []).map((u) => ({ urls: u })) });
   const transceiver = pc.addTransceiver("video", { direction: "recvonly" });
   // Ask for minimal buffering: this is an interactive stream.
@@ -343,7 +351,7 @@ async function connect() {
   try { transceiver.receiver.playoutDelayHint = 0; } catch (_) {}
 
   dc = pc.createDataChannel("control", { ordered: true });
-  dc.onopen = () => { connectedAt = Date.now(); setStatus("connected", "connected"); sendStreamSettings(); };
+  dc.onopen = () => { connectedAt = Date.now(); setStatus("viewer.status.connected", "connected"); sendStreamSettings(); };
   dc.onmessage = (ev) => onHostMessage(ev.data);
   // The host ended the session (or the channel died): close everything, see above, and say why.
   dc.onclose = () => { const reason = endReason; disconnect(); sessionEnded(reason); };
@@ -362,12 +370,12 @@ async function connect() {
       const wasConnected = connectedAt > 0;
       disconnect();
       if (wasConnected) sessionEnded(reason);
-      else setStatus("connection failed", "error");
+      else setStatus("viewer.status.failed", "error");
     }
     // The network dropped out; WebRTC recovers by itself if it comes back soon.
-    else if (s === "disconnected") setStatus("network lost: reconnecting…", "connecting");
-    else if (s === "connected" && dc && dc.readyState === "open") setStatus("connected", "connected");
-    else if (s === "closed") setStatus("disconnected", "idle");
+    else if (s === "disconnected") setStatus("viewer.status.networkLost", "connecting");
+    else if (s === "connected" && dc && dc.readyState === "open") setStatus("viewer.status.connected", "connected");
+    else if (s === "closed") setStatus("viewer.status.disconnected", "idle");
   };
 
   // A second connect() replaces `pc` while this one awaits; never apply this offer's
@@ -384,17 +392,17 @@ async function connect() {
     lockTimer = setInterval(pollLocked, 1000);
   } catch (err) {
     if (pc !== peer) return;
-    if (err.status === 401) { disconnect(); showLogin("Your session expired. Sign in again."); return; }
+    if (err.status === 401) { disconnect(); showLogin(tr("viewer.login.expired")); return; }
     // Viewer slots can still be held by a connection that is closing; they free up within
     // about 20 s, so wait and try again instead of showing a dead end.
     if (err.status === 400 && /too many viewers/i.test(err.message) && slotRetries < 6) {
       slotRetries++;
-      setStatus(`waiting for a free viewer slot… (${slotRetries}/6)`, "connecting");
+      setStatus("viewer.status.waitingSlot", "connecting", { try: slotRetries, max: 6 });
       if (pc) { pc.close(); pc = null; }
       slotRetryTimer = setTimeout(connect, 5000);
       return;
     }
-    setStatus(`error: ${err.message}`, "error");
+    setStatus("viewer.status.error", "error", { message: err.message });
   }
 }
 
@@ -415,7 +423,7 @@ function disconnect() {
   if (pc) { pc.onconnectionstatechange = null; pc.close(); pc = null; }
   video.srcObject = null;
   resetStats();
-  setStatus("disconnected", "idle");
+  setStatus("viewer.status.disconnected", "idle");
 }
 
 // ---------------------------------------------------------------- why the session ended
@@ -424,21 +432,21 @@ function disconnect() {
 // and reconnect by itself when the host or the network comes back.
 function sessionEnded(reason) {
   if (reason === "password_changed") {
-    setStatus("signed out: the password was changed", "idle");
-    showLogin("The password was changed on the host. Sign in again.");
+    setStatus("viewer.status.passwordChanged", "idle");
+    showLogin(tr("viewer.login.passwordChanged"));
     return;
   }
   if (reason === "host_disconnected") {
-    setStatus("the person at the host disconnected everyone", "error");
+    setStatus("viewer.status.hostDisconnected", "error");
     return;
   }
   if (reason === "signed_out" || reason === "session_expired") {
-    setStatus("signed out", "idle");
-    showLogin(reason === "signed_out" ? "You signed out of this host. Sign in again." : "Your sign-in expired. Sign in again.");
+    setStatus("viewer.status.signedOut", "idle");
+    showLogin(tr(reason === "signed_out" ? "viewer.login.signedOut" : "viewer.login.signInExpired"));
     return;
   }
   if (reason === "web_off") {
-    setStatus("remote access was turned off on the host", "error");
+    setStatus("viewer.status.webOff", "error");
     return;
   }
   // Without a reason the stream or the network broke. Don't keep reconnecting to a host that
@@ -447,19 +455,19 @@ function sessionEnded(reason) {
   connectedAt = 0;
   if (quickDrops >= 3) {
     quickDrops = 0;
-    setStatus("the connection to the host keeps dropping", "error");
+    setStatus("viewer.status.keepsDropping", "error");
     return;
   }
   recoverTries = 0;
-  recover(reason === "host_shutdown" ? "the host is restarting: reconnecting…" : "connection lost: reconnecting…", reason);
+  recover(reason === "host_shutdown" ? "viewer.status.hostRestarting" : "viewer.status.connectionLost", reason);
 }
 
 // Waits for the host to answer again (about two minutes at most), then connects. A host that
 // answers but no longer knows this browser (it restarted, or the login expired) asks to sign in.
 const RECOVER_TRIES = 40;
-function recover(text, reason) {
+function recover(key, reason) {
   clearTimeout(recoverTimer);
-  setStatus(text, "connecting");
+  setStatus(key, "connecting");
   recoverTimer = setTimeout(async () => {
     recoverTimer = null;
     try {
@@ -467,12 +475,12 @@ function recover(text, reason) {
     } catch (err) {
       if (state !== "connecting") return; // the viewer pressed Disconnect meanwhile
       if (err.status === 401) {
-        setStatus("signed out", "idle");
-        showLogin(reason === "host_shutdown" ? "The host restarted. Sign in again." : "Your session ended on the host. Sign in again.");
+        setStatus("viewer.status.signedOut", "idle");
+        showLogin(tr(reason === "host_shutdown" ? "viewer.login.hostRestarted" : "viewer.login.sessionEnded"));
         return;
       }
-      if (++recoverTries < RECOVER_TRIES) { recover(text, reason); return; }
-      setStatus("the host can't be reached", "error");
+      if (++recoverTries < RECOVER_TRIES) { recover(key, reason); return; }
+      setStatus("viewer.status.unreachable", "error");
       return;
     }
     if (state === "connecting") connect();
@@ -481,7 +489,7 @@ function recover(text, reason) {
 
 // ---------------------------------------------------------------- stats
 
-const ROUTES = { host: "Direct (LAN)", srflx: "Direct (NAT)", prflx: "Direct (NAT)", relay: "Relayed (TURN)" };
+const ROUTES = { host: "viewer.route.lan", srflx: "viewer.route.nat", prflx: "viewer.route.nat", relay: "viewer.route.relay" };
 let last = { bytes: 0, ts: 0, lost: 0, recv: 0 };
 
 function resetStats() {
@@ -517,83 +525,88 @@ async function updateStats() {
     last = { bytes, ts, lost, recv };
 
     $("s-res").textContent = w && h ? `${w}×${h}` : "–";
-    $("s-fps").textContent = `${fps.toFixed(0)} fps`;
-    $("s-bitrate").textContent = `${(kbps / 1000).toFixed(1)} Mbit/s`;
+    $("s-fps").textContent = tr("viewer.stats.fpsValue", { n: I18N.number(fps) });
+    $("s-bitrate").textContent = tr("viewer.stats.mbitValue", { n: I18N.number(kbps / 1000, 1, 1) });
     if (lossPct !== null) {
-      $("s-loss").innerHTML = `${lossPct.toFixed(1)}% <small>(${lost} total)</small>`;
+      const small = document.createElement("small");
+      small.textContent = `(${tr("viewer.stats.lossTotal", { n: I18N.number(lost) })})`;
+      $("s-loss").replaceChildren(`${I18N.number(lossPct, 1, 1)}% `, small);
       $("s-loss").className = lossPct < 1 ? "good" : "";
     }
     const codec = inbound.codecId && report.get(inbound.codecId);
     if (codec && codec.mimeType) $("s-codec").textContent = codec.mimeType.replace(/^video\//i, "");
   }
-  $("s-rtt").textContent = rtt !== null ? `${rtt.toFixed(0)} ms` : "–";
+  $("s-rtt").textContent = rtt !== null ? tr("viewer.status.ms", { n: I18N.number(rtt) }) : "–";
   $("s-rtt").className = rtt !== null && rtt < 50 ? "good" : "";
   const remote = pair && pair.remoteCandidateId && report.get(pair.remoteCandidateId);
   const local = pair && pair.localCandidateId && report.get(pair.localCandidateId);
   const types = [remote, local].filter(Boolean).map((c) => c.candidateType);
   const route = types.includes("relay") ? "relay" : types.find((t) => t !== "host") || types[0];
-  $("s-route").textContent = ROUTES[route] || "–";
+  $("s-route").textContent = ROUTES[route] ? tr(ROUTES[route]) : "–";
   $("s-route").className = "route";
 
   // A rough verdict from the measured round trip and packet loss.
   if (rtt !== null) {
     const loss = lossPct || 0;
     const q = rtt < 50 && loss < 1 ? "good" : rtt < 150 && loss < 5 ? "fair" : "poor";
-    $("quality").textContent = { good: "Good", fair: "Fair", poor: "Poor" }[q];
+    $("quality").textContent = tr(`viewer.quality.${q}`);
     $("quality").className = `badge ${q}`;
     $("quality").hidden = false;
   }
-  if (state === "connected") setStatus(statusText, state);
+  if (state === "connected") setStatus(statusKey, state, statusParams);
 }
 
 // ---------------------------------------------------------------- session controls
 
 $("btn-connect").addEventListener("click", () => { slotRetries = 0; connect(); });
 $("btn-disconnect").addEventListener("click", () => { clearTimeout(slotRetryTimer); slotRetries = 0; quickDrops = 0; disconnect(); });
+// Each item names its catalog keys: `name` for the label and `tip` for the tooltip. `label` is
+// shown as is (a key combination or a product name), and `kbd` is either a combination or,
+// with `hint`, a catalog key.
 const KEY_FOLDERS = [
   {
     os: "windows",
     label: "Windows",
     items: [
-      { label: "Ctrl + Alt + Del", kbd: "Secure", action: "secure_attention", title: "Send Ctrl+Alt+Del to the host (Windows sign-in and lock screen)", pinned: true },
-      { label: "Lock", kbd: "Win + L", combo: "MetaLeft KeyL", title: "Lock the host (Win + L)", pinned: true },
-      { label: "Windows key", kbd: "Win", combo: "MetaLeft", title: "Press the Windows key", pinned: true },
-      { label: "Alt + Tab", kbd: "Switch", combo: "AltLeft Tab", title: "Switch windows (Alt + Tab)", pinned: true },
-      { label: "Task Manager", kbd: "Ctrl+Shift+Esc", combo: "ControlLeft ShiftLeft Escape", title: "Open Task Manager (Ctrl + Shift + Esc)", pinned: true },
-      { label: "Task View", kbd: "Win + Tab", combo: "MetaLeft Tab", title: "Open Task View (Win + Tab)" },
-      { label: "Run", kbd: "Win + R", combo: "MetaLeft KeyR", title: "Open Run dialog (Win + R)" },
-      { label: "Show Desktop", kbd: "Win + D", combo: "MetaLeft KeyD", title: "Toggle desktop (Win + D)" },
+      { label: "Ctrl + Alt + Del", hint: "viewer.keys.secure", action: "secure_attention", tip: "viewer.keys.cadTitle", pinned: true },
+      { name: "viewer.keys.lock", kbd: "Win + L", combo: "MetaLeft KeyL", tip: "viewer.keys.lockTitle", pinned: true },
+      { name: "viewer.keys.winKey", kbd: "Win", combo: "MetaLeft", tip: "viewer.keys.winKeyTitle", pinned: true },
+      { label: "Alt + Tab", hint: "viewer.keys.switch", combo: "AltLeft Tab", tip: "viewer.keys.altTabTitle", pinned: true },
+      { name: "viewer.keys.taskManager", kbd: "Ctrl+Shift+Esc", combo: "ControlLeft ShiftLeft Escape", tip: "viewer.keys.taskManagerTitle", pinned: true },
+      { name: "viewer.keys.taskView", kbd: "Win + Tab", combo: "MetaLeft Tab", tip: "viewer.keys.taskViewTitle" },
+      { name: "viewer.keys.run", kbd: "Win + R", combo: "MetaLeft KeyR", tip: "viewer.keys.runTitle" },
+      { name: "viewer.keys.desktop", kbd: "Win + D", combo: "MetaLeft KeyD", tip: "viewer.keys.desktopTitle" },
     ],
   },
   {
     os: "macos",
     label: "macOS",
     items: [
-      { label: "Lock Screen", kbd: "⌃ + ⌘ + Q", combo: "ControlLeft MetaLeft KeyQ", title: "Lock screen (Control + Command + Q)", pinned: true },
-      { label: "Command key", kbd: "⌘", combo: "MetaLeft", title: "Press the Command key", pinned: true },
-      { label: "App Switcher", kbd: "⌘ + Tab", combo: "MetaLeft Tab", title: "Switch applications (Command + Tab)", pinned: true },
-      { label: "Spotlight", kbd: "⌘ + Space", combo: "MetaLeft Space", title: "Open Spotlight Search (Command + Space)", pinned: true },
-      { label: "Force Quit", kbd: "⌘ + ⌥ + Esc", combo: "MetaLeft AltLeft Escape", title: "Force Quit Applications (Command + Option + Esc)", pinned: true },
-      { label: "Option key", kbd: "⌥", combo: "AltLeft", title: "Press the Option key" },
-      { label: "Control key", kbd: "⌃", combo: "ControlLeft", title: "Press the Control key" },
-      { label: "Mission Control", kbd: "⌃ + ↑", combo: "ControlLeft ArrowUp", title: "Open Mission Control (Control + Up)" },
-      { label: "Quit App", kbd: "⌘ + Q", combo: "MetaLeft KeyQ", title: "Quit active application (Command + Q)" },
-      { label: "Close Window", kbd: "⌘ + W", combo: "MetaLeft KeyW", title: "Close active window (Command + W)" },
-      { label: "Screenshot", kbd: "⌘ + ⇧ + 4", combo: "MetaLeft ShiftLeft Digit4", title: "Capture screenshot selection (Command + Shift + 4)" },
+      { name: "viewer.keys.lockScreen", kbd: "⌃ + ⌘ + Q", combo: "ControlLeft MetaLeft KeyQ", tip: "viewer.keys.lockScreenTitle", pinned: true },
+      { name: "viewer.keys.cmdKey", kbd: "⌘", combo: "MetaLeft", tip: "viewer.keys.cmdKeyTitle", pinned: true },
+      { name: "viewer.keys.appSwitcher", kbd: "⌘ + Tab", combo: "MetaLeft Tab", tip: "viewer.keys.appSwitcherTitle", pinned: true },
+      { label: "Spotlight", kbd: "⌘ + Space", combo: "MetaLeft Space", tip: "viewer.keys.spotlightTitle", pinned: true },
+      { name: "viewer.keys.forceQuit", kbd: "⌘ + ⌥ + Esc", combo: "MetaLeft AltLeft Escape", tip: "viewer.keys.forceQuitTitle", pinned: true },
+      { name: "viewer.keys.optionKey", kbd: "⌥", combo: "AltLeft", tip: "viewer.keys.optionKeyTitle" },
+      { name: "viewer.keys.controlKey", kbd: "⌃", combo: "ControlLeft", tip: "viewer.keys.controlKeyTitle" },
+      { label: "Mission Control", kbd: "⌃ + ↑", combo: "ControlLeft ArrowUp", tip: "viewer.keys.missionControlTitle" },
+      { name: "viewer.keys.quitApp", kbd: "⌘ + Q", combo: "MetaLeft KeyQ", tip: "viewer.keys.quitAppTitle" },
+      { name: "viewer.keys.closeWindow", kbd: "⌘ + W", combo: "MetaLeft KeyW", tip: "viewer.keys.closeWindowTitle" },
+      { name: "viewer.keys.screenshot", kbd: "⌘ + ⇧ + 4", combo: "MetaLeft ShiftLeft Digit4", tip: "viewer.keys.screenshotTitle" },
     ],
   },
   {
     os: "linux",
     label: "Linux",
     items: [
-      { label: "Ctrl + Alt + Del", kbd: "System", action: "secure_attention", title: "Send Ctrl+Alt+Del to the host (GNOME: log out / power off dialog)", pinned: true },
-      { label: "Lock", kbd: "Super + L", combo: "MetaLeft KeyL", title: "Lock the host (Super + L)", pinned: true },
-      { label: "Super key", kbd: "Super", combo: "MetaLeft", title: "Press the Super key", pinned: true },
-      { label: "Alt + Tab", kbd: "Switch", combo: "AltLeft Tab", title: "Switch windows (Alt + Tab)", pinned: true },
-      { label: "Terminal", kbd: "Ctrl+Alt+T", combo: "ControlLeft AltLeft KeyT", title: "Open terminal (Ctrl + Alt + T)", pinned: true },
-      { label: "Run Command", kbd: "Alt + F2", combo: "AltLeft F2", title: "Open Run Command dialog (Alt + F2)" },
-      { label: "Workspace Left", kbd: "Ctrl+Alt+←", combo: "ControlLeft AltLeft ArrowLeft", title: "Switch to previous workspace (Ctrl + Alt + Left)" },
-      { label: "Workspace Right", kbd: "Ctrl+Alt+→", combo: "ControlLeft AltLeft ArrowRight", title: "Switch to next workspace (Ctrl + Alt + Right)" },
+      { label: "Ctrl + Alt + Del", hint: "viewer.keys.system", action: "secure_attention", tip: "viewer.keys.cadTitleLinux", pinned: true },
+      { name: "viewer.keys.lock", kbd: "Super + L", combo: "MetaLeft KeyL", tip: "viewer.keys.lockTitleLinux", pinned: true },
+      { name: "viewer.keys.superKey", kbd: "Super", combo: "MetaLeft", tip: "viewer.keys.superKeyTitle", pinned: true },
+      { label: "Alt + Tab", hint: "viewer.keys.switch", combo: "AltLeft Tab", tip: "viewer.keys.altTabTitle", pinned: true },
+      { name: "viewer.keys.terminal", kbd: "Ctrl+Alt+T", combo: "ControlLeft AltLeft KeyT", tip: "viewer.keys.terminalTitle", pinned: true },
+      { name: "viewer.keys.runCommand", kbd: "Alt + F2", combo: "AltLeft F2", tip: "viewer.keys.runCommandTitle" },
+      { name: "viewer.keys.workspaceLeft", kbd: "Ctrl+Alt+←", combo: "ControlLeft AltLeft ArrowLeft", tip: "viewer.keys.workspaceLeftTitle" },
+      { name: "viewer.keys.workspaceRight", kbd: "Ctrl+Alt+→", combo: "ControlLeft AltLeft ArrowRight", tip: "viewer.keys.workspaceRightTitle" },
     ],
   },
 ];
@@ -602,11 +615,11 @@ function createKeyButton(item) {
   const b = document.createElement("button");
   if (item.action) b.dataset.action = item.action;
   if (item.combo) b.dataset.combo = item.combo;
-  if (item.title) b.title = item.title;
+  if (item.tip) b.title = tr(item.tip);
   const label = document.createElement("span");
-  label.textContent = item.label;
+  label.textContent = item.name ? tr(item.name) : item.label;
   const kbd = document.createElement("kbd");
-  kbd.textContent = item.kbd;
+  kbd.textContent = item.hint ? tr(item.hint) : item.kbd;
   b.append(label, kbd);
   return b;
 }
@@ -615,7 +628,7 @@ function updateKeysCapabilities() {
   const cadSupported = !!info && ["windows", "linux"].includes(info.os);
   document.querySelectorAll('#pop-keys [data-action="secure_attention"]').forEach((b) => {
     b.disabled = !cadSupported;
-    if (!cadSupported && info) b.title = "Ctrl+Alt+Del is only supported on Windows and Linux hosts";
+    if (!cadSupported && info) b.title = tr("viewer.keys.cadUnsupported");
   });
 }
 
@@ -628,7 +641,7 @@ function renderKeysMenu() {
   for (const item of activeFolder.items.filter((i) => i.pinned)) {
     list.append(createKeyButton(item));
   }
-  list.append(createKeyButton({ label: "Esc", kbd: "Cancel", combo: "Escape", title: "Send Escape" }));
+  list.append(createKeyButton({ label: "Esc", hint: "viewer.keys.cancel", combo: "Escape", tip: "viewer.keys.escTitle" }));
 
   const sep = document.createElement("div");
   sep.className = "key-sep";
@@ -645,7 +658,7 @@ function renderKeysMenu() {
     if (folder.os === hostOs) {
       const badge = document.createElement("span");
       badge.className = "key-badge";
-      badge.textContent = "Current";
+      badge.textContent = tr("viewer.keys.current");
       summary.append(badge);
     }
     const body = document.createElement("div");
@@ -666,7 +679,7 @@ $("keys-list").addEventListener("click", (e) => {
   closePopovers();
   if (b.dataset.action === "secure_attention") {
     if (!dc || dc.readyState !== "open") {
-      setStatus("not connected: Ctrl+Alt+Del was not sent", "error");
+      setStatus("viewer.status.cadNotSent", "error");
       return;
     }
     send({ type: "secure_attention" });
@@ -689,7 +702,7 @@ $("btn-fullscreen").addEventListener("click", async () => {
 });
 document.addEventListener("fullscreenchange", () => {
   const full = !!document.fullscreenElement;
-  $("btn-fullscreen").title = full ? "Exit fullscreen" : "Fullscreen (keyboard goes to the remote host)";
+  $("btn-fullscreen").title = tr(full ? "viewer.btn.exitFullscreen" : "viewer.btn.fullscreen");
   if (!full && navigator.keyboard && navigator.keyboard.unlock) navigator.keyboard.unlock();
   if (full && state === "connected") showHint(true);
 });
@@ -761,7 +774,7 @@ function applyZoom() {
   } else {
     clampPan();
     video.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
-    zoomResetBtn.textContent = `${zoom.toFixed(1)}× · Reset`;
+    zoomResetBtn.textContent = tr("viewer.zoom.reset", { zoom: zoom.toFixed(1) });
     zoomResetBtn.hidden = false;
   }
   updateTouchCursor();
@@ -1384,7 +1397,7 @@ function sendClipboard(text) {
   text = normalizeEol(text);
   if (!dc || dc.readyState !== "open" || clip.available !== true) return false;
   if (new Blob([text]).size > MAX_CLIP) {
-    flashNote("That text is too large to send (the limit is 1 MB).");
+    flashNote(tr("viewer.clip.tooLarge"));
     return false;
   }
   const parts = Array.from(text);
@@ -1454,23 +1467,23 @@ function setClipAuto(on) {
 }
 $("clip-auto").addEventListener("change", (e) => setClipAuto(e.target.checked));
 $("clip-send").addEventListener("click", () => {
-  if (sendClipboard($("clip-text").value)) flashNote("Sent. Paste on the host as usual.");
+  if (sendClipboard($("clip-text").value)) flashNote(tr("viewer.clip.sent"));
 });
 $("clip-copy").addEventListener("click", async () => {
   const text = $("clip-text").value;
   let ok = copyWithCommand(text);
   if (!ok && secureClipboard) ok = await navigator.clipboard.writeText(text).then(() => true, () => false);
-  if (ok) { if (text === clip.pending) clip.pending = null; clip.synced = text; renderClip(true); flashNote("Copied to this computer."); }
-  else { $("clip-text").select(); flashNote("The browser didn't allow copying. Press Ctrl+C to copy the selected text."); }
+  if (ok) { if (text === clip.pending) clip.pending = null; clip.synced = text; renderClip(true); flashNote(tr("viewer.clip.copied")); }
+  else { $("clip-text").select(); flashNote(tr("viewer.clip.copyBlocked")); }
 });
 $("clip-read").addEventListener("click", async () => {
   try {
     const text = await navigator.clipboard.readText();
     $("clip-text").value = text;
     clip.lastRead = normalizeEol(text);
-    if (sendClipboard(text)) flashNote("Sent your clipboard to the host.");
+    if (sendClipboard(text)) flashNote(tr("viewer.clip.readSent"));
   } catch (_) {
-    flashNote("The browser didn't allow reading the clipboard. Paste into the box with Ctrl+V instead.");
+    flashNote(tr("viewer.clip.readBlocked"));
   }
 });
 
@@ -1485,23 +1498,22 @@ function renderClip(flash = false) {
   const btn = $("btn-clip");
   let cls, badge, title, note;
   if (clip.available === false) {
-    cls = "unavailable"; badge = "Unavailable";
-    title = "Clipboard: not available on this host";
-    note = `The host's clipboard can't be shared${clip.reason ? `: ${clip.reason}` : "."}`;
+    cls = "unavailable"; badge = tr("viewer.clip.badgeUnavailable");
+    title = tr("viewer.clip.titleUnavailable");
+    // The reason comes from the host, in English.
+    note = clip.reason ? tr("viewer.clip.noteUnavailableWhy", { reason: clip.reason }) : tr("viewer.clip.noteUnavailable");
   } else if (clip.available === null) {
-    cls = "off"; badge = "…"; title = "Clipboard"; note = "Waiting for the host…";
+    cls = "off"; badge = "…"; title = tr("viewer.clip.title"); note = tr("viewer.clip.noteWaiting");
   } else if (!clip.auto) {
-    cls = "off"; badge = "Off"; title = "Clipboard: sync is off";
-    note = "Automatic sync is off. Move text by hand with the box below.";
+    cls = "off"; badge = tr("viewer.clip.badgeOff"); title = tr("viewer.clip.titleOff");
+    note = tr("viewer.clip.noteOff");
   } else if (clip.pending !== null) {
-    cls = "pending"; badge = "Waiting"; title = "Clipboard: the host copied text; click the screen to copy it here";
-    note = "The host copied text. Click the remote screen or press a key there to put it on this computer's clipboard, or use Copy here.";
+    cls = "pending"; badge = tr("viewer.clip.badgeWaiting"); title = tr("viewer.clip.titlePending");
+    note = tr("viewer.clip.notePending");
   } else {
-    cls = "synced"; badge = "Synced"; title = "Clipboard: synced with the host";
-    note = "Copy on either side and paste on the other. Ctrl+V on the remote screen sends your text to the host first.";
-    if (!window.isSecureContext) {
-      note += " This page isn't HTTPS, so text the host copies lands here after your next click or key on the remote screen.";
-    }
+    cls = "synced"; badge = tr("viewer.clip.badgeSynced"); title = tr("viewer.clip.titleSynced");
+    note = tr("viewer.clip.noteSynced");
+    if (!window.isSecureContext) note += " " + tr("viewer.clip.noteInsecure");
   }
   btn.className = `icon clip session-only ${cls}`;
   btn.title = title;
@@ -1588,20 +1600,20 @@ function renderSettings() {
   if (h) {
     const max = h.max_fps;
     const fps = prefs.fps && prefs.fps < max ? prefs.fps : max;
-    $("set-fps-max").textContent = `host max ${max}`;
-    renderSeg("set-fps", fpsChoices(max).map((v) => [v, `${v}`, `${v} frames per second`]), fps,
+    $("set-fps-max").textContent = tr("viewer.set.fpsMax", { n: max });
+    renderSeg("set-fps", fpsChoices(max).map((v) => [v, `${v}`, tr("viewer.set.fpsChoice", { n: v })]), fps,
       (v) => { prefs.fps = v >= max ? 0 : v; sendStreamSettings(); });
-    renderSeg("set-bw", [1, 2, 4, 8].map((d) => [d, mbit(h.max_bitrate_kbps / d), `Up to ${mbit(h.max_bitrate_kbps / d)} Mbit/s`]), prefs.bw,
+    renderSeg("set-bw", [1, 2, 4, 8].map((d) => [d, mbit(h.max_bitrate_kbps / d), tr("viewer.set.bwChoice", { n: mbit(h.max_bitrate_kbps / d) })]), prefs.bw,
       (v) => { prefs.bw = v; sendStreamSettings(); });
     const scales = [1, 2, 3].filter((d) => d <= (h.max_downscale || 1));
-    renderSeg("set-scale", scales.map((d) => [d, `${Math.round(100 / d)}%`, d === 1 ? "As the host sends it" : `1/${d} of the width and height`]),
+    renderSeg("set-scale", scales.map((d) => [d, `${Math.round(100 / d)}%`, d === 1 ? tr("viewer.set.scaleFull") : tr("viewer.set.scalePart", { n: d })]),
       Math.min(prefs.scale, scales[scales.length - 1]), (v) => { prefs.scale = v; sendStreamSettings(); });
   }
-  renderSeg("set-view", [["fit", "Fit window"], ["actual", "1:1 pixels", "One stream pixel per screen pixel; scroll with the scrollbars"]], prefs.view,
+  renderSeg("set-view", [["fit", tr("viewer.set.fit")], ["actual", tr("viewer.set.actual"), tr("viewer.set.actualTitle")]], prefs.view,
     (v) => { prefs.view = v; applyView(); });
   renderSeg("set-touch", [
-    ["touchpad", "Touchpad", "Drag moves the cursor; tap clicks; long press right-clicks"],
-    ["direct", "Direct", "Tap or drag directly where you touch; long press right-clicks"],
+    ["touchpad", tr("viewer.set.touchpad"), tr("viewer.set.touchpadTitle")],
+    ["direct", tr("viewer.set.touchDirect"), tr("viewer.set.touchDirectTitle")],
   ], prefs.touchMode, (v) => { prefs.touchMode = v; updateTouchCursor(v === "touchpad"); });
   renderKeyboardMode("set-kbd");
   $("set-clip").checked = clip.auto;
@@ -1609,17 +1621,17 @@ function renderSettings() {
   $("set-awake").checked = prefs.keepAlive;
   $("set-autohide").checked = prefs.autoHide;
   $("set-awake-row").hidden = !prefs.keepAlive;
-  renderSeg("set-awake-sec", AWAKE_CHOICES.map((v) => [v, v < 60 ? `${v}s` : `${v / 60} min`, `Press F15 on the host after ${v} seconds without input`]),
+  renderSeg("set-awake-sec", AWAKE_CHOICES.map((v) => [v, v < 60 ? tr("viewer.set.seconds", { n: v }) : tr("viewer.set.minutes", { n: v / 60 }), tr("viewer.set.awakeChoice", { n: v })]),
     prefs.keepAliveSec, (v) => { prefs.keepAliveSec = v; });
 
   const live = !!dc && dc.readyState === "open";
   const badge = $("set-badge");
   if (live && applied) {
-    $("set-applied").textContent = `The host sends up to ${applied.fps} fps at up to ${mbit(applied.bitrate_kbps)} Mbit/s` +
-      (applied.downscale > 1 ? `, at 1/${applied.downscale} resolution.` : ".");
-    badge.textContent = "Applied"; badge.className = "badge good"; badge.hidden = false;
+    const p = { fps: applied.fps, mbit: mbit(applied.bitrate_kbps), n: applied.downscale };
+    $("set-applied").textContent = tr(applied.downscale > 1 ? "viewer.set.appliedScaled" : "viewer.set.applied", p);
+    badge.textContent = tr("viewer.set.appliedBadge"); badge.className = "badge good"; badge.hidden = false;
   } else {
-    $("set-applied").textContent = live || !h ? "" : "Stream settings apply when connected.";
+    $("set-applied").textContent = live || !h ? "" : tr("viewer.set.whenConnected");
     badge.hidden = true;
   }
 }
@@ -1645,8 +1657,8 @@ $("set-autohide").addEventListener("change", (e) => { prefs.autoHide = e.target.
 // The keyboard mode is in Settings and in the keys menu.
 function renderKeyboardMode(id) {
   renderSeg(id, [
-    ["hardware", "Hardware", "Keys by position: the host's keyboard layout decides the characters. Best for shortcuts and games"],
-    ["text", "Direct text", "Types the characters of this computer's keyboard layout, whatever the host's layout is. Shortcuts still go by key position"],
+    ["hardware", tr("viewer.set.hardware"), tr("viewer.set.hardwareTitle")],
+    ["text", tr("viewer.set.text"), tr("viewer.set.textTitle")],
   ], prefs.keyboard, (v) => { prefs.keyboard = v; releaseAll(); renderKeyboardMode("keys-kbd"); });
 }
 renderKeyboardMode("keys-kbd");
@@ -1762,15 +1774,15 @@ function fmtBytes(n) {
   const u = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
   while (n >= 1000 && i < u.length - 1) { n /= 1000; i++; }
-  return `${n >= 100 || i === 0 ? n.toFixed(0) : n.toFixed(1)} ${u[i]}`;
+  return `${n >= 100 || i === 0 ? I18N.number(n) : I18N.number(n, 1, 1)} ${u[i]}`;
 }
 function fmtTime(s) {
   if (!isFinite(s) || s < 0) return "";
   s = Math.ceil(s);
-  if (s < 60) return `~${s}s left`;
+  if (s < 60) return tr("viewer.files.leftSeconds", { s });
   const m = Math.floor(s / 60);
-  if (m < 60) return `~${m}m ${s % 60}s left`;
-  return `~${Math.floor(m / 60)}h ${m % 60}m left`;
+  if (m < 60) return tr("viewer.files.leftMinutes", { m, s: s % 60 });
+  return tr("viewer.files.leftHours", { h: Math.floor(m / 60), m: m % 60 });
 }
 
 function openFilesChannel() {
@@ -1780,14 +1792,14 @@ function openFilesChannel() {
   fdc.bufferedAmountLowThreshold = BUF_HIGH / 2;
   fdc.onmessage = (ev) => (typeof ev.data === "string" ? onFilesText(ev.data) : onFilesData(ev.data));
   fdc.onbufferedamountlow = wakeUploads;
-  fdc.onclose = () => { fdc = null; fileHost.status = null; failActive("The connection closed."); renderFiles(); };
+  fdc.onclose = () => { fdc = null; fileHost.status = null; failActive(tr("viewer.files.closed")); renderFiles(); };
 }
 
 function closeFilesChannel() {
   if (fdc) { fdc.onclose = null; fdc.onmessage = null; fdc.close(); fdc = null; }
   fileHost.status = null;
   fileHost.listing = null;
-  failActive("Disconnected.");
+  failActive(tr("viewer.files.disconnected"));
   renderFiles();
 }
 
@@ -1803,7 +1815,8 @@ function onFilesText(data) {
       break;
     case "unavailable":
       fileHost.status = "unavailable";
-      fileHost.reason = m.reason || "File transfer isn't available on the host.";
+      // The host's reason is in English.
+      fileHost.reason = m.reason || tr("viewer.files.unavailable");
       break;
     case "list":
       if (m.path !== fileHost.cwd) return;
@@ -1907,7 +1920,7 @@ async function pumpUpload(t) {
           block = { start: t.sent, bytes: new Uint8Array(await t.file.slice(t.sent, end).arrayBuffer()) };
         } catch (err) {
           fsend({ op: "cancel", id: t.id });
-          finish(t, "error", `Can't read the file here: ${err.message || err}`);
+          finish(t, "error", I18N.t("viewer.files.cantRead", { error: err.message || err }));
           renderFiles();
           return;
         }
@@ -1969,20 +1982,20 @@ const ICONS = {
   file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
 };
 
-function xferMeta(t) {
-  const where = t.dir === "up" ? "Uploading to host" : "Downloading here";
-  switch (t.state) {
-    case "queued": return [where.replace("Uploading", "Waiting to upload"), "queued"];
-    case "starting": return [t.dir === "up" ? "Starting upload" : "Starting download", ""];
-    case "done": return t.dir === "up"
-      ? ["Saved on host", `Downloads${sep()}${t.hostName || t.name}`]
-      : ["Downloaded", "saved by your browser"];
-    case "cancelled": return ["Cancelled", ""];
-    case "error": return ["Failed", t.error || ""];
+function xferMeta(x) {
+  const where = tr(x.dir === "up" ? "viewer.files.uploading" : "viewer.files.downloading");
+  switch (x.state) {
+    case "queued": return [tr("viewer.files.waitingUpload"), tr("viewer.files.queued")];
+    case "starting": return [tr(x.dir === "up" ? "viewer.files.startingUpload" : "viewer.files.startingDownload"), ""];
+    case "done": return x.dir === "up"
+      ? [tr("viewer.files.savedOnHost"), `Downloads${sep()}${x.hostName || x.name}`]
+      : [tr("viewer.files.downloaded"), tr("viewer.files.savedByBrowser")];
+    case "cancelled": return [tr("viewer.files.cancelled"), ""];
+    case "error": return [tr("viewer.files.failed"), x.error || ""];
   }
-  if (t.paused) return ["Paused", ""];
-  const rest = t.speed > 0 ? fmtTime((t.size - t.done) / t.speed) : "";
-  return [where, [t.speed > 0 ? `${fmtBytes(t.speed)}/s` : "", rest].filter(Boolean).join(" • ")];
+  if (x.paused) return [tr("viewer.files.paused"), ""];
+  const rest = x.speed > 0 ? fmtTime((x.size - x.done) / x.speed) : "";
+  return [where, [x.speed > 0 ? tr("viewer.files.speed", { size: fmtBytes(x.speed) }) : "", rest].filter(Boolean).join(" • ")];
 }
 
 function renderXfers() {
@@ -2017,7 +2030,7 @@ function renderXfers() {
     if (btns.dataset.want !== want) {
       btns.dataset.want = want;
       btns.innerHTML = want.split(" ").map((a) => {
-        const title = { pause: "Pause", resume: "Resume", cancel: "Cancel", remove: "Remove from the list" }[a];
+        const title = tr({ pause: "viewer.files.pause", resume: "viewer.files.resume", cancel: "viewer.files.cancel", remove: "viewer.files.remove" }[a]);
         return `<button type="button" class="${a === "remove" ? "cancel" : a}" data-act="${a}" title="${title}" aria-label="${title}">${ICONS[a === "remove" ? "cancel" : a]}</button>`;
       }).join("");
     }
@@ -2029,20 +2042,20 @@ function renderXfers() {
 function renderFiles() {
   const active = activeXfers();
   $("btn-files").classList.toggle("active", active.length > 0);
-  $("btn-files").title = active.length ? `File transfers (${active.length} active)` : "File transfers";
+  $("btn-files").title = active.length ? tr("viewer.files.buttonActive", { n: active.length }) : tr("viewer.files.button");
   const badge = $("files-badge");
   badge.hidden = active.length === 0;
-  badge.textContent = `${active.length} active`;
+  badge.textContent = tr("viewer.files.active", { n: active.length });
   const note = $("files-note");
   const usable = filesReady();
   if (fileHost.status === "unavailable") { note.hidden = false; note.className = "note warn"; note.textContent = fileHost.reason; }
-  else if (!usable && dc && dc.readyState === "open" && fileHost.status === null && info.files) { note.hidden = false; note.className = "note"; note.textContent = "Connecting to the host's files…"; }
+  else if (!usable && dc && dc.readyState === "open" && fileHost.status === null && info.files) { note.hidden = false; note.className = "note"; note.textContent = tr("viewer.files.connecting"); }
   else note.hidden = true;
   $("dropzone").classList.toggle("disabled", !usable);
-  $("drop-dest").textContent = fileHost.downloads ? `To ${fileHost.downloads} on the host` : "They go to the Downloads folder on the host";
-  $("drop-overlay-dest").textContent = fileHost.downloads ? `Files go to ${fileHost.downloads}` : "Files go to the Downloads folder";
+  $("drop-dest").textContent = fileHost.downloads ? tr("viewer.files.dropDestPath", { path: fileHost.downloads }) : tr("viewer.files.dropDest");
+  $("drop-overlay-dest").textContent = fileHost.downloads ? tr("viewer.files.overlayDestPath", { path: fileHost.downloads }) : tr("viewer.files.overlayDest");
   $("fb-toggle").disabled = !usable;
-  $("fb-toggle-label").textContent = fileHost.browsing ? "Hide host files" : "Get files from host";
+  $("fb-toggle-label").textContent = tr(fileHost.browsing ? "viewer.files.hideBrowse" : "viewer.files.browse");
   $("fb").hidden = !fileHost.browsing || !usable;
   $("xfer-clear").hidden = !xfers.some((t) => !["running", "starting", "queued"].includes(t.state));
   renderXfers();
@@ -2085,7 +2098,7 @@ function renderBrowser() {
     b.addEventListener("click", () => listDir(path));
     crumbs.appendChild(b);
   };
-  crumb(fileHost.user ? `${fileHost.user} (home)` : "Home", "");
+  crumb(fileHost.user ? tr("viewer.files.userHome", { user: fileHost.user }) : tr("viewer.files.home"), "");
   parts.forEach((p, i) => {
     crumbs.appendChild(document.createTextNode("/"));
     crumb(p, parts.slice(0, i + 1).join("/"));
@@ -2095,10 +2108,10 @@ function renderBrowser() {
   list.textContent = "";
   const l = fileHost.listing;
   const msg = (text, cls = "empty") => { const d = document.createElement("div"); d.className = cls; d.textContent = text; list.appendChild(d); };
-  if (!l) return msg("Loading…");
+  if (!l) return msg(tr("viewer.files.loading"));
   if (l.error) return msg(l.error, "empty err");
   const shown = l.entries.filter((e) => fileHost.hidden || !e.hidden);
-  if (!shown.length) return msg("This folder is empty.");
+  if (!shown.length) return msg(tr("viewer.files.empty"));
   for (const e of shown) {
     const b = document.createElement("button");
     b.type = "button";
@@ -2108,7 +2121,7 @@ function renderBrowser() {
     b.querySelector(".fname").textContent = e.name;
     b.querySelector(".fsize").textContent = e.dir ? "" : fmtBytes(e.size);
     const path = fileHost.cwd ? `${fileHost.cwd}/${e.name}` : e.name;
-    b.title = e.dir ? `Open ${e.name}` : `Download ${e.name} (${fmtBytes(e.size)})`;
+    b.title = e.dir ? tr("viewer.files.open", { name: e.name }) : tr("viewer.files.download", { name: e.name, size: fmtBytes(e.size) });
     b.addEventListener("click", () => (e.dir ? listDir(path) : startDownload(path, e.name, e.size)));
     list.appendChild(b);
   }
@@ -2158,7 +2171,7 @@ function droppedFiles(e) {
   [...e.dataTransfer.files].forEach((f, i) => {
     const entry = items[i] && items[i].webkitGetAsEntry ? items[i].webkitGetAsEntry() : null;
     if (entry && entry.isDirectory) {
-      xfers.unshift({ id: nextXferId++, dir: "up", name: f.name, size: 0, done: 0, state: "error", error: "Folders can't be sent. Zip it first." });
+      xfers.unshift({ id: nextXferId++, dir: "up", name: f.name, size: 0, done: 0, state: "error", error: tr("viewer.files.folderNotSent") });
     } else out.push(f);
   });
   return out;
@@ -2210,7 +2223,7 @@ async function start() {
     info = await api("/api/info");
   } catch (err) {
     if (err.status === 401) { showLogin(); return; }
-    setStatus(`error: ${err.message}`, "error");
+    setStatus("viewer.status.error", "error", { message: err.message });
     return;
   }
   $("pop-host").textContent = info.hostname || "Dalker";
@@ -2225,5 +2238,31 @@ async function start() {
   await connect();
 }
 
-setStatus("disconnected", "idle");
+// ---------------------------------------------------------------- language
+//
+// Chosen in Settings and kept in this browser; "auto" follows the browser's languages. Text set
+// by this script is drawn again in the new language.
+
+function renderLanguagePicker() {
+  const select = $("set-lang");
+  const auto = new Option(tr("language.autoBrowser"), "auto");
+  select.replaceChildren(auto, ...I18N.languages().map((l) => new Option(l.name, l.code)));
+  select.value = I18N.choice();
+}
+$("set-lang").addEventListener("change", (e) => { I18N.setChoice(e.target.value); });
+I18N.onChange(() => {
+  renderLanguagePicker();
+  setStatus(statusKey, state, statusParams);
+  if (state !== "connected") hideHint();
+  renderClip();
+  renderSettings();
+  renderKeyboardMode("keys-kbd");
+  renderFiles();
+  if (fileHost.browsing) renderBrowser();
+  $("btn-fullscreen").title = tr(document.fullscreenElement ? "viewer.btn.exitFullscreen" : "viewer.btn.fullscreen");
+  renderKeysMenu();
+});
+renderLanguagePicker();
+
+setStatus("viewer.status.disconnected", "idle");
 start();

@@ -32,6 +32,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WNDCLASSEXW, WS_POPUP,
 };
 
+use crate::i18n::tr;
+
 const WM_TRAY: u32 = WM_APP + 1;
 const TRAY_ID: u32 = 1;
 const TIMER_ID: usize = 1;
@@ -57,6 +59,9 @@ pub struct TrayConfig {
     pub ai_agents: Option<AiAgentsMenu>,
     /// Called once when the user confirms "Exit Dalker".
     pub on_exit: Box<dyn Fn() + Send + Sync>,
+    /// The language of the menu and tooltip ([`crate::i18n`]), asked each time they are drawn,
+    /// so a change in Dalker Settings shows at once.
+    pub language: Box<dyn Fn() -> &'static str + Send + Sync>,
 }
 
 /// Lets the person at the host stop AI agents (MCP sessions) and keep them out.
@@ -72,12 +77,11 @@ pub struct AiAgentsMenu {
 }
 
 /// Menu text of the AI agents item.
-fn ai_agents_label(connected: usize, blocked: bool) -> String {
+fn ai_agents_label(lang: &str, connected: usize, blocked: bool) -> String {
     match (blocked, connected) {
-        (true, _) => "Allow AI agents again".to_owned(),
-        (false, 0) => "Disconnect AI agents (none connected)".to_owned(),
-        (false, 1) => "Disconnect AI agents (1 connected)".to_owned(),
-        (false, n) => format!("Disconnect AI agents ({n} connected)"),
+        (true, _) => tr(lang, "tray.aiAllow", &[]),
+        (false, 0) => tr(lang, "tray.aiDisconnectNone", &[]),
+        (false, n) => tr(lang, "tray.aiDisconnect", &[("n", &n)]),
     }
 }
 
@@ -174,11 +178,10 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-fn tip_for(viewers: usize) -> String {
+fn tip_for(lang: &str, viewers: usize) -> String {
     match viewers {
-        0 => "Dalker - ready (nobody connected)".to_owned(),
-        1 => "Dalker - 1 viewer connected (red border on)".to_owned(),
-        n => format!("Dalker - {n} viewers connected (red border on)"),
+        0 => tr(lang, "tray.tipReady", &[]),
+        n => tr(lang, "tray.tipViewers", &[("n", &n)]),
     }
 }
 
@@ -200,7 +203,7 @@ unsafe fn notify(
         },
         ..Default::default()
     };
-    for (i, c) in tip_for(st.shown_viewers)
+    for (i, c) in tip_for((st.cfg.language)(), st.shown_viewers)
         .encode_utf16()
         .take(127)
         .enumerate()
@@ -223,15 +226,17 @@ unsafe fn open(url: &str) {
 }
 
 unsafe fn show_menu(hwnd: HWND) {
-    let (viewers, has_logs, ai_agents, web_on) = {
+    let (lang, viewers, has_logs, ai_agents, web_on) = {
         let st = STATE.get().unwrap().lock().unwrap();
+        let lang = (st.cfg.language)();
         let ai = st
             .cfg
             .ai_agents
             .as_ref()
             .filter(|a| (a.running)())
-            .map(|a| ai_agents_label((a.connected)(), (a.blocked)()));
+            .map(|a| ai_agents_label(lang, (a.connected)(), (a.blocked)()));
         (
+            lang,
             st.cfg.viewers.load(Ordering::SeqCst),
             st.cfg.log_dir.is_some(),
             ai,
@@ -244,9 +249,9 @@ unsafe fn show_menu(hwnd: HWND) {
         let _ = AppendMenuW(menu, MF_STRING, id, PCWSTR(t.as_ptr()));
     };
     if web_on {
-        item(CMD_OPEN, "Open Dalker in the browser");
+        item(CMD_OPEN, &tr(lang, "tray.open", &[]));
     } else {
-        let t = wide("Open Dalker in the browser (web access is off)");
+        let t = wide(&tr(lang, "tray.openOff", &[]));
         let _ = AppendMenuW(
             menu,
             MF_STRING | MF_GRAYED | MF_DISABLED,
@@ -254,12 +259,11 @@ unsafe fn show_menu(hwnd: HWND) {
             PCWSTR(t.as_ptr()),
         );
     }
-    item(CMD_SETTINGS, "Settings...");
+    item(CMD_SETTINGS, &tr(lang, "tray.settings", &[]));
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
     let status = wide(&match viewers {
-        0 => "Nobody is connected".to_owned(),
-        1 => "1 viewer connected".to_owned(),
-        n => format!("{n} viewers connected"),
+        0 => tr(lang, "tray.nobody", &[]),
+        n => tr(lang, "tray.viewers", &[("n", &n)]),
     });
     let _ = AppendMenuW(
         menu,
@@ -271,10 +275,10 @@ unsafe fn show_menu(hwnd: HWND) {
         item(CMD_AI_AGENTS, label);
     }
     if has_logs {
-        item(CMD_LOGS, "Open log folder");
+        item(CMD_LOGS, &tr(lang, "tray.logs", &[]));
     }
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-    item(CMD_EXIT, "Exit Dalker");
+    item(CMD_EXIT, &tr(lang, "tray.exit", &[]));
 
     let mut pt = POINT::default();
     let _ = GetCursorPos(&mut pt);
@@ -294,9 +298,13 @@ unsafe fn show_menu(hwnd: HWND) {
 }
 
 unsafe fn handle_command(hwnd: HWND, cmd: usize) {
-    let (open_url, log_dir) = {
+    let (open_url, log_dir, lang) = {
         let st = STATE.get().unwrap().lock().unwrap();
-        ((st.cfg.open_url)(), st.cfg.log_dir.clone())
+        (
+            (st.cfg.open_url)(),
+            st.cfg.log_dir.clone(),
+            (st.cfg.language)(),
+        )
     };
     match cmd {
         CMD_OPEN => {
@@ -317,9 +325,10 @@ unsafe fn handle_command(hwnd: HWND, cmd: usize) {
             }
         }
         CMD_EXIT => {
+            let text = wide(&tr(lang, "tray.exitConfirm", &[]));
             let answer = MessageBoxW(
                 Some(hwnd),
-                w!("Stop Dalker?\n\nNobody will be able to connect to this PC until you sign in to Windows again."),
+                PCWSTR(text.as_ptr()),
                 w!("Dalker"),
                 MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST,
             );
@@ -494,18 +503,23 @@ mod tests {
 
     #[test]
     fn tooltips() {
-        assert!(tip_for(0).contains("ready"));
-        assert!(tip_for(1).contains("1 viewer"));
-        assert!(tip_for(3).contains("3 viewers"));
+        assert!(tip_for("en", 0).contains("ready"));
         assert_eq!(
-            ai_agents_label(0, false),
+            tip_for("en", 3),
+            "Dalker - viewers connected: 3 (red border on)"
+        );
+        assert_eq!(
+            ai_agents_label("en", 0, false),
             "Disconnect AI agents (none connected)"
         );
         assert_eq!(
-            ai_agents_label(2, false),
-            "Disconnect AI agents (2 connected)"
+            ai_agents_label("en", 2, false),
+            "Disconnect AI agents (connected: 2)"
         );
-        assert_eq!(ai_agents_label(1, true), "Allow AI agents again");
-        assert!(tip_for(1).encode_utf16().count() < 127);
+        assert_eq!(ai_agents_label("en", 1, true), "Allow AI agents again");
+        // The shell cuts a tooltip at 127 characters.
+        for lang in crate::i18n::languages() {
+            assert!(tip_for(lang, 1000).encode_utf16().count() < 127, "{lang}");
+        }
     }
 }

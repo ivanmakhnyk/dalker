@@ -249,10 +249,11 @@ export default class DalkerBorder extends Extension {
             style_class: 'system-status-icon',
             style: 'color: rgb(255, 0, 0);',
         }));
+        this._text = this._strings();
         this._statusItem = new PopupMenu.PopupMenuItem(
-            'Someone is connected through Dalker', {reactive: false});
+            this._text['gnome.connected'] || 'Someone is connected through Dalker', {reactive: false});
         this._indicator.menu.addMenuItem(this._statusItem);
-        const item = new PopupMenu.PopupMenuItem('Disconnect everyone');
+        const item = new PopupMenu.PopupMenuItem(this._text['gnome.disconnect'] || 'Disconnect everyone');
         item.connect('activate', () => {
             this._disconnectRequested = true;
         });
@@ -261,13 +262,41 @@ export default class DalkerBorder extends Extension {
         this._updateIndicator();
     }
 
+    // The menu's strings in the session's language (i18n/<code>.json next to this file, the
+    // same files as the agent's tray and menu bar), or {} for English. The choice made in
+    // Dalker Settings is in the root-only config, so the session's language decides here.
+    _strings() {
+        const special = {zh_TW: 'zh-TW', zh_HK: 'zh-TW', zh_MO: 'zh-TW', zh: 'zh-CN', pt_BR: 'pt-BR',
+            pt: 'pt-BR', no: 'nb', nn: 'nb', nb: 'nb'};
+        for (const name of GLib.get_language_names()) {
+            const tag = name.split(/[.@]/)[0];
+            if (tag === 'C' || tag === 'POSIX')
+                continue;
+            const [lang, region] = tag.split('_');
+            const candidates = [special[tag], tag.replace('_', '-'),
+                lang === 'pt' && region && region !== 'BR' ? 'pt-PT' : special[lang], lang];
+            for (const code of candidates.filter(Boolean)) {
+                try {
+                    const [ok, bytes] = GLib.file_get_contents(`${this.path}/i18n/${code}.json`);
+                    if (ok)
+                        return JSON.parse(new TextDecoder().decode(bytes));
+                } catch (_) {
+                    // No such language: try the next.
+                }
+            }
+        }
+        return {};
+    }
+
     _updateIndicator() {
         if (!this._active)
             this._disconnectRequested = false;
         if (this._statusItem) {
+            const text = this._text || {};
             this._statusItem.label.text = this._labelText
-                ? `${this._labelText} is connected through Dalker`
-                : 'Someone is connected through Dalker';
+                ? (text['gnome.connectedNamed'] || '{name} is connected through Dalker')
+                    .replace('{name}', this._labelText)
+                : text['gnome.connected'] || 'Someone is connected through Dalker';
         }
         if (this._indicator)
             this._indicator.visible = this._active && !Main.sessionMode.isLocked;

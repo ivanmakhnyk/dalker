@@ -20,6 +20,7 @@ use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 
 use super::main_thread::{on_main, on_main_async};
 use super::permissions;
+use crate::i18n::tr;
 
 /// How often the permissions are checked again while the menu bar item is up.
 const PERMISSION_POLL: Duration = Duration::from_secs(2);
@@ -97,6 +98,9 @@ pub struct MenuBarConfig {
     /// Ends every viewer's and AI agent's session (no password needed).
     pub on_disconnect: Box<dyn Fn() + Send>,
     pub on_exit: Box<dyn Fn() + Send>,
+    /// The language of the menu and the setup window ([`crate::i18n`]); it is chosen once,
+    /// when Dalker starts.
+    pub language: &'static str,
     /// Opens the setup window on first launch of the installed app until a password is set.
     pub needs_password: bool,
 }
@@ -186,6 +190,7 @@ struct Installed {
     _menu: Retained<NSMenu>,
     _target: Retained<MenuTarget>,
     setup: SetupWindow,
+    lang: &'static str,
 }
 
 struct SetupWindow {
@@ -199,10 +204,17 @@ struct SetupWindow {
     /// Screen Recording was off when Dalker started. Capture in this process won't work even
     /// once it is turned on, so Restart stays in the menu.
     restart_needed: bool,
+    lang: &'static str,
 }
 
 impl SetupWindow {
-    fn new(mtm: MainThreadMarker, target: &MenuTarget, restart_needed: bool) -> Self {
+    fn new(
+        mtm: MainThreadMarker,
+        target: &MenuTarget,
+        restart_needed: bool,
+        lang: &'static str,
+    ) -> Self {
+        let t = |key: &str| tr(lang, key, &[]);
         let rect = |x, y, w, h| NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
         // SAFETY: the window is built and retained on the main thread.
         let window = unsafe {
@@ -216,15 +228,15 @@ impl SetupWindow {
         };
         // SAFETY: SetupWindow retains the window and may show it again after closing.
         unsafe { window.setReleasedWhenClosed(false) };
-        window.setTitle(&NSString::from_str("Set up Dalker"));
+        window.setTitle(&NSString::from_str(&t("setup.title")));
         let content = window.contentView().expect("setup window content view");
-        let label = |title, y, width| {
+        let label = |title: &str, y, width| {
             let field = NSTextField::labelWithString(&NSString::from_str(title), mtm);
             field.setFrame(rect(20.0, y, width, 22.0));
             content.addSubview(&field);
             field
         };
-        let button = |title, action, x, y, width| {
+        let button = |title: &str, action, x, y, width| {
             // SAFETY: all selectors belong to MenuTarget, retained by Installed.
             let button = unsafe {
                 NSButton::buttonWithTitle_target_action(
@@ -238,37 +250,29 @@ impl SetupWindow {
             content.addSubview(&button);
             button
         };
-        label(
-            "Allow Dalker to show your screen and use your mouse and keyboard.",
-            169.0,
-            520.0,
-        );
+        label(&t("setup.intro"), 169.0, 520.0);
         let screen_status = label("", 127.0, 380.0);
         let accessibility_status = label("", 83.0, 380.0);
         let screen_settings = button(
-            "Open Settings…",
+            &t("setup.openSettings"),
             sel!(openScreenRecording:),
             400.0,
             126.0,
             140.0,
         );
         let accessibility_settings = button(
-            "Open Settings…",
+            &t("setup.openSettings"),
             sel!(openAccessibility:),
             400.0,
             82.0,
             140.0,
         );
         if restart_needed {
-            label(
-                "After allowing Screen Recording in System Settings, restart Dalker.",
-                55.0,
-                520.0,
-            );
+            label(&t("setup.restartHint"), 55.0, 520.0);
         }
-        let restart = button("Restart Dalker", sel!(restart:), 246.0, 18.0, 140.0);
+        let restart = button(&t("menu.restart"), sel!(restart:), 246.0, 18.0, 140.0);
         let continue_button = button(
-            "Continue to Password",
+            &t("setup.continue"),
             sel!(continueSetup:),
             386.0,
             18.0,
@@ -284,23 +288,25 @@ impl SetupWindow {
             restart,
             continue_button,
             restart_needed,
+            lang,
         }
     }
 
     fn update(&self, now: Permissions) {
+        let t = |key: &str| tr(self.lang, key, &[]);
         let screen_status = match (now.screen_recording, self.restart_needed) {
-            (true, false) => "Screen & System Audio Recording: Allowed",
-            (true, true) => "Screen & System Audio Recording: Restart required",
-            (false, _) => "Screen & System Audio Recording: Permission needed",
+            (true, false) => "setup.screenAllowed",
+            (true, true) => "setup.screenRestart",
+            (false, _) => "setup.screenNeeded",
         };
         self.screen_status
-            .setStringValue(&NSString::from_str(screen_status));
+            .setStringValue(&NSString::from_str(&t(screen_status)));
         self.accessibility_status
-            .setStringValue(&NSString::from_str(if now.accessibility {
-                "Accessibility: Allowed"
+            .setStringValue(&NSString::from_str(&t(if now.accessibility {
+                "setup.accessibilityAllowed"
             } else {
-                "Accessibility: Permission needed"
-            }));
+                "setup.accessibilityNeeded"
+            })));
         self.screen_settings.setEnabled(!now.screen_recording);
         self.accessibility_settings.setEnabled(!now.accessibility);
         // macOS can keep reporting denial to the current process after the toggle is on.
@@ -325,6 +331,8 @@ thread_local! {
 }
 
 fn install(mtm: MainThreadMarker, cfg: MenuBarConfig) {
+    let lang = cfg.language;
+    let t = |key: &str| tr(lang, key, &[]);
     let first_run = cfg.needs_password && app_bundle().is_some();
     let now = Permissions::now();
     let target: Retained<MenuTarget> = {
@@ -350,13 +358,13 @@ fn install(mtm: MainThreadMarker, cfg: MenuBarConfig) {
         menu.addItem(&item);
         item
     };
-    entry("Set Up Permissions…", Some(sel!(openSetup:)));
-    let setup = SetupWindow::new(mtm, &target, !now.screen_recording);
-    entry("Open Dalker in Browser", Some(sel!(openViewer:)));
-    entry("Dalker Settings…", Some(sel!(openSettings:)));
+    entry(&t("menu.setup"), Some(sel!(openSetup:)));
+    let setup = SetupWindow::new(mtm, &target, !now.screen_recording, lang);
+    entry(&t("menu.open"), Some(sel!(openViewer:)));
+    entry(&t("menu.settings"), Some(sel!(openSettings:)));
     menu.addItem(&NSMenuItem::separatorItem(mtm));
-    entry("Disconnect Everyone", Some(sel!(disconnectAll:)));
-    entry("Quit Dalker", Some(sel!(quit:)));
+    entry(&t("menu.disconnect"), Some(sel!(disconnectAll:)));
+    entry(&t("menu.quit"), Some(sel!(quit:)));
 
     let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
     item.setMenu(Some(&menu));
@@ -365,6 +373,7 @@ fn install(mtm: MainThreadMarker, cfg: MenuBarConfig) {
         _menu: menu,
         _target: target,
         setup,
+        lang,
     };
     show(mtm, &installed, now);
     if first_run {
@@ -382,16 +391,16 @@ fn show(mtm: MainThreadMarker, installed: &Installed, now: Permissions) {
         return;
     };
     let (symbol, tip) = if !setup {
-        ("display", "Dalker")
+        ("display", "Dalker".to_owned())
     } else {
         (
             "exclamationmark.triangle",
-            "Dalker needs a permission, or a restart to use it",
+            tr(installed.lang, "menu.needsPermission", &[]),
         )
     };
     let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
         &NSString::from_str(symbol),
-        Some(&NSString::from_str(tip)),
+        Some(&NSString::from_str(&tip)),
     );
     match image {
         Some(image) => {
@@ -404,7 +413,7 @@ fn show(mtm: MainThreadMarker, installed: &Installed, now: Permissions) {
             "Dalker"
         })),
     }
-    button.setToolTip(Some(&NSString::from_str(tip)));
+    button.setToolTip(Some(&NSString::from_str(&tip)));
 }
 
 /// Checks the permissions every [`PERMISSION_POLL`] and updates the menu when they change,

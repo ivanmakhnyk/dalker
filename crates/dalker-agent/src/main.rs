@@ -343,6 +343,23 @@ fn web_url(status: &listeners::Status) -> Option<String> {
     Some(format!("http://{host}:{}/", addr.port()))
 }
 
+/// The language of the host's own menus: the one chosen in Dalker Settings (the config file, when
+/// this process can read it), else the operating system's.
+#[cfg(any(windows, target_os = "macos"))]
+fn host_language(
+    config: watch::Receiver<config_watch::Snapshot>,
+) -> impl Fn() -> &'static str + Send + Sync {
+    let config = std::sync::Mutex::new(config);
+    move || {
+        let config = config.lock().unwrap();
+        let snapshot = config.borrow();
+        dalker_platform::i18n::current(config_watch::value(
+            &snapshot,
+            dalker_platform::i18n::CONFIG_KEY,
+        ))
+    }
+}
+
 /// Opens the host's settings window, a process of its own (on Windows it asks for
 /// administrator rights itself).
 #[cfg(any(windows, target_os = "macos"))]
@@ -363,6 +380,7 @@ fn start_menu_bar(
     status: &Arc<listeners::Status>,
     exit: &Arc<tokio::sync::Notify>,
     disconnect_all: Arc<dyn Fn() + Send + Sync>,
+    config: &watch::Receiver<config_watch::Snapshot>,
     needs_password: bool,
 ) -> Option<dalker_platform::macos::MenuBar> {
     let web = Arc::clone(status);
@@ -372,6 +390,7 @@ fn start_menu_bar(
         on_settings: Box::new(open_settings_window),
         on_disconnect: Box::new(move || disconnect_all()),
         on_exit: Box::new(move || exit.notify_one()),
+        language: host_language(config.clone())(),
         needs_password,
     };
     match dalker_platform::macos::MenuBar::start(cfg) {
@@ -392,6 +411,7 @@ fn start_tray(
     viewers: &Arc<AtomicUsize>,
     mcp: &McpServer,
     exit: &Arc<tokio::sync::Notify>,
+    config: &watch::Receiver<config_watch::Snapshot>,
 ) -> Option<dalker_platform::windows::Tray> {
     let exit = Arc::clone(exit);
     // "Disconnect AI agents": ends their sessions and keeps them out until allowed again.
@@ -414,6 +434,7 @@ fn start_tray(
         viewers: Arc::clone(viewers),
         ai_agents: Some(ai_agents),
         on_exit: Box::new(move || exit.notify_one()),
+        language: Box::new(host_language(config.clone())),
     };
     match dalker_platform::windows::Tray::start(cfg) {
         Ok(t) => {
@@ -692,7 +713,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
     let _tray = if cli.no_tray {
         None
     } else {
-        start_tray(&status, &signaling.active, &mcp, &exit)
+        start_tray(&status, &signaling.active, &mcp, &exit, &config)
     };
     #[cfg(target_os = "macos")]
     let _menu_bar = if cli.no_tray {
@@ -702,6 +723,7 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
             &status,
             &exit,
             Arc::clone(&disconnect_all),
+            &config,
             cli.password_hash.is_none() && cli.password.is_none(),
         )
     };

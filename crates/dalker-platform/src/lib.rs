@@ -19,6 +19,7 @@ use dalker_core::{
     Clipboard, FileAccess, InputInjector, PlatformError, ScreenCapturer, ViewerIndicator,
 };
 
+pub mod i18n;
 pub mod icon;
 #[cfg(target_os = "linux")]
 pub mod linux;
