@@ -704,7 +704,25 @@ mod tests {
             eprintln!("GPU: {name} (vendor {vendor:#06x})");
         }
         for c in hardware_encoders().unwrap() {
-            eprintln!("candidate: {} {} on {:?}", c.vendor, c.friendly, c.adapter);
+            let result = MfEncoder::open_one(c.activate.clone(), &config).and_then(|mut e| {
+                let yuv = I420 {
+                    width: 1280,
+                    height: 720,
+                    y: vec![16; 1280 * 720],
+                    u: vec![128; 640 * 360],
+                    v: vec![128; 640 * 360],
+                };
+                e.encode(&yuv, true).map(|f| f.map(|f| f.0.len()))
+            });
+            // SAFETY: releases the MFT tried above.
+            let _ = unsafe { c.activate.ShutdownObject() };
+            eprintln!(
+                "candidate: {} {} on {:?}: {:?}",
+                c.vendor,
+                c.friendly,
+                c.adapter,
+                result.map_err(|e| format!("{e:#}"))
+            );
         }
         let mut enc = match MfEncoder::open(&config) {
             Ok((enc, name)) => {
