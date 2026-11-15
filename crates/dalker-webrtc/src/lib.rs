@@ -859,6 +859,36 @@ async fn forward_encoder(
     }
 }
 
+/// Blocks this thread until `frames` holds a new frame or `timeout` passes.
+///
+/// Doesn't use the async runtime's timer: the runtime can be shutting down while the
+/// encoder thread still runs, and a timer created then panics.
+fn wait_for_frame(frames: &FrameWatch, timeout: Duration) {
+    use std::future::Future;
+    use std::task::{Context, Wake, Waker};
+
+    struct Unpark(std::thread::Thread);
+    impl Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    // A clone so `changed()` doesn't mark the frame seen for the encoder loop's check.
+    let mut next = frames.clone();
+    let mut changed = std::pin::pin!(next.changed());
+    let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut cx = Context::from_waker(&waker);
+    let deadline = Instant::now() + timeout;
+    while changed.as_mut().poll(&mut cx).is_pending() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        std::thread::park_timeout(left);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn encode_loop(
     id: SessionId,
@@ -932,10 +962,7 @@ fn encode_loop(
             std::thread::sleep(rest);
         }
         if !frames.has_changed().unwrap_or(true) {
-            // A clone so `changed()` doesn't mark the frame seen for the check at the top.
-            let mut next = frames.clone();
-            let _ =
-                runtime.block_on(async { tokio::time::timeout(FRAME_POLL, next.changed()).await });
+            wait_for_frame(&frames, FRAME_POLL);
         }
     }
     tracing::info!(session = id, encoded, "encoder stopped");
@@ -973,6 +1000,27 @@ mod tests {
             }
         });
         port
+    }
+
+    /// The encoder thread's wait ends with a new frame or the timeout, and works with no
+    /// async runtime at all (as when the runtime has shut down under it).
+    #[test]
+    fn frame_wait_needs_no_runtime() {
+        let (tx, rx) = watch::channel::<Option<Arc<RawFrame>>>(None);
+        let started = Instant::now();
+        wait_for_frame(&rx, Duration::from_millis(50));
+        assert!(started.elapsed() >= Duration::from_millis(50));
+
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            tx.send_replace(None);
+            tx
+        });
+        let started = Instant::now();
+        wait_for_frame(&rx, Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(rx.has_changed().unwrap(), "the frame is left unseen");
+        drop(sender.join());
     }
 
     #[tokio::test]

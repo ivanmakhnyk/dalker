@@ -28,6 +28,20 @@ const INPUT_WAIT: Duration = Duration::from_secs(2);
 /// Waits for output this many times in a row without getting any, then stops waiting.
 const MAX_LATE: u32 = 3;
 
+/// Most bits one frame may get, per pixel. Raw NV12 is 12 and H.264 rarely needs even 1, so
+/// this costs no quality and keeps a frame's budget well below the raw picture.
+const MAX_BITS_PER_PIXEL: u64 = 4;
+
+/// The bitrate the encoder is given: `bitrate` held to [`MAX_BITS_PER_PIXEL`] per frame.
+///
+/// AMD's encoder pads every frame to its constant bitrate and crashes the process (an
+/// access violation on its own thread) when that budget is bigger than the raw picture:
+/// 320x180 at 5 fps and 6 Mbps is 150 KB a frame for an 86 KB picture.
+fn usable_bitrate(bitrate: u32, width: u64, height: u64, fps: u64) -> u32 {
+    let cap = MAX_BITS_PER_PIXEL * width * height * fps.max(1);
+    bitrate.min(cap.min(u32::MAX as u64) as u32)
+}
+
 /// Media Foundation, started once per process (and never shut down).
 fn startup() -> Result<()> {
     static STARTED: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
@@ -373,7 +387,7 @@ impl MfEncoder {
     unsafe fn configure(&mut self, config: &Config) -> Result<()> {
         let (w, h) = (config.width as u64, config.height as u64);
         let fps = config.fps.round().max(1.0) as u64;
-        let mean_bitrate = config.bitrate_bps;
+        let mean_bitrate = usable_bitrate(config.bitrate_bps, w, h, fps);
         let gop = config.keyframe_interval.max(1);
         let low_latency = self.set_codec(&CODECAPI_AVLowLatencyMode, VARIANT::from(true));
         let cbr = self.set_codec(
@@ -386,7 +400,12 @@ impl MfEncoder {
         );
         self.set_codec(&CODECAPI_AVEncMPVGOPSize, VARIANT::from(gop));
         self.set_codec(&CODECAPI_AVEncMPVDefaultBPictureCount, VARIANT::from(0u32));
-        tracing::debug!(low_latency, cbr, "Media Foundation encoder settings");
+        tracing::debug!(
+            low_latency,
+            cbr,
+            bitrate = mean_bitrate,
+            "Media Foundation encoder settings"
+        );
 
         let video_type = |subtype: &GUID| -> Result<IMFMediaType> {
             let t = MFCreateMediaType()?;
@@ -685,6 +704,48 @@ mod tests {
         let mut ids = ["VEN_1002", "VEN_10DE", "VEN_8086"];
         ids.sort_by_key(|v| vendor_rank(v));
         assert_eq!(ids, ["VEN_10DE", "VEN_1002", "VEN_8086"]);
+    }
+
+    #[test]
+    fn bitrate_is_held_to_what_the_picture_can_use() {
+        // A small, slow picture: 4 bits a pixel, 1.152 Mbps instead of 6.
+        assert_eq!(usable_bitrate(6_000_000, 320, 180, 5), 1_152_000);
+        // Usual sizes and rates are left alone.
+        assert_eq!(usable_bitrate(6_000_000, 1920, 1080, 30), 6_000_000);
+        assert_eq!(usable_bitrate(6_000_000, 1280, 720, 5), 6_000_000);
+    }
+
+    /// A small picture at a low frame rate and a high bitrate, which crashed AMD's encoder.
+    /// Skipped without a hardware encoder.
+    #[test]
+    fn small_slow_high_bitrate_stream_encodes_on_the_gpu() {
+        let config = Config {
+            width: 320,
+            height: 180,
+            bitrate_bps: 6_000_000,
+            fps: 5.0,
+            keyframe_interval: 300,
+            strict_bitrate: false,
+        };
+        let mut enc = match MfEncoder::open(&config) {
+            Ok((enc, _)) => enc,
+            Err(e) => {
+                eprintln!("skipped, no hardware encoder: {e:#}");
+                return;
+            }
+        };
+        let yuv = I420 {
+            width: 320,
+            height: 180,
+            y: vec![16; 320 * 180],
+            u: vec![128; 160 * 90],
+            v: vec![128; 160 * 90],
+        };
+        let mut frames = 0;
+        for i in 0..10 {
+            frames += usize::from(enc.encode(&yuv, i == 0).unwrap().is_some());
+        }
+        assert!(frames >= 8, "only {frames} frames came out");
     }
 
     /// Encodes on this machine's GPU when it has a hardware encoder (`DALKER_TEST_MF=1` makes
