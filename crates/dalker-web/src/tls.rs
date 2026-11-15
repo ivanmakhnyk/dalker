@@ -117,7 +117,10 @@ impl Identity {
             .with_no_client_auth()
             .with_single_cert(chain, key)
             .context("the TLS certificate and key don't go together")?;
-        config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        // The server speaks HTTP/1.1 only (axum is built without HTTP/2), so it must not offer
+        // `h2`: a browser that picks it sends HTTP/2 frames the server can't read, and the
+        // connection is dropped.
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
         Ok(Self {
             config: Arc::new(config),
             fingerprint,
@@ -565,12 +568,18 @@ mod tests {
     }
 
     fn tls_get(addr: SocketAddr) -> String {
-        let config = rustls::ClientConfig::builder_with_provider(provider())
+        tls_get_offering(addr, &[]).0
+    }
+
+    /// A GET over TLS offering `alpn` (as browsers do), with the protocol the server picked.
+    fn tls_get_offering(addr: SocketAddr, alpn: &[&[u8]]) -> (String, Option<Vec<u8>>) {
+        let mut config = rustls::ClientConfig::builder_with_provider(provider())
             .with_safe_default_protocol_versions()
             .unwrap()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(AnyCert(provider())))
             .with_no_client_auth();
+        config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
         let conn = rustls::ClientConnection::new(
             Arc::new(config),
             ServerName::IpAddress(addr.ip().into()),
@@ -586,7 +595,23 @@ mod tests {
         .unwrap();
         let mut out = Vec::new();
         let _ = s.read_to_end(&mut out);
-        String::from_utf8_lossy(&out).into_owned()
+        let alpn = s.conn.alpn_protocol().map(<[u8]>::to_vec);
+        (String::from_utf8_lossy(&out).into_owned(), alpn)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn browsers_offering_http2_get_http1() {
+        let (addr, _identity, dir) = start(false).await;
+        let (tls, alpn) =
+            tokio::task::spawn_blocking(move || tls_get_offering(addr, &[b"h2", b"http/1.1"]))
+                .await
+                .unwrap();
+        assert_eq!(alpn.as_deref(), Some(&b"http/1.1"[..]));
+        assert!(
+            tls.starts_with("HTTP/1.1 200") && tls.ends_with("https"),
+            "{tls}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test(flavor = "multi_thread")]
