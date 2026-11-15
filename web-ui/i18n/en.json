@@ -304,6 +304,8 @@
   "settings.web.warning": "When disabled, the browser server stops and everyone watching is disconnected at once.",
   "settings.web.port": "HTTP Port",
   "settings.web.address": "Address for browsers",
+  "settings.web.fingerprint": "HTTPS certificate fingerprint (SHA-256)",
+  "settings.web.fingerprintHint": "Before you accept the browser's certificate warning, check that it shows this fingerprint.",
   "settings.web.off": "The web server is off.",
   "settings.web.loopback": "Only browsers on this computer can open it.",
   "settings.web.localOnly": "This address works only on this computer. Choose a network address for other computers.",

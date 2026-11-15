@@ -441,6 +441,9 @@ main {
 }
 .endpoint code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12.5px var(--mono); color: var(--indigo-hi); }
 .endpoint code.green { color: var(--emerald-hi); }
+/* The HTTPS certificate's fingerprint under the web address (95 characters: it wraps). */
+.fingerprint { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.fingerprint code { font: 11.5px var(--mono); color: var(--muted); word-break: break-all; user-select: all; }
 /* Which of the host's addresses the endpoint shows (when it has more than one). */
 .addr-pick {
   flex: none;

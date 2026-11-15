@@ -304,6 +304,8 @@
   "settings.web.warning": "Išjungus, naršyklių serveris sustoja ir visi žiūrovai iš karto atjungiami.",
   "settings.web.port": "HTTP prievadas",
   "settings.web.address": "Adresas naršyklėms",
+  "settings.web.fingerprint": "HTTPS sertifikato kontrolinis kodas (SHA-256)",
+  "settings.web.fingerprintHint": "Prieš priimdami naršyklės įspėjimą dėl sertifikato, patikrinkite, ar ji rodo šį kontrolinį kodą.",
   "settings.web.off": "Žiniatinklio serveris išjungtas.",
   "settings.web.loopback": "Jį gali atidaryti tik šio kompiuterio naršyklės.",
   "settings.web.localOnly": "Šis adresas veikia tik šiame kompiuteryje. Kitiems kompiuteriams pasirinkite tinklo adresą.",

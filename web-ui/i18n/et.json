@@ -304,6 +304,8 @@
   "settings.web.warning": "Väljalülitamisel brauseriserver peatub ja kõigi vaatajate ühendus katkeb kohe.",
   "settings.web.port": "HTTP-port",
   "settings.web.address": "Aadress brauseritele",
+  "settings.web.fingerprint": "HTTPS-sertifikaadi sõrmejälg (SHA-256)",
+  "settings.web.fingerprintHint": "Enne brauseri sertifikaadihoiatuse aktsepteerimist kontrollige, et see näitab seda sõrmejälge.",
   "settings.web.off": "Veebiserver on väljas.",
   "settings.web.loopback": "Seda saavad avada ainult selle arvuti brauserid.",
   "settings.web.localOnly": "See aadress töötab ainult selles arvutis. Teiste arvutite jaoks valige võrguaadress.",

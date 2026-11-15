@@ -304,6 +304,8 @@
   "settings.web.warning": "Se disattivato, il server per i browser si ferma e tutti gli spettatori vengono disconnessi subito.",
   "settings.web.port": "Porta HTTP",
   "settings.web.address": "Indirizzo per i browser",
+  "settings.web.fingerprint": "Impronta del certificato HTTPS (SHA-256)",
+  "settings.web.fingerprintHint": "Prima di accettare l'avviso sul certificato del browser, verifica che mostri questa impronta.",
   "settings.web.off": "Il server web è disattivato.",
   "settings.web.loopback": "Solo i browser di questo computer possono aprirlo.",
   "settings.web.localOnly": "Questo indirizzo funziona solo su questo computer. Scegli un indirizzo di rete per gli altri computer.",

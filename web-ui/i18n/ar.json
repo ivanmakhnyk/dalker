@@ -304,6 +304,8 @@
   "settings.web.warning": "عند التعطيل، يتوقف خادم المتصفح ويُقطع اتصال كل من يشاهد فورًا.",
   "settings.web.port": "منفذ HTTP",
   "settings.web.address": "العنوان للمتصفحات",
+  "settings.web.fingerprint": "بصمة شهادة HTTPS ‏(SHA-256)",
+  "settings.web.fingerprintHint": "قبل أن تقبل تحذير الشهادة في المتصفح، تحقق من أنه يعرض هذه البصمة.",
   "settings.web.off": "خادم الويب متوقف.",
   "settings.web.loopback": "لا يمكن فتحه إلا من المتصفحات على هذا الكمبيوتر.",
   "settings.web.localOnly": "هذا العنوان يعمل على هذا الكمبيوتر فقط. اختر عنوان شبكة للأجهزة الأخرى.",

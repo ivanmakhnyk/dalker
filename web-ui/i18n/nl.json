@@ -304,6 +304,8 @@
   "settings.web.warning": "Als dit uit staat, stopt de browserserver en wordt iedereen die meekijkt meteen losgekoppeld.",
   "settings.web.port": "HTTP-poort",
   "settings.web.address": "Adres voor browsers",
+  "settings.web.fingerprint": "Vingerafdruk van het HTTPS-certificaat (SHA-256)",
+  "settings.web.fingerprintHint": "Controleer voordat u de certificaatwaarschuwing van de browser accepteert, of deze deze vingerafdruk toont.",
   "settings.web.off": "De webserver staat uit.",
   "settings.web.loopback": "Alleen browsers op deze computer kunnen hem openen.",
   "settings.web.localOnly": "Dit adres werkt alleen op deze computer. Kies een netwerkadres voor andere computers.",

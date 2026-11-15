@@ -304,6 +304,8 @@
   "settings.web.warning": "Po vypnutí sa server pre prehliadače zastaví a všetci diváci sa okamžite odpoja.",
   "settings.web.port": "Port HTTP",
   "settings.web.address": "Adresa pre prehliadače",
+  "settings.web.fingerprint": "Odtlačok certifikátu HTTPS (SHA-256)",
+  "settings.web.fingerprintHint": "Skôr než prijmete upozornenie prehliadača na certifikát, overte, že zobrazuje tento odtlačok.",
   "settings.web.off": "Webový server je vypnutý.",
   "settings.web.loopback": "Otvoriť ho môžu len prehliadače na tomto počítači.",
   "settings.web.localOnly": "Táto adresa funguje len na tomto počítači. Pre iné počítače zvoľte sieťovú adresu.",

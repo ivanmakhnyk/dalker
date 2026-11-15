@@ -304,6 +304,8 @@
   "settings.web.warning": "Når den slås av, stopper nettleserserveren, og alle som ser på, kobles fra med en gang.",
   "settings.web.port": "HTTP-port",
   "settings.web.address": "Adresse for nettlesere",
+  "settings.web.fingerprint": "Fingeravtrykk for HTTPS-sertifikatet (SHA-256)",
+  "settings.web.fingerprintHint": "Før du godtar nettleserens sertifikatadvarsel, må du sjekke at den viser dette fingeravtrykket.",
   "settings.web.off": "Nettserveren er av.",
   "settings.web.loopback": "Bare nettlesere på denne datamaskinen kan åpne den.",
   "settings.web.localOnly": "Denne adressen virker bare på denne datamaskinen. Velg en nettverksadresse for andre datamaskiner.",

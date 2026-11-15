@@ -80,6 +80,25 @@ pub struct Cli {
     #[arg(long, env = "DALKER_BIND", default_value = DEFAULT_BIND)]
     pub bind: SocketAddr,
 
+    /// HTTPS on the web and MCP ports (they take plain HTTP too): `off` serves plain HTTP only.
+    /// Without --tls-cert, a self-signed certificate is made on first start.
+    #[arg(long, value_enum, env = "DALKER_TLS", default_value = "on")]
+    pub tls: OnOff,
+
+    /// Send browsers and AI agents on other computers that use plain HTTP to HTTPS (this
+    /// computer's own clients stay on HTTP).
+    #[arg(long, value_enum, env = "DALKER_TLS_REDIRECT", default_value = "off")]
+    pub tls_redirect: OnOff,
+
+    /// Your own TLS certificate (PEM, with its chain) instead of the self-signed one. Needs
+    /// --tls-key. Read at start: restart the agent after replacing the files.
+    #[arg(long, env = "DALKER_TLS_CERT", requires = "tls_key")]
+    pub tls_cert: Option<std::path::PathBuf>,
+
+    /// Private key (PEM) of --tls-cert.
+    #[arg(long, env = "DALKER_TLS_KEY", requires = "tls_cert")]
+    pub tls_key: Option<std::path::PathBuf>,
+
     /// Argon2 PHC hash of the login password (preferred; see `hash-password`).
     #[arg(long, env = "DALKER_PASSWORD_HASH", hide_env_values = true)]
     pub password_hash: Option<String>,
@@ -228,6 +247,12 @@ pub enum Command {
     McpToken {
         #[command(subcommand)]
         action: McpTokenCommand,
+    },
+    /// Make the self-signed TLS certificate if there is none yet and print its SHA-256
+    /// fingerprint (what browsers show). `--renew` replaces it; restart the agent afterwards.
+    TlsCert {
+        #[arg(long)]
+        renew: bool,
     },
     /// Set one `DALKER_*` key in the config file (used by the installers).
     SetConfig {

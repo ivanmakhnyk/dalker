@@ -475,6 +475,26 @@ impl McpServer {
         listener: tokio::net::TcpListener,
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> anyhow::Result<()> {
+        tracing::info!("MCP server on http://{}/mcp", listener.local_addr()?);
+        self.serve_with(shutdown, |router, shutdown| async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(shutdown)
+                .await
+        })
+        .await
+    }
+
+    /// [`serve`](Self::serve) through `run`, which serves the router it is given until the
+    /// future it is given resolves (the agent's own listener, with TLS).
+    pub async fn serve_with<F, Fut>(
+        &self,
+        shutdown: impl Future<Output = ()> + Send + 'static,
+        run: F,
+    ) -> anyhow::Result<()>
+    where
+        F: FnOnce(Router, std::pin::Pin<Box<dyn Future<Output = ()> + Send>>) -> Fut,
+        Fut: Future<Output = std::io::Result<()>>,
+    {
         let shared = Arc::downgrade(&self.shared);
         // Stopped with the listener (even when this future is dropped): the host can turn the
         // server off and on again.
@@ -493,14 +513,15 @@ impl McpServer {
                 shared.reap();
             }
         }));
-        tracing::info!("MCP server on http://{}/mcp", listener.local_addr()?);
         let me = self.clone();
-        axum::serve(listener, self.router())
-            .with_graceful_shutdown(async move {
+        run(
+            self.router(),
+            Box::pin(async move {
                 shutdown.await;
                 me.disconnect_all("server shutting down");
-            })
-            .await?;
+            }),
+        )
+        .await?;
         Ok(())
     }
 }

@@ -54,8 +54,10 @@ pub fn show(mut store: Result<Box<dyn Store>, String>, no_window: bool) {
     let api = match store {
         Ok(store) => {
             let live = Arc::clone(&live);
-            Api::new(store, Access::Host, check, move || *live.lock().unwrap())
-                .on_read(move |saved| *targets.lock().unwrap() = Some((saved.bind, saved.mcp_bind)))
+            Api::new(store, Access::Host, check, move || {
+                live.lock().unwrap().clone()
+            })
+            .on_read(move |saved| *targets.lock().unwrap() = Some((saved.bind, saved.mcp_bind)))
         }
         Err(why) => Api::unavailable(format!("The settings can't be opened: {why}"), check),
     };
@@ -404,10 +406,18 @@ fn spawn_probe(live: Arc<Mutex<Live>>, targets: Arc<Mutex<Option<(SocketAddr, So
             if let Some((web, mcp)) = now {
                 let web_up = probe_http(web, "/", "<title>Dalker</title>");
                 let mcp_up = probe_http(mcp, "/mcp", "realm=\"dalker\"");
+                // The certificate the agent presents, whichever server is up (they share it).
+                let fingerprint = [(web_up, web), (mcp_up, mcp)]
+                    .into_iter()
+                    .filter(|(up, _)| *up)
+                    .find_map(|(_, addr)| {
+                        dalker_web::tls::fetch_fingerprint(local(addr), Duration::from_secs(1))
+                    });
                 if *targets.lock().unwrap() == now {
                     *live.lock().unwrap() = Live {
                         web: Some(web_up),
                         mcp: Some(mcp_up),
+                        fingerprint,
                     };
                 } else {
                     *live.lock().unwrap() = Live::default();
@@ -418,15 +428,20 @@ fn spawn_probe(live: Arc<Mutex<Live>>, targets: Arc<Mutex<Option<(SocketAddr, So
         .ok();
 }
 
-/// Whether a Dalker server answers `GET path` on `addr` with something containing `marker`
-/// (the web client's title; the MCP server's 401 with its bearer realm).
-fn probe_http(addr: SocketAddr, path: &str, marker: &str) -> bool {
+/// Where this computer reaches a server bound to `addr` (loopback for "every address").
+fn local(addr: SocketAddr) -> SocketAddr {
     let ip = match addr.ip() {
         IpAddr::V4(v4) if v4.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
         IpAddr::V6(v6) if v6.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
         ip => ip,
     };
-    let target = SocketAddr::new(ip, addr.port());
+    SocketAddr::new(ip, addr.port())
+}
+
+/// Whether a Dalker server answers `GET path` on `addr` with something containing `marker`
+/// (the web client's title; the MCP server's 401 with its bearer realm).
+fn probe_http(addr: SocketAddr, path: &str, marker: &str) -> bool {
+    let target = local(addr);
     let Ok(mut s) = TcpStream::connect_timeout(&target, Duration::from_millis(600)) else {
         return false;
     };

@@ -304,6 +304,8 @@
   "settings.web.warning": "Izslēdzot pārlūku serveris apstājas, un visi skatītāji uzreiz tiek atvienoti.",
   "settings.web.port": "HTTP ports",
   "settings.web.address": "Adrese pārlūkiem",
+  "settings.web.fingerprint": "HTTPS sertifikāta pirkstu nospiedums (SHA-256)",
+  "settings.web.fingerprintHint": "Pirms pieņemat pārlūka brīdinājumu par sertifikātu, pārbaudiet, vai tas rāda šo pirkstu nospiedumu.",
   "settings.web.off": "Tīmekļa serveris ir izslēgts.",
   "settings.web.loopback": "To var atvērt tikai šī datora pārlūki.",
   "settings.web.localOnly": "Šī adrese darbojas tikai šajā datorā. Citiem datoriem izvēlieties tīkla adresi.",

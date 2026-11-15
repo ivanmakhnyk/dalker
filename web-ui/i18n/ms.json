@@ -304,6 +304,8 @@
   "settings.web.warning": "Apabila dilumpuhkan, pelayan pelayar berhenti dan semua yang sedang menonton diputuskan sambungan serta-merta.",
   "settings.web.port": "Port HTTP",
   "settings.web.address": "Alamat untuk pelayar",
+  "settings.web.fingerprint": "Cap jari sijil HTTPS (SHA-256)",
+  "settings.web.fingerprintHint": "Sebelum anda menerima amaran sijil pelayar, pastikan ia menunjukkan cap jari ini.",
   "settings.web.off": "Pelayan web dimatikan.",
   "settings.web.loopback": "Hanya pelayar pada komputer ini boleh membukanya.",
   "settings.web.localOnly": "Alamat ini hanya berfungsi pada komputer ini. Pilih alamat rangkaian untuk komputer lain.",

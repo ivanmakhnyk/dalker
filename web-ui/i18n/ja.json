@@ -304,6 +304,8 @@
   "settings.web.warning": "無効にすると、ブラウザーサーバーが停止し、視聴中の全員がすぐに切断されます。",
   "settings.web.port": "HTTP ポート",
   "settings.web.address": "ブラウザー用のアドレス",
+  "settings.web.fingerprint": "HTTPS 証明書のフィンガープリント (SHA-256)",
+  "settings.web.fingerprintHint": "ブラウザーの証明書の警告を受け入れる前に、このフィンガープリントが表示されていることを確認してください。",
   "settings.web.off": "Web サーバーはオフです。",
   "settings.web.loopback": "このコンピューター上のブラウザーからのみ開けます。",
   "settings.web.localOnly": "このアドレスはこのコンピューターでのみ使えます。他のコンピューター用にはネットワークアドレスを選択してください。",

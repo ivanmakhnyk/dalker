@@ -304,6 +304,8 @@
   "settings.web.warning": "Kun tämä poistetaan käytöstä, selainpalvelin pysähtyy ja kaikkien katsojien yhteys katkeaa heti.",
   "settings.web.port": "HTTP-portti",
   "settings.web.address": "Osoite selaimille",
+  "settings.web.fingerprint": "HTTPS-varmenteen sormenjälki (SHA-256)",
+  "settings.web.fingerprintHint": "Ennen kuin hyväksyt selaimen varmennevaroituksen, tarkista, että se näyttää tämän sormenjäljen.",
   "settings.web.off": "Verkkopalvelin on pois päältä.",
   "settings.web.loopback": "Vain tämän tietokoneen selaimet voivat avata sen.",
   "settings.web.localOnly": "Tämä osoite toimii vain tällä tietokoneella. Valitse verkko-osoite muita tietokoneita varten.",

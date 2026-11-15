@@ -304,6 +304,8 @@
   "settings.web.warning": "停用後，瀏覽器伺服器會停止，所有正在觀看的人會立即中斷連線。",
   "settings.web.port": "HTTP 連接埠",
   "settings.web.address": "瀏覽器存取位址",
+  "settings.web.fingerprint": "HTTPS 憑證指紋 (SHA-256)",
+  "settings.web.fingerprintHint": "在接受瀏覽器的憑證警告之前，請確認它顯示的是此指紋。",
   "settings.web.off": "網頁伺服器已關閉。",
   "settings.web.loopback": "只有這台電腦上的瀏覽器可以開啟。",
   "settings.web.localOnly": "這個位址只能在這台電腦上使用。請為其他電腦選擇網路位址。",

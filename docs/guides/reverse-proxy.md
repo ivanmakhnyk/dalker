@@ -10,8 +10,14 @@ window:
 | Linux | `/etc/dalker/dalker.conf` |
 | macOS | `~/Library/Application Support/Dalker/dalker.conf` |
 
+Dalker serves HTTPS itself on its own ports (with a self-signed certificate unless you give it
+yours, see `DALKER_TLS` in [DEVELOPMENT.md](../DEVELOPMENT.md#configuration)), so a proxy is only
+needed for a domain name, a trusted certificate from your proxy, or a shared port. The proxy can
+talk plain HTTP to Dalker on `127.0.0.1` as before.
+
 One `KEY=VALUE` per line, `#` for comments. Edit it as an administrator (on macOS the file belongs to your user). The listener keys
-(`DALKER_WEB`, `DALKER_BIND`, `DALKER_MCP`, `DALKER_MCP_BIND`) take effect within a few
+(`DALKER_WEB`, `DALKER_BIND`, `DALKER_MCP`, `DALKER_MCP_BIND`, `DALKER_TLS`,
+`DALKER_TLS_REDIRECT`) take effect within a few
 seconds; the others when the Dalker service restarts.
 
 ## What can sit behind the proxy
