@@ -162,7 +162,12 @@ pub async fn serve_listener_tls(
 ) -> anyhow::Result<()> {
     let addr = listener.local_addr()?;
     match &tls {
-        Some(_) => tracing::info!("web UI on http://{addr} and https://{addr}"),
+        Some(t) if t.has_certificate() => {
+            tracing::info!("web UI on http://{addr} and https://{addr}")
+        }
+        Some(_) => tracing::warn!(
+            "web UI on http://{addr} for this computer only: HTTPS is required and not available yet"
+        ),
         None => tracing::info!("web UI on http://{addr}"),
     }
     tls::serve(listener, tls, router_with(auth, signaling, extra), shutdown).await?;

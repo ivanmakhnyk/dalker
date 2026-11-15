@@ -6,6 +6,10 @@
 //! another computer over plain HTTP are sent to the same address over HTTPS. Requests from
 //! this computer (loopback) stay on HTTP: they never cross the network, and local MCP clients
 //! don't accept a self-signed certificate.
+//!
+//! When the redirect is wanted but the certificate can't be loaded ([`Tls::unavailable`]),
+//! the port takes no TLS and refuses plain HTTP from other computers instead of serving it:
+//! passwords and tokens must not cross the network in the clear because a file went missing.
 
 use std::future::Future;
 use std::io::{self, Read, Write};
@@ -40,17 +44,48 @@ pub const KEY_FILE: &str = "key.pem";
 /// computers is redirected to HTTPS.
 #[derive(Clone)]
 pub struct Tls {
-    config: Arc<rustls::ServerConfig>,
+    /// `None` when HTTPS is required but the certificate isn't available.
+    config: Option<Arc<rustls::ServerConfig>>,
     pub redirect: bool,
 }
 
 impl Tls {
     pub fn new(identity: &Identity, redirect: bool) -> Self {
         Self {
-            config: Arc::clone(&identity.config),
+            config: Some(Arc::clone(&identity.config)),
             redirect,
         }
     }
+
+    /// HTTPS is required (the redirect is on) but there is no certificate to serve it with:
+    /// plain HTTP from other computers is refused until there is one.
+    pub fn unavailable() -> Self {
+        Self {
+            config: None,
+            redirect: true,
+        }
+    }
+
+    /// Whether this listener takes HTTPS (it has a certificate).
+    pub fn has_certificate(&self) -> bool {
+        self.config.is_some()
+    }
+
+    fn plain_from_network(&self) -> PlainHttp {
+        match (self.redirect, self.has_certificate()) {
+            (false, _) => PlainHttp::Served,
+            (true, true) => PlainHttp::Redirected,
+            (true, false) => PlainHttp::Refused,
+        }
+    }
+}
+
+/// What happens to a plain HTTP request from another computer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlainHttp {
+    Served,
+    Redirected,
+    Refused,
 }
 
 /// A certificate (with its chain) and key, ready to serve.
@@ -279,7 +314,9 @@ impl TlsListener {
     pub fn new(listener: TcpListener, tls: Option<Tls>) -> io::Result<Self> {
         let local = listener.local_addr()?;
         let (tx, ready) = mpsc::channel(64);
-        let acceptor = tls.map(|t| tokio_rustls::TlsAcceptor::from(t.config));
+        let acceptor = tls
+            .and_then(|t| t.config)
+            .map(tokio_rustls::TlsAcceptor::from);
         let accept_task = tokio::spawn(async move {
             loop {
                 let (stream, peer) = match listener.accept().await {
@@ -356,10 +393,12 @@ pub async fn serve(
     router: Router,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> io::Result<()> {
-    let redirect = tls.as_ref().is_some_and(|t| t.redirect);
+    let plain = tls
+        .as_ref()
+        .map_or(PlainHttp::Served, Tls::plain_from_network);
     let listener = TlsListener::new(listener, tls)?;
     let router = router.layer(axum::middleware::from_fn(move |req, next| {
-        mark_transport(redirect, req, next)
+        mark_transport(plain, req, next)
     }));
     axum::serve(
         listener,
@@ -369,16 +408,35 @@ pub async fn serve(
     .await
 }
 
-async fn mark_transport(redirect: bool, mut req: Request, next: Next) -> Response {
+async fn mark_transport(plain: PlainHttp, mut req: Request, next: Next) -> Response {
     let Some(ConnectInfo(transport)) = req.extensions().get::<ConnectInfo<Transport>>().copied()
     else {
-        return next.run(req).await;
+        // Every connection the listener hands on has its transport: without one, don't guess
+        // that it is safe.
+        if plain == PlainHttp::Served {
+            return next.run(req).await;
+        }
+        return https_unavailable();
     };
-    if redirect && !transport.https && !transport.peer.ip().is_loopback() {
-        return redirect_to_https(&req);
+    if !transport.https && !transport.peer.ip().is_loopback() {
+        match plain {
+            PlainHttp::Served => {}
+            PlainHttp::Redirected => return redirect_to_https(&req),
+            PlainHttp::Refused => return https_unavailable(),
+        }
     }
     req.extensions_mut().insert(transport);
     next.run(req).await
+}
+
+/// `503` for plain HTTP from the network while HTTPS is required but has no certificate.
+fn https_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(header::RETRY_AFTER, HeaderValue::from_static("30"))],
+        "HTTPS is required but not available on the host (its TLS certificate can't be read)",
+    )
+        .into_response()
 }
 
 /// `308` to the same address and path over HTTPS (same port: it takes both).
@@ -655,7 +713,7 @@ mod tests {
         let app = Router::new()
             .route("/api/info", get(|| async { "ok" }))
             .layer(axum::middleware::from_fn(|req, next| {
-                mark_transport(true, req, next)
+                mark_transport(PlainHttp::Redirected, req, next)
             }));
         use tower::ServiceExt;
         let r = app.clone().oneshot(req(Some("desk:8742"))).await.unwrap();
@@ -668,6 +726,89 @@ mod tests {
         assert_eq!(r.status(), StatusCode::BAD_REQUEST);
         let r = app.oneshot(req(None)).await.unwrap();
         assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn plain_http_from_the_network_is_refused_without_a_certificate() {
+        use axum::routing::post;
+        use tower::ServiceExt;
+        let req = |method: &str, path: &str, peer: &str| {
+            let mut r = Request::builder()
+                .method(method)
+                .uri(path)
+                .header(header::HOST, "desk:8742")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(r#"{"password":"secret"}"#))
+                .unwrap();
+            r.extensions_mut().insert(ConnectInfo(Transport {
+                https: false,
+                peer: peer.parse().unwrap(),
+            }));
+            r
+        };
+        let tls = Tls::unavailable();
+        assert!(tls.redirect && !tls.has_certificate());
+        let plain = tls.plain_from_network();
+        assert_eq!(plain, PlainHttp::Refused);
+        let app = Router::new()
+            .route("/", get(|| async { "page" }))
+            .route("/api/login", post(|| async { "logged in" }))
+            .layer(axum::middleware::from_fn(move |req, next| {
+                mark_transport(plain, req, next)
+            }));
+        // Other computers: neither the page nor the login is served in the clear, and they
+        // aren't sent to an HTTPS that isn't there.
+        for (method, path) in [("GET", "/"), ("POST", "/api/login")] {
+            let r = app
+                .clone()
+                .oneshot(req(method, path, "192.168.1.5:50000"))
+                .await
+                .unwrap();
+            assert_eq!(
+                r.status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{method} {path}"
+            );
+            assert!(r.headers().get(header::LOCATION).is_none());
+        }
+        // This computer still gets plain HTTP, as with the redirect.
+        let r = app
+            .clone()
+            .oneshot(req("POST", "/api/login", "127.0.0.1:50000"))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        // A request with no transport recorded is not trusted either.
+        let mut r = req("GET", "/", "192.168.1.5:50000");
+        r.extensions_mut().remove::<ConnectInfo<Transport>>();
+        let r = app.oneshot(r).await.unwrap();
+        assert_eq!(r.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_port_without_a_certificate_serves_loopback_and_takes_no_tls() {
+        let router = Router::new().route("/", get(|| async { "http" }));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(serve(
+            listener,
+            Some(Tls::unavailable()),
+            router,
+            std::future::pending(),
+        ));
+        let (plain, fp) = tokio::task::spawn_blocking(move || {
+            (
+                plain_get(addr),
+                fetch_fingerprint(addr, Duration::from_secs(2)),
+            )
+        })
+        .await
+        .unwrap();
+        assert!(
+            plain.starts_with("HTTP/1.1 200") && plain.ends_with("http"),
+            "{plain}"
+        );
+        assert_eq!(fp, None);
     }
 
     #[test]
