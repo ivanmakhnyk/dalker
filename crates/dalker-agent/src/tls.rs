@@ -25,8 +25,13 @@ impl Certs {
             dirs.push(parent.join("tls"));
         }
         dirs.extend(user_dir());
+        Self::with_dirs(cert.zip(key), dirs)
+    }
+
+    /// Reads the certificate from the host's own files or these folders only.
+    fn with_dirs(own: Option<(PathBuf, PathBuf)>, dirs: Vec<PathBuf>) -> Self {
         Self {
-            own: cert.zip(key),
+            own,
             dirs,
             names: names(),
         }
@@ -109,15 +114,20 @@ fn user_dir() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn makes_then_keeps_the_self_signed_certificate() {
-        let dir = std::env::temp_dir().join(format!(
+    fn temp_dir() -> PathBuf {
+        std::env::temp_dir().join(format!(
             "dalker-agent-tls-{}-{}",
             std::process::id(),
             rand::random::<u32>()
-        ));
-        let config = dir.join("dalker.conf");
-        let certs = Certs::new(None, None, &config);
+        ))
+    }
+
+    // The tests leave out the user's data folder: a certificate an agent on this computer
+    // already keeps there would be found first.
+    #[test]
+    fn makes_then_keeps_the_self_signed_certificate() {
+        let dir = temp_dir();
+        let certs = Certs::with_dirs(None, vec![dir.join("tls")]);
         let first = certs.load().unwrap();
         assert_eq!(first.cert_path, dir.join("tls").join(tls::CERT_FILE));
         assert_eq!(certs.load().unwrap().fingerprint, first.fingerprint);
@@ -131,6 +141,21 @@ mod tests {
         );
         assert!(own.is_own());
         assert_eq!(own.load().unwrap().fingerprint, renewed.fingerprint);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn uses_the_next_folder_when_the_first_cant_be_written() {
+        let dir = temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        // A file where the first folder would go.
+        let blocked = dir.join("blocked");
+        std::fs::write(&blocked, b"").unwrap();
+        let fallback = dir.join("fallback").join("tls");
+        let certs = Certs::with_dirs(None, vec![blocked.join("tls"), fallback.clone()]);
+        let first = certs.load().unwrap();
+        assert_eq!(first.cert_path, fallback.join(tls::CERT_FILE));
+        assert_eq!(certs.load().unwrap().fingerprint, first.fingerprint);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
