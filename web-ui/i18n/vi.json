@@ -304,6 +304,8 @@
   "settings.web.warning": "Khi tắt, máy chủ trình duyệt dừng lại và mọi người đang xem bị ngắt kết nối ngay lập tức.",
   "settings.web.port": "Cổng HTTP",
   "settings.web.address": "Địa chỉ cho trình duyệt",
+  "settings.web.fingerprint": "Dấu vân tay chứng chỉ HTTPS (SHA-256)",
+  "settings.web.fingerprintHint": "Trước khi chấp nhận cảnh báo chứng chỉ của trình duyệt, hãy kiểm tra rằng trình duyệt hiển thị dấu vân tay này.",
   "settings.web.off": "Máy chủ web đang tắt.",
   "settings.web.loopback": "Chỉ trình duyệt trên máy tính này mới mở được.",
   "settings.web.localOnly": "Địa chỉ này chỉ hoạt động trên máy tính này. Hãy chọn địa chỉ mạng cho các máy tính khác.",

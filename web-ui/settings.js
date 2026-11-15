@@ -93,6 +93,12 @@ function render(s) {
         : isLocal(web.host)
           ? "settings.web.localOnly"
           : "settings.web.network");
+    // The certificate the agent serves over HTTPS, to compare with what the browser shows.
+    const tls = s.tls || {};
+    $("web-tls").hidden = !(s.web.enabled && tls.enabled && tls.fingerprint);
+    $("web-fingerprint").textContent = tls.fingerprint || "";
+    // A certificate of the host's own is trusted by browsers: no warning to compare with.
+    $("web-fingerprint-hint").hidden = !!tls.own;
     const pw = $("pw-badge");
     pw.className = "badge " + (s.web.password_set ? "ok" : "bad");
     pw.innerHTML = s.web.password_set

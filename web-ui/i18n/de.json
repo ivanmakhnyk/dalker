@@ -304,6 +304,8 @@
   "settings.web.warning": "Wenn er ausgeschaltet wird, stoppt der Webserver und alle Zuschauer werden sofort getrennt.",
   "settings.web.port": "HTTP-Port",
   "settings.web.address": "Adresse für Browser",
+  "settings.web.fingerprint": "Fingerabdruck des HTTPS-Zertifikats (SHA-256)",
+  "settings.web.fingerprintHint": "Bevor Sie die Zertifikatswarnung des Browsers akzeptieren, prüfen Sie, ob er diesen Fingerabdruck anzeigt.",
   "settings.web.off": "Der Webserver ist aus.",
   "settings.web.loopback": "Nur Browser auf diesem Computer können sie öffnen.",
   "settings.web.localOnly": "Diese Adresse funktioniert nur auf diesem Computer. Wählen Sie für andere Computer eine Netzwerkadresse.",

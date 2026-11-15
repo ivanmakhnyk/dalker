@@ -304,6 +304,8 @@
   "settings.web.warning": "Kad se isključi, poslužitelj za preglednike se zaustavlja i svim gledateljima odmah se prekida veza.",
   "settings.web.port": "HTTP priključak",
   "settings.web.address": "Adresa za preglednike",
+  "settings.web.fingerprint": "Otisak HTTPS certifikata (SHA-256)",
+  "settings.web.fingerprintHint": "Prije nego što prihvatite upozorenje preglednika o certifikatu, provjerite prikazuje li ovaj otisak.",
   "settings.web.off": "Web poslužitelj je isključen.",
   "settings.web.loopback": "Mogu ga otvoriti samo preglednici na ovom računalu.",
   "settings.web.localOnly": "Ova adresa radi samo na ovom računalu. Za druga računala odaberite mrežnu adresu.",

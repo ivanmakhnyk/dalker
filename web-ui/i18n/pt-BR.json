@@ -304,6 +304,8 @@
   "settings.web.warning": "Ao desativar, o servidor para navegadores para e todos que estão assistindo são desconectados na hora.",
   "settings.web.port": "Porta HTTP",
   "settings.web.address": "Endereço para navegadores",
+  "settings.web.fingerprint": "Impressão digital do certificado HTTPS (SHA-256)",
+  "settings.web.fingerprintHint": "Antes de aceitar o aviso de certificado do navegador, confira se ele mostra esta impressão digital.",
   "settings.web.off": "O servidor web está desativado.",
   "settings.web.loopback": "Somente navegadores deste computador podem abri-lo.",
   "settings.web.localOnly": "Este endereço só funciona neste computador. Escolha um endereço de rede para outros computadores.",

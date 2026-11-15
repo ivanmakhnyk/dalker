@@ -304,6 +304,8 @@
   "settings.web.warning": "Kikapcsoláskor a böngészőszerver leáll, és minden néző azonnal leválik.",
   "settings.web.port": "HTTP-port",
   "settings.web.address": "Cím böngészőknek",
+  "settings.web.fingerprint": "A HTTPS-tanúsítvány ujjlenyomata (SHA-256)",
+  "settings.web.fingerprintHint": "Mielőtt elfogadja a böngésző tanúsítványra vonatkozó figyelmeztetését, ellenőrizze, hogy ezt az ujjlenyomatot mutatja-e.",
   "settings.web.off": "A webszerver ki van kapcsolva.",
   "settings.web.loopback": "Csak a számítógépen futó böngészők nyithatják meg.",
   "settings.web.localOnly": "Ez a cím csak ezen a számítógépen működik. Más számítógépekhez válasszon hálózati címet.",

@@ -304,6 +304,8 @@
   "settings.web.warning": "Po wyłączeniu serwer WWW się zatrzyma, a wszyscy oglądający zostaną od razu rozłączeni.",
   "settings.web.port": "Port HTTP",
   "settings.web.address": "Adres dla przeglądarek",
+  "settings.web.fingerprint": "Odcisk palca certyfikatu HTTPS (SHA-256)",
+  "settings.web.fingerprintHint": "Zanim zaakceptujesz ostrzeżenie przeglądarki o certyfikacie, sprawdź, czy pokazuje ten odcisk palca.",
   "settings.web.off": "Serwer WWW jest wyłączony.",
   "settings.web.loopback": "Mogą go otworzyć tylko przeglądarki na tym komputerze.",
   "settings.web.localOnly": "Ten adres działa tylko na tym komputerze. Wybierz adres sieciowy dla innych komputerów.",

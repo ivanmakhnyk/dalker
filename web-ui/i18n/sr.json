@@ -304,6 +304,8 @@
   "settings.web.warning": "Када се искључи, сервер за прегледаче се зауставља и свим гледаоцима се одмах прекида веза.",
   "settings.web.port": "HTTP порт",
   "settings.web.address": "Адреса за прегледаче",
+  "settings.web.fingerprint": "Otisak HTTPS sertifikata (SHA-256)",
+  "settings.web.fingerprintHint": "Pre nego što prihvatite upozorenje pregledača o sertifikatu, proverite da li prikazuje ovaj otisak.",
   "settings.web.off": "Веб сервер је искључен.",
   "settings.web.loopback": "Могу да га отворе само прегледачи на овом рачунару.",
   "settings.web.localOnly": "Ова адреса ради само на овом рачунару. За друге рачунаре изаберите мрежну адресу.",

@@ -304,6 +304,8 @@
   "settings.web.warning": "När det stängs av stoppas webbläsarservern och alla som tittar kopplas från direkt.",
   "settings.web.port": "HTTP-port",
   "settings.web.address": "Adress för webbläsare",
+  "settings.web.fingerprint": "Fingeravtryck för HTTPS-certifikatet (SHA-256)",
+  "settings.web.fingerprintHint": "Innan du godkänner webbläsarens certifikatvarning, kontrollera att den visar detta fingeravtryck.",
   "settings.web.off": "Webbservern är av.",
   "settings.web.loopback": "Bara webbläsare på den här datorn kan öppna den.",
   "settings.web.localOnly": "Den här adressen fungerar bara på den här datorn. Välj en nätverksadress för andra datorer.",

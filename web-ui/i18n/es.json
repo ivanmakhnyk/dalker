@@ -304,6 +304,8 @@
   "settings.web.warning": "Al desactivarlo, el servidor para navegadores se detiene y todos los que miran se desconectan a la vez.",
   "settings.web.port": "Puerto HTTP",
   "settings.web.address": "Dirección para navegadores",
+  "settings.web.fingerprint": "Huella digital del certificado HTTPS (SHA-256)",
+  "settings.web.fingerprintHint": "Antes de aceptar la advertencia de certificado del navegador, comprueba que muestra esta huella digital.",
   "settings.web.off": "El servidor web está desactivado.",
   "settings.web.loopback": "Solo pueden abrirlo los navegadores de este ordenador.",
   "settings.web.localOnly": "Esta dirección solo funciona en este ordenador. Elige una dirección de red para otros ordenadores.",

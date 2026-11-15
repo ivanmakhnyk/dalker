@@ -304,6 +304,8 @@
   "settings.web.warning": "Jika dinonaktifkan, server browser berhenti dan semua penonton langsung terputus.",
   "settings.web.port": "Port HTTP",
   "settings.web.address": "Alamat untuk browser",
+  "settings.web.fingerprint": "Sidik jari sertifikat HTTPS (SHA-256)",
+  "settings.web.fingerprintHint": "Sebelum menerima peringatan sertifikat dari browser, pastikan browser menampilkan sidik jari ini.",
   "settings.web.off": "Server web mati.",
   "settings.web.loopback": "Hanya browser di komputer ini yang dapat membukanya.",
   "settings.web.localOnly": "Alamat ini hanya berfungsi di komputer ini. Pilih alamat jaringan untuk komputer lain.",

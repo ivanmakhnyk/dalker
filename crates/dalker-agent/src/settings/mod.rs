@@ -21,7 +21,7 @@ use anyhow::Result;
 use dalker_mcp::tokens::{self, Scope, TokenRecord};
 
 use crate::cli::{self, OnOff};
-use crate::listeners::{KEY_BIND, KEY_MCP, KEY_MCP_BIND, KEY_WEB};
+use crate::listeners::{KEY_BIND, KEY_MCP, KEY_MCP_BIND, KEY_TLS, KEY_TLS_REDIRECT, KEY_WEB};
 
 /// Shortest password the settings window accepts.
 pub const MIN_PASSWORD_LEN: usize = 8;
@@ -92,6 +92,10 @@ pub struct Saved {
     pub mcp_bind: SocketAddr,
     /// `DALKER_MCP_PUBLIC_URL`: where agents reach the MCP server through a reverse proxy.
     pub mcp_public_url: Option<String>,
+    /// `DALKER_TLS`, `DALKER_TLS_REDIRECT`, and whether `DALKER_TLS_CERT` is set.
+    pub tls: bool,
+    pub tls_redirect: bool,
+    pub tls_own: bool,
     pub password_set: bool,
     /// `DALKER_FPS`, `DALKER_BITRATE_KBPS`, `DALKER_MAX_WIDTH` (defaults where missing).
     pub stream: crate::stream::Limits,
@@ -131,6 +135,11 @@ impl Saved {
             bind: addr(KEY_BIND, cli::DEFAULT_BIND),
             mcp: get(KEY_MCP).and_then(OnOff::parse).unwrap_or(false),
             mcp_bind: addr(KEY_MCP_BIND, cli::DEFAULT_MCP_BIND),
+            tls: get(KEY_TLS).and_then(OnOff::parse).unwrap_or(true),
+            tls_redirect: get(KEY_TLS_REDIRECT)
+                .and_then(OnOff::parse)
+                .unwrap_or(false),
+            tls_own: get("DALKER_TLS_CERT").is_some_and(|v| !v.trim().is_empty()),
             mcp_public_url: get("DALKER_MCP_PUBLIC_URL")
                 .map(str::trim)
                 .filter(|v| !v.is_empty())

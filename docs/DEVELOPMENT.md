@@ -23,6 +23,18 @@ Set `DALKER_CONFIG` to use a different file.
 DALKER_WEB=on
 DALKER_BIND=0.0.0.0:8742
 
+# HTTPS on the web and MCP ports, which take plain HTTP too (default on). Without a certificate
+# of your own, a self-signed one is made on first start in a `tls` folder beside this file
+# (`dalkerd tls-cert` prints its fingerprint; `--renew` replaces it). Dalker Settings shows the
+# fingerprint under the web address, to compare with what the browser shows.
+DALKER_TLS=on
+# Send browsers and AI agents on other computers that use plain HTTP to HTTPS (default off).
+# Clients on this computer stay on HTTP.
+DALKER_TLS_REDIRECT=off
+# Your own certificate (PEM, with its chain) and key instead; read at start.
+#DALKER_TLS_CERT=/etc/dalker/tls/my-cert.pem
+#DALKER_TLS_KEY=/etc/dalker/tls/my-key.pem
+
 # Login. Store only a hash: `dalkerd set-password` writes it for you.
 DALKER_PASSWORD_HASH=$argon2id$v=19$m=19456,t=2,p=1$...
 
@@ -347,10 +359,15 @@ DALKER_MCP_BIND=127.0.0.1:8743
 DALKER_MCP_MAX_SESSIONS=1
 ```
 
-With other computers allowed, tokens cross the network as plain HTTP, like the web client's
-password. (Viewers signed in with that password can also copy every token from the web client's AI
-agents panel, so the web password protects the tokens too.) On a network you don't trust, leave the switch off and use an SSH tunnel, VPN or TLS
-reverse proxy; `DALKER_MCP_ALLOW_PLAINTEXT=0` refuses any network address outright.
+With other computers allowed, AI clients can use `https://` (the same certificate as the web
+client, see `DALKER_TLS` above), but plain `http://` keeps working too, so tokens can cross the
+network unencrypted, like the web client's password. (Viewers signed in with that password can
+also copy every token from the web client's AI agents panel, so the web password protects the
+tokens too.) `DALKER_TLS_REDIRECT=on` answers plain HTTP from other computers with a redirect to
+HTTPS only. A self-signed certificate must be trusted by the AI client (for Node-based clients,
+`NODE_EXTRA_CA_CERTS` pointing at the `cert.pem`). On a network you don't trust, without the
+redirect, leave the switch off and use an SSH tunnel, VPN or TLS reverse proxy;
+`DALKER_MCP_ALLOW_PLAINTEXT=0` refuses any network address unless `DALKER_TLS_REDIRECT` is on.
 
 **2. Create a token** on the host, in **Dalker Settings** ("Generate new token") or on the
 command line. The agent checks requests against an Argon2 hash; the token itself is also kept in

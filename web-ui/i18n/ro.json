@@ -304,6 +304,8 @@
   "settings.web.warning": "Când este dezactivat, serverul pentru browsere se oprește și toți spectatorii sunt deconectați imediat.",
   "settings.web.port": "Port HTTP",
   "settings.web.address": "Adresă pentru browsere",
+  "settings.web.fingerprint": "Amprenta certificatului HTTPS (SHA-256)",
+  "settings.web.fingerprintHint": "Înainte să acceptați avertismentul browserului despre certificat, verificați că afișează această amprentă.",
   "settings.web.off": "Serverul web este oprit.",
   "settings.web.loopback": "Doar browserele de pe acest computer îl pot deschide.",
   "settings.web.localOnly": "Această adresă funcționează doar pe acest computer. Alegeți o adresă de rețea pentru alte computere.",

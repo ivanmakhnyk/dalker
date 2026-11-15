@@ -55,10 +55,12 @@ pub enum Access {
 }
 
 /// Whether each server answers right now: `None` = not known yet.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Live {
     pub web: Option<bool>,
     pub mcp: Option<bool>,
+    /// SHA-256 fingerprint of the certificate the servers present over HTTPS, if they do.
+    pub fingerprint: Option<String>,
 }
 
 type Check = Box<dyn Fn(&HeaderMap) -> bool + Send + Sync>;
@@ -260,7 +262,7 @@ pub fn state_json(api: &Api, saved: &Saved) -> Value {
     // The web client reaches the host by the name it opened it with (see `mcpUrl()` in
     // settings.js), so only the host's own window lists the host's network addresses.
     let addrs = if host { host_addresses() } else { Vec::new() };
-    let mcp = reach(saved.mcp_bind, &addrs, "/mcp");
+    let mcp = reach(saved.mcp_bind, &addrs, "/mcp", saved.tls);
     json!({
         "access": if host { "host" } else { "tokens" },
         "version": env!("CARGO_PKG_VERSION"),
@@ -272,7 +274,14 @@ pub fn state_json(api: &Api, saved: &Saved) -> Value {
             "status": status(saved.web, live.web),
             "password_set": saved.password_set,
             "loopback": saved.bind.ip().is_loopback(),
-            "urls": reach(saved.bind, &addrs, "/"),
+            "urls": reach(saved.bind, &addrs, "/", saved.tls),
+        },
+        "tls": {
+            "enabled": saved.tls,
+            "redirect": saved.tls_redirect,
+            // The host's own certificate (`DALKER_TLS_CERT`) rather than the self-signed one.
+            "own": saved.tls_own,
+            "fingerprint": live.fingerprint,
         },
         "mcp": {
             "enabled": saved.mcp,
@@ -416,17 +425,26 @@ fn host_addresses() -> Vec<HostAddr> {
 }
 
 /// The addresses a server bound to `bind` answers on, best first, as `{host, name, url}`
-/// (`path` is appended to each URL). One logic for the web server and the MCP server:
+/// (`path` is appended to each URL). With `https`, the addresses of other computers' use
+/// `https://`; this computer's own stays on `http://` (it never crosses the network, and it
+/// isn't redirected). One logic for the web server and the MCP server:
 ///
 /// * bound to every address (`0.0.0.0` or `[::]`): each of `addrs` of that family, then this
 ///   computer's own `127.0.0.1` (or `[::1]`) for clients on the host;
 /// * bound to loopback or to one address: that address alone.
 ///
 /// Never empty.
-fn reach(bind: SocketAddr, addrs: &[HostAddr], path: &str) -> Vec<Value> {
-    let url = |ip: IpAddr| match ip {
-        IpAddr::V6(v6) => format!("http://[{v6}]:{}{path}", bind.port()),
-        IpAddr::V4(v4) => format!("http://{v4}:{}{path}", bind.port()),
+fn reach(bind: SocketAddr, addrs: &[HostAddr], path: &str, https: bool) -> Vec<Value> {
+    let url = |ip: IpAddr| {
+        let scheme = if https && !ip.is_loopback() {
+            "https"
+        } else {
+            "http"
+        };
+        match ip {
+            IpAddr::V6(v6) => format!("{scheme}://[{v6}]:{}{path}", bind.port()),
+            IpAddr::V4(v4) => format!("{scheme}://{v4}:{}{path}", bind.port()),
+        }
     };
     let entry =
         |ip: IpAddr, name: &str| json!({ "host": ip.to_string(), "name": name, "url": url(ip) });
@@ -715,6 +733,7 @@ mod tests {
             || Live {
                 web: Some(true),
                 mcp: Some(false),
+                fingerprint: Some("AB:CD".into()),
             },
         )
         .router()
@@ -756,6 +775,10 @@ mod tests {
             v["mcp"]["url"], "http://127.0.0.1:8743/mcp",
             "this computer only by default"
         );
+        assert_eq!(v["tls"]["enabled"], true, "HTTPS by default");
+        assert_eq!(v["tls"]["redirect"], false);
+        assert_eq!(v["tls"]["own"], false);
+        assert_eq!(v["tls"]["fingerprint"], "AB:CD");
 
         let (s, v) = call(&app, "POST", "/api/settings/web", json!({"port": 9000})).await;
         assert_eq!(s, StatusCode::OK, "{v}");
@@ -960,7 +983,7 @@ mod tests {
             },
         ];
         let urls = |bind: &str, path| {
-            reach(bind.parse().unwrap(), &addrs, path)
+            reach(bind.parse().unwrap(), &addrs, path, false)
                 .iter()
                 .map(|v| v["url"].as_str().unwrap().to_owned())
                 .collect::<Vec<_>>()
@@ -984,13 +1007,26 @@ mod tests {
             "http://[2001:db8::5]:8743/mcp"
         );
         assert_eq!(
-            reach("0.0.0.0:8742".parse().unwrap(), &[], "/")[0]["url"],
+            reach("0.0.0.0:8742".parse().unwrap(), &[], "/", false)[0]["url"],
             "http://127.0.0.1:8742/",
             "no network"
         );
         assert_eq!(
-            reach("0.0.0.0:8742".parse().unwrap(), &addrs, "/")[0]["name"],
+            reach("0.0.0.0:8742".parse().unwrap(), &addrs, "/", false)[0]["name"],
             "Ethernet"
+        );
+        // HTTPS for other computers; this computer's own address stays on HTTP.
+        let https: Vec<_> = reach("0.0.0.0:8742".parse().unwrap(), &addrs, "/", true)
+            .iter()
+            .map(|v| v["url"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            https,
+            [
+                "https://192.168.1.20:8742/",
+                "https://100.101.102.103:8742/",
+                "http://127.0.0.1:8742/"
+            ]
         );
     }
 

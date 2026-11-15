@@ -304,6 +304,8 @@
   "settings.web.warning": "כשהאפשרות מושבתת, שרת הדפדפן נעצר וכל הצופים מנותקים מיד.",
   "settings.web.port": "יציאת HTTP",
   "settings.web.address": "כתובת לדפדפנים",
+  "settings.web.fingerprint": "טביעת האצבע של אישור ה-HTTPS ‏(SHA-256)",
+  "settings.web.fingerprintHint": "לפני שתאשרו את אזהרת האישור של הדפדפן, בדקו שהוא מציג את טביעת האצבע הזו.",
   "settings.web.off": "שרת האינטרנט כבוי.",
   "settings.web.loopback": "רק דפדפנים במחשב הזה יכולים לפתוח אותו.",
   "settings.web.localOnly": "הכתובת הזו פועלת רק במחשב הזה. יש לבחור כתובת רשת למחשבים אחרים.",

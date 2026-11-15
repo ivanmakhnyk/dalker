@@ -304,6 +304,8 @@
   "settings.web.warning": "Une fois désactivé, le serveur pour navigateurs s’arrête et tous les spectateurs sont déconnectés immédiatement.",
   "settings.web.port": "Port HTTP",
   "settings.web.address": "Adresse pour les navigateurs",
+  "settings.web.fingerprint": "Empreinte du certificat HTTPS (SHA-256)",
+  "settings.web.fingerprintHint": "Avant d'accepter l'avertissement de certificat du navigateur, vérifiez qu'il affiche cette empreinte.",
   "settings.web.off": "Le serveur web est désactivé.",
   "settings.web.loopback": "Seuls les navigateurs de cet ordinateur peuvent l’ouvrir.",
   "settings.web.localOnly": "Cette adresse ne fonctionne que sur cet ordinateur. Choisissez une adresse réseau pour les autres ordinateurs.",

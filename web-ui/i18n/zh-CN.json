@@ -304,6 +304,8 @@
   "settings.web.warning": "禁用后，浏览器服务器会停止，所有正在观看的人会立即断开。",
   "settings.web.port": "HTTP 端口",
   "settings.web.address": "浏览器访问地址",
+  "settings.web.fingerprint": "HTTPS 证书指纹 (SHA-256)",
+  "settings.web.fingerprintHint": "在接受浏览器的证书警告之前，请确认它显示的是此指纹。",
   "settings.web.off": "Web 服务器已关闭。",
   "settings.web.loopback": "只有这台电脑上的浏览器可以打开。",
   "settings.web.localOnly": "此地址只能在这台电脑上使用。请为其他电脑选择一个网络地址。",

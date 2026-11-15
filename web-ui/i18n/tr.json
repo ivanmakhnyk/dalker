@@ -304,6 +304,8 @@
   "settings.web.warning": "Kapatıldığında tarayıcı sunucusu durur ve izleyen herkesin bağlantısı hemen kesilir.",
   "settings.web.port": "HTTP Bağlantı Noktası",
   "settings.web.address": "Tarayıcılar için adres",
+  "settings.web.fingerprint": "HTTPS sertifikası parmak izi (SHA-256)",
+  "settings.web.fingerprintHint": "Tarayıcının sertifika uyarısını kabul etmeden önce bu parmak izini gösterdiğini kontrol edin.",
   "settings.web.off": "Web sunucusu kapalı.",
   "settings.web.loopback": "Yalnızca bu bilgisayardaki tarayıcılar açabilir.",
   "settings.web.localOnly": "Bu adres yalnızca bu bilgisayarda çalışır. Diğer bilgisayarlar için bir ağ adresi seçin.",

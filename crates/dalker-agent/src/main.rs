@@ -21,6 +21,7 @@ mod diagnostics;
 mod listeners;
 mod settings;
 mod stream;
+mod tls;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -144,6 +145,22 @@ fn main() -> Result<()> {
         return settings::store::run_helper(&path);
     }
 
+    if let Some(Command::TlsCert { renew }) = &cli.command {
+        let certs = tls::Certs::new(cli.tls_cert.clone(), cli.tls_key.clone(), &config_path);
+        anyhow::ensure!(
+            !(*renew && certs.is_own()),
+            "DALKER_TLS_CERT is set: the agent serves that certificate, not a self-signed one"
+        );
+        let id = if *renew {
+            certs.renew()?
+        } else {
+            certs.load()?
+        };
+        println!("certificate: {}", id.cert_path.display());
+        println!("SHA-256 fingerprint: {}", id.fingerprint);
+        return Ok(());
+    }
+
     if let Some(Command::McpToken { action }) = &cli.command {
         return run_mcp_token(action, &config_path);
     }
@@ -180,6 +197,8 @@ fn main() -> Result<()> {
         ("bind", listeners::KEY_BIND),
         ("mcp", listeners::KEY_MCP),
         ("mcp_bind", listeners::KEY_MCP_BIND),
+        ("tls", listeners::KEY_TLS),
+        ("tls_redirect", listeners::KEY_TLS_REDIRECT),
         ("fps", stream::KEY_FPS),
         ("bitrate_kbps", stream::KEY_BITRATE_KBPS),
         ("max_width", stream::KEY_MAX_WIDTH),
@@ -197,6 +216,8 @@ fn main() -> Result<()> {
         bind: cli.bind,
         mcp: cli.mcp == OnOff::On,
         mcp_bind: cli.mcp_bind,
+        tls: cli.tls == OnOff::On,
+        tls_redirect: cli.tls_redirect == OnOff::On,
         pinned,
     };
     dalker_platform::init_process();
@@ -765,12 +786,18 @@ async fn run(cli: Cli, startup: listeners::Startup) -> Result<()> {
         server: mcp,
         allow_plaintext: cli.mcp_allow_plaintext,
     };
+    let certs = tls::Certs::new(
+        cli.tls_cert.clone(),
+        cli.tls_key.clone(),
+        &cli::config_path(),
+    );
     let supervisor = tokio::spawn(listeners::supervise(
         wanted_rx,
         web,
         mcp,
         stop_rx,
         Arc::clone(&status),
+        certs,
     ));
 
     tokio::select! {
@@ -803,6 +830,7 @@ fn web_settings_api(auth: &Arc<Authenticator>, status: &Arc<listeners::Status>) 
         move || Live {
             web: Some(status.web.lock().unwrap().is_some()),
             mcp: Some(status.mcp.lock().unwrap().is_some()),
+            fingerprint: status.fingerprint.lock().unwrap().clone(),
         }
     };
     let path = cli::config_path();

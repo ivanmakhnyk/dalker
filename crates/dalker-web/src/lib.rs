@@ -17,6 +17,7 @@
 //! no media dependencies.
 
 pub mod auth;
+pub mod tls;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -28,7 +29,7 @@ use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
@@ -147,10 +148,24 @@ pub async fn serve_listener_with(
     extra: Router,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
-    tracing::info!("web UI on http://{}", listener.local_addr()?);
-    axum::serve(listener, router_with(auth, signaling, extra))
-        .with_graceful_shutdown(shutdown)
-        .await?;
+    serve_listener_tls(listener, None, auth, signaling, extra, shutdown).await
+}
+
+/// [`serve_listener_with`] that also takes HTTPS on the same port when `tls` is given.
+pub async fn serve_listener_tls(
+    listener: tokio::net::TcpListener,
+    tls: Option<tls::Tls>,
+    auth: Arc<Authenticator>,
+    signaling: Arc<dyn SignalingHandler>,
+    extra: Router,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
+    let addr = listener.local_addr()?;
+    match &tls {
+        Some(_) => tracing::info!("web UI on http://{addr} and https://{addr}"),
+        None => tracing::info!("web UI on http://{addr}"),
+    }
+    tls::serve(listener, tls, router_with(auth, signaling, extra), shutdown).await?;
     Ok(())
 }
 
@@ -176,6 +191,7 @@ fn require_auth(state: &AppState, headers: &HeaderMap) -> Result<String, Respons
 async fn login(
     State(state): State<AppState>,
     headers: HeaderMap,
+    transport: Option<Extension<tls::Transport>>,
     Json(req): Json<LoginRequest>,
 ) -> Response {
     if !state.auth.has_password() {
@@ -197,7 +213,7 @@ async fn login(
                 "{}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}{}",
                 auth::COOKIE_NAME,
                 state.auth.ttl().as_secs(),
-                secure_attr(&state.auth, &headers)
+                secure_attr(&state.auth, &headers, transport.is_some_and(|t| t.https))
             );
             let mut resp = Json(serde_json::json!({"ok": true})).into_response();
             resp.headers_mut()
@@ -213,15 +229,19 @@ async fn login(
 }
 
 /// `; Secure` when the cookie should carry it (see [`CookieSecure`]).
-fn secure_attr(auth: &Authenticator, headers: &HeaderMap) -> &'static str {
+/// `https`: the request came in over the agent's own TLS.
+fn secure_attr(auth: &Authenticator, headers: &HeaderMap, https: bool) -> &'static str {
     let https = match auth.cookie_secure() {
         CookieSecure::Always => true,
         CookieSecure::Never => false,
-        CookieSecure::Auto => headers
-            .get("x-forwarded-proto")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.split(',').next())
-            .is_some_and(|v| v.trim().eq_ignore_ascii_case("https")),
+        CookieSecure::Auto => {
+            https
+                || headers
+                    .get("x-forwarded-proto")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.split(',').next())
+                    .is_some_and(|v| v.trim().eq_ignore_ascii_case("https"))
+        }
     };
     if https {
         "; Secure"
@@ -230,14 +250,18 @@ fn secure_attr(auth: &Authenticator, headers: &HeaderMap) -> &'static str {
     }
 }
 
-async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
+async fn logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    transport: Option<Extension<tls::Transport>>,
+) -> Response {
     if let Some(t) = session_token(&headers) {
         state.auth.logout(&t);
     }
     let cookie = format!(
         "{}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0{}",
         auth::COOKIE_NAME,
-        secure_attr(&state.auth, &headers)
+        secure_attr(&state.auth, &headers, transport.is_some_and(|t| t.https))
     );
     let mut resp = Json(serde_json::json!({"ok": true})).into_response();
     resp.headers_mut()

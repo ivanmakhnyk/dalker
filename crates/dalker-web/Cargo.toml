@@ -17,6 +17,10 @@ rust-embed.workspace = true
 mime_guess.workspace = true
 argon2.workspace = true
 rand.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+rcgen.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

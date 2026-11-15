@@ -304,6 +304,8 @@
   "settings.web.warning": "끄면 브라우저 서버가 중지되고 시청 중인 모든 사람의 연결이 즉시 끊깁니다.",
   "settings.web.port": "HTTP 포트",
   "settings.web.address": "브라우저용 주소",
+  "settings.web.fingerprint": "HTTPS 인증서 지문(SHA-256)",
+  "settings.web.fingerprintHint": "브라우저의 인증서 경고를 수락하기 전에 이 지문이 표시되는지 확인하세요.",
   "settings.web.off": "웹 서버가 꺼져 있습니다.",
   "settings.web.loopback": "이 컴퓨터의 브라우저에서만 열 수 있습니다.",
   "settings.web.localOnly": "이 주소는 이 컴퓨터에서만 작동합니다. 다른 컴퓨터용으로는 네트워크 주소를 선택하세요.",
