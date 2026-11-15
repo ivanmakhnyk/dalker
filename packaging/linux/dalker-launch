@@ -84,7 +84,10 @@ x11_display_of_pid() {
     ' /proc/net/unix
 }
 
-# Prints "x11|:N|<xauthority>" for an X server on screen (Xorg preferred over XWayland).
+# Prints "x11|<pid>|:N|<xauthority>" for an X server on screen (Xorg preferred over XWayland).
+# The PID makes a new server count as a change even when it reuses the display and the
+# authority file, as GDM's login screen does when it restarts: the agent must be restarted,
+# or it stays attached to the server that went away and streams nothing.
 find_x11() {
     ps -eo pid=,args= | while read -r pid line; do
         case "$line" in
@@ -94,7 +97,7 @@ find_x11() {
         disp=$(echo "$line" | tr ' ' '\n' | grep -m1 -E '^:[0-9]+$')
         [ -n "$disp" ] || disp=$(x11_display_of_pid "$pid") || continue
         auth=$(echo "$line" | tr ' ' '\n' | grep -A1 -m1 -x -- '-auth' | tail -1)
-        echo "x11|$disp|$auth"
+        echo "x11|$pid|$disp|$auth"
     done | head -1
 }
 
@@ -134,11 +137,15 @@ start_agent() {
                 "$AGENT" &
             ;;
         x11)
+            rest=${rest#*|}
             display=${rest%%|*}
             xauth=${rest#*|}
             rm -f "$USER_CONF"
             log "X11 display $display (auth: ${xauth:-none}): starting the agent as root"
-            DISPLAY=$display ${xauth:+XAUTHORITY=$xauth} DALKER_CONFIG=$CONF "$AGENT" &
+            # Through env: an assignment that comes out of an expansion is not an
+            # assignment to the shell, which would run "XAUTHORITY=..." as the command.
+            env -u XAUTHORITY DISPLAY="$display" ${xauth:+"XAUTHORITY=$xauth"} \
+                DALKER_CONFIG="$CONF" "$AGENT" &
             ;;
         *)
             rm -f "$USER_CONF"
