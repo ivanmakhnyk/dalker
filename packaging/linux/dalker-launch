@@ -62,16 +62,38 @@ find_wayland_session() {
     done
 }
 
+# Prints the display (":N") that the X server with PID $1 listens on, found from its open
+# sockets: the one bound to /tmp/.X11-unix/XN (or its abstract twin) in /proc/net/unix.
+# Needed when the display number isn't on its command line: GDM starts Xorg with -displayfd,
+# which lets the server pick the number itself, and such a server writes no /tmp/.XN-lock.
+x11_display_of_pid() {
+    inodes=
+    for fd in /proc/"$1"/fd/*; do
+        link=$(readlink "$fd" 2>/dev/null) || continue
+        case "$link" in
+            socket:\[*\]) link=${link#socket:[}; inodes="$inodes ${link%]}" ;;
+        esac
+    done
+    [ -n "$inodes" ] || return 1
+    awk -v inodes="$inodes" '
+        BEGIN { n = split(inodes, list, " "); for (i = 1; i <= n; i++) mine[list[i]] = 1 }
+        ($7 in mine) && $8 ~ /^@?\/tmp\/\.X11-unix\/X[0-9]+$/ {
+            sub(/.*\/X/, ":", $8); print $8; found = 1; exit
+        }
+        END { exit !found }
+    ' /proc/net/unix
+}
+
 # Prints "x11|:N|<xauthority>" for an X server on screen (Xorg preferred over XWayland).
 find_x11() {
-    ps -eo args= | while read -r line; do
+    ps -eo pid=,args= | while read -r pid line; do
         case "$line" in
             */Xorg*|Xorg*) ;;
             *) continue ;;
         esac
         disp=$(echo "$line" | tr ' ' '\n' | grep -m1 -E '^:[0-9]+$')
+        [ -n "$disp" ] || disp=$(x11_display_of_pid "$pid") || continue
         auth=$(echo "$line" | tr ' ' '\n' | grep -A1 -m1 -x -- '-auth' | tail -1)
-        [ -n "$disp" ] || continue
         echo "x11|$disp|$auth"
     done | head -1
 }
