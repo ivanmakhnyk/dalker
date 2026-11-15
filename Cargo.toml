@@ -45,7 +45,7 @@ argon2 = { version = "0.5", features = ["std"] }
 # Built-in HTTPS. ring is the crypto provider webrtc's DTLS already uses.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
-rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 sha2 = "0.10"
 
 # WebRTC & media. 0.17 is the last release line with the classic async API.
