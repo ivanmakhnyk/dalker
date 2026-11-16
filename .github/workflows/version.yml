@@ -44,6 +44,15 @@ jobs:
             git reset --hard "origin/$BRANCH"
             current=$(sh scripts/version.sh)
             IFS=. read -r x y z <<< "${current%%-*}"
+            # A re-run after the bump already reached main (a later step failed): nothing new is
+            # on main, so finish that release instead of bumping again (0.3.0 would become 0.3.1).
+            if [ "$BRANCH" = main ] && [ "$(git log -1 --format=%s)" = "Release $current" ]; then
+              if [ "$z" = 0 ]; then kind=release; else kind=hotfix; fi
+              echo "version=$current" >> "$GITHUB_OUTPUT"
+              echo "kind=$kind" >> "$GITHUB_OUTPUT"
+              echo "$current is already on main; finishing its release ($kind)"
+              exit 0
+            fi
             if [ "$BRANCH" = develop ]; then
               kind=dev
               case "$current" in
@@ -76,9 +85,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.bump.outputs.version }}
         run: |
-          git tag -a "v$VERSION" -m "Dalker $VERSION"
-          git push origin "v$VERSION"
-          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "v$VERSION"
+          if [ -n "$(git ls-remote --tags origin "refs/tags/v$VERSION")" ]; then
+            echo "v$VERSION is already pushed, so its Release workflow has been started"
+            exit 0
+          fi
+          git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null ||
+            git tag -a "v$VERSION" -m "Dalker $VERSION"
+          # GitHub sometimes rejects a push with a bare "(failed)"; try again before giving up.
+          for attempt in 1 2 3 4; do
+            if git push origin "v$VERSION"; then
+              gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "v$VERSION"
+              exit 0
+            fi
+            sleep $((attempt * 15))
+          done
+          echo "::error::could not push the tag v$VERSION; re-run this job to try again"
+          exit 1
 
       # A normal merge, so a hotfix made on main reaches develop too. Where both sides changed
       # the same lines (the version), develop's side wins. After a release, develop takes the

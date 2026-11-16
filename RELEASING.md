@@ -70,6 +70,10 @@ them to the run as artifacts; nothing is published.
 
 ## If a release goes wrong
 
+If the **Version** run on `main` fails after its `Release …` commit (the tag push or the merge
+back into `develop`), re-run the job: it sees that nothing new is on `main`, so it skips the bump
+and finishes the tag, the Release workflow and the merge.
+
 Delete the GitHub Release and the tag, fix the problem, and tag again (or re-run the Release
 workflow for the tag):
 
