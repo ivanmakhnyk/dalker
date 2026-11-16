@@ -231,7 +231,7 @@ It runs as the systemd service `dalker`, starts at boot and restarts on failure.
 
 | Session | Capture | Border | Runs as |
 |---------|---------|--------|---------|
-| **GNOME on Wayland** | `org.gnome.Mutter.ScreenCast` + PipeWire (via `gst-launch-1.0 pipewiresrc`), no prompt | GNOME Shell extension `dalker-border@ivanmakhnyk.github.io` | the logged-in user |
+| **GNOME on Wayland** | `org.gnome.Mutter.ScreenCast` + PipeWire (via `gst-launch-1.0 pipewiresrc`), no prompt | GNOME Shell extension `dalker-border@ivanmakhnyk.github.io` (GNOME 46 or later) | the logged-in user |
 | **Other Wayland desktops** (KDE Plasma, sway, Hyprland…) | `org.freedesktop.portal.ScreenCast` + PipeWire (same `gst-launch-1.0` reader), asks once | `wlr-layer-shell` surfaces on the overlay layer | the logged-in user |
 | Xorg (login screen or session) | X11 root window via MIT-SHM | override-redirect X11 window | root |
 | none yet | the agent still answers, but serves no desktop | – | root |
