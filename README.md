@@ -53,7 +53,7 @@ device, and you are on its desktop. No account, no cloud service, no app on the 
 | Computer | Status |
 |---|---|
 | Windows 10 or 11, 64-bit | Supported. |
-| Linux, 64-bit | Xorg desktops and GNOME on Wayland (Ubuntu's standard desktop) are tested. KDE Plasma, sway, Hyprland and other Wayland desktops, through xdg-desktop-portal, are experimental until they are tested in real sessions ([#27](https://github.com/ivanmakhnyk/dalker/issues/27)). |
+| Linux, 64-bit | Xorg desktops and GNOME on Wayland (Ubuntu's standard desktop) are tested; GNOME on Wayland needs GNOME 46 or later (Ubuntu 24.04 or later). KDE Plasma, sway, Hyprland and other Wayland desktops, through xdg-desktop-portal, are experimental until they are tested in real sessions ([#27](https://github.com/ivanmakhnyk/dalker/issues/27)). |
 | macOS 14 Sonoma or later | Preview, Apple silicon only. The installer is not notarized, so macOS asks you to click **Open Anyway** the first time. |
 
 ## Guides

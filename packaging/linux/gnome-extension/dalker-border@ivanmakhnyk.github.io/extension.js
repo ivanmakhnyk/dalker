@@ -203,7 +203,9 @@ export default class DalkerBorder extends Extension {
         if (im?.currentFocus) {
             im.commit(text);
         } else {
-            this._keyboard ??= global.stage.context.get_backend().get_default_seat()
+            // GNOME 47 moved the backend behind the stage's context; 46 only has the global one.
+            const backend = global.stage.context?.get_backend() ?? Clutter.get_default_backend();
+            this._keyboard ??= backend.get_default_seat()
                 .create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE);
             for (const ch of text) {
                 const keyval = Clutter.unicode_to_keysym(ch.codePointAt(0));
