@@ -5,6 +5,8 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+// Strings in the viewer's language (i18n.js, loaded first).
+const tr = I18N.t;
 const video = $("screen");
 const stage = $("stage");
 const toolbar = $("toolbar");
@@ -19,8 +21,12 @@ let statsTimer = null;
 let lockTimer = null;
 let info = {};
 let state = "idle";
-let statusText = "disconnected";
+// What the status says, as a string key and its parameters, so it can be shown again in
+// another language.
+let statusKey = "viewer.status.disconnected";
+let statusParams = {};
 let lastRtt = null;
+let hostEncoder = null; // the host's last "encoder" message: { name, hardware }
 let hintTimer = null;
 let hintFadeTimer = null;
 // Why the host ended the session: the reason of its "session_end" message, until the
@@ -33,7 +39,10 @@ let quickDrops = 0;
 
 // ---------------------------------------------------------------- UI helpers
 
+const isTouchDevice = () => window.matchMedia("(pointer: coarse), (hover: none)").matches;
+
 function showHint(fullscreen = !!document.fullscreenElement) {
+  if (isTouchDevice()) { hideHint(); return; }
   clearTimeout(hintTimer);
   clearTimeout(hintFadeTimer);
   const el = $("hint");
@@ -57,12 +66,14 @@ function hideHint() {
   $("hint-esc").hidden = true;
 }
 
-function setStatus(text, cls) {
+function setStatus(key, cls, params = {}) {
   const wasConnected = state === "connected";
   state = cls;
-  statusText = text;
+  statusKey = key;
+  statusParams = params;
+  const text = tr(key, params);
   // Connected, the pill shows the round trip once it is measured; otherwise the state.
-  statusEl.textContent = cls === "connected" && lastRtt !== null ? `${lastRtt.toFixed(0)} ms` : text;
+  statusEl.textContent = cls === "connected" && lastRtt !== null ? tr("viewer.status.ms", { n: I18N.number(lastRtt) }) : text;
   $("btn-status").className = `pill ${cls}`;
   notch.className = cls;
   $("pop-status").querySelector(".status-mark").setAttribute("class", `status-mark ${cls}`);
@@ -72,8 +83,14 @@ function setStatus(text, cls) {
   $("btn-disconnect").hidden = !live;
   $("btn-fullscreen").hidden = cls !== "connected";
   updateSessionGroup();
-  $("btn-cad").hidden = !info || !["windows", "linux"].includes(info.os);
-  if (cls !== "connected") { closePopover("pop-keys"); closePopover("pop-clip"); closePopover("pop-settings"); closePopover("pop-files"); }
+  applyAutoHide();
+  updateKeysCapabilities();
+  if (cls !== "connected") {
+    closePopover("pop-keys"); closePopover("pop-clip"); closePopover("pop-settings"); closePopover("pop-files");
+    closeTouchKeyboard();
+    resetZoom();
+    hideTouchCursor();
+  }
   if (cls === "connected") {
     if (!wasConnected) showHint();
   } else {
@@ -204,17 +221,26 @@ toolbar.addEventListener("keydown", (e) => {
 });
 
 // Collapse into a tab at the top edge, and back.
-$("btn-collapse").addEventListener("click", () => {
+function collapseToolbar() {
   closePopovers();
+  pointerNear = false;
   toolbar.hidden = true;
   notch.hidden = false;
-  stage.focus({ preventScroll: true });
-});
-notch.addEventListener("click", () => {
+}
+function showToolbar() {
+  autoHidden = false;
   notch.hidden = true;
   toolbar.hidden = false;
   clampToolbar();
+  scheduleAutoHide();
+}
+$("btn-collapse").addEventListener("click", () => {
+  clearTimeout(autoHideTimer);
+  autoHidden = false;
+  collapseToolbar();
+  stage.focus({ preventScroll: true });
 });
+notch.addEventListener("click", showToolbar);
 
 // Drag the toolbar by its grip; double-click the grip to put it back at top center.
 const grip = $("grip");
@@ -282,7 +308,8 @@ $("login-form").addEventListener("submit", async (e) => {
     $("login").close();
     await start();
   } catch (err) {
-    $("login-error").textContent = err.status === 401 ? "Wrong password" : err.message;
+    $("login-error").textContent = err.status === 401 ? tr("viewer.login.wrong")
+      : err.status === 503 ? tr("viewer.login.noPassword") : err.message;
     $("login-form").querySelector(".pw-field").classList.add("bad");
     $("login-password").select();
   } finally {
@@ -295,7 +322,7 @@ $("login-show").addEventListener("click", () => {
   const show = field.type === "password";
   field.type = show ? "text" : "password";
   $("login-show").setAttribute("aria-pressed", String(show));
-  $("login-show").title = $("login-show").ariaLabel = show ? "Hide password" : "Show password";
+  $("login-show").title = $("login-show").ariaLabel = tr(show ? "viewer.login.hide" : "viewer.login.show");
   field.focus();
 });
 // Login is mandatory: don't let Esc dismiss the dialog.
@@ -317,7 +344,7 @@ async function connect() {
   clearTimeout(slotRetryTimer);
   disconnect();
   connectedAt = 0;
-  setStatus("connecting…", "connecting");
+  setStatus("viewer.status.connecting", "connecting");
   pc = new RTCPeerConnection({ iceServers: (info.ice_servers || []).map((u) => ({ urls: u })) });
   const transceiver = pc.addTransceiver("video", { direction: "recvonly" });
   // Ask for minimal buffering: this is an interactive stream.
@@ -325,7 +352,7 @@ async function connect() {
   try { transceiver.receiver.playoutDelayHint = 0; } catch (_) {}
 
   dc = pc.createDataChannel("control", { ordered: true });
-  dc.onopen = () => { connectedAt = Date.now(); setStatus("connected", "connected"); sendStreamSettings(); };
+  dc.onopen = () => { connectedAt = Date.now(); setStatus("viewer.status.connected", "connected"); sendStreamSettings(); };
   dc.onmessage = (ev) => onHostMessage(ev.data);
   // The host ended the session (or the channel died): close everything, see above, and say why.
   dc.onclose = () => { const reason = endReason; disconnect(); sessionEnded(reason); };
@@ -344,34 +371,39 @@ async function connect() {
       const wasConnected = connectedAt > 0;
       disconnect();
       if (wasConnected) sessionEnded(reason);
-      else setStatus("connection failed", "error");
+      else setStatus("viewer.status.failed", "error");
     }
     // The network dropped out; WebRTC recovers by itself if it comes back soon.
-    else if (s === "disconnected") setStatus("network lost: reconnecting…", "connecting");
-    else if (s === "connected" && dc && dc.readyState === "open") setStatus("connected", "connected");
-    else if (s === "closed") setStatus("disconnected", "idle");
+    else if (s === "disconnected") setStatus("viewer.status.networkLost", "connecting");
+    else if (s === "connected" && dc && dc.readyState === "open") setStatus("viewer.status.connected", "connected");
+    else if (s === "closed") setStatus("viewer.status.disconnected", "idle");
   };
 
+  // A second connect() replaces `pc` while this one awaits; never apply this offer's
+  // answer to that newer connection, which would fail with a confusing SDP error.
+  const peer = pc;
   try {
-    await pc.setLocalDescription(await pc.createOffer());
-    await waitIceComplete(pc);
-    const answer = await api("/api/offer", { sdp: pc.localDescription.sdp });
-    await pc.setRemoteDescription({ type: "answer", sdp: answer.sdp });
+    await peer.setLocalDescription(await peer.createOffer());
+    await waitIceComplete(peer);
+    const answer = await api("/api/offer", { sdp: peer.localDescription.sdp });
+    if (pc !== peer) { peer.close(); return; }
+    await peer.setRemoteDescription({ type: "answer", sdp: answer.sdp });
     slotRetries = 0;
     statsTimer = setInterval(updateStats, 1000);
     lockTimer = setInterval(pollLocked, 1000);
   } catch (err) {
-    if (err.status === 401) { disconnect(); showLogin("Your session expired. Sign in again."); return; }
+    if (pc !== peer) return;
+    if (err.status === 401) { disconnect(); showLogin(tr("viewer.login.expired")); return; }
     // Viewer slots can still be held by a connection that is closing; they free up within
     // about 20 s, so wait and try again instead of showing a dead end.
     if (err.status === 400 && /too many viewers/i.test(err.message) && slotRetries < 6) {
       slotRetries++;
-      setStatus(`waiting for a free viewer slot… (${slotRetries}/6)`, "connecting");
+      setStatus("viewer.status.waitingSlot", "connecting", { try: slotRetries, max: 6 });
       if (pc) { pc.close(); pc = null; }
       slotRetryTimer = setTimeout(connect, 5000);
       return;
     }
-    setStatus(`error: ${err.message}`, "error");
+    setStatus("viewer.status.error", "error", { message: err.message });
   }
 }
 
@@ -392,7 +424,7 @@ function disconnect() {
   if (pc) { pc.onconnectionstatechange = null; pc.close(); pc = null; }
   video.srcObject = null;
   resetStats();
-  setStatus("disconnected", "idle");
+  setStatus("viewer.status.disconnected", "idle");
 }
 
 // ---------------------------------------------------------------- why the session ended
@@ -401,12 +433,21 @@ function disconnect() {
 // and reconnect by itself when the host or the network comes back.
 function sessionEnded(reason) {
   if (reason === "password_changed") {
-    setStatus("signed out: the password was changed", "idle");
-    showLogin("The password was changed on the host. Sign in again.");
+    setStatus("viewer.status.passwordChanged", "idle");
+    showLogin(tr("viewer.login.passwordChanged"));
+    return;
+  }
+  if (reason === "host_disconnected") {
+    setStatus("viewer.status.hostDisconnected", "error");
+    return;
+  }
+  if (reason === "signed_out" || reason === "session_expired") {
+    setStatus("viewer.status.signedOut", "idle");
+    showLogin(tr(reason === "signed_out" ? "viewer.login.signedOut" : "viewer.login.signInExpired"));
     return;
   }
   if (reason === "web_off") {
-    setStatus("remote access was turned off on the host", "error");
+    setStatus("viewer.status.webOff", "error");
     return;
   }
   // Without a reason the stream or the network broke. Don't keep reconnecting to a host that
@@ -415,19 +456,19 @@ function sessionEnded(reason) {
   connectedAt = 0;
   if (quickDrops >= 3) {
     quickDrops = 0;
-    setStatus("the connection to the host keeps dropping", "error");
+    setStatus("viewer.status.keepsDropping", "error");
     return;
   }
   recoverTries = 0;
-  recover(reason === "host_shutdown" ? "the host is restarting: reconnecting…" : "connection lost: reconnecting…", reason);
+  recover(reason === "host_shutdown" ? "viewer.status.hostRestarting" : "viewer.status.connectionLost", reason);
 }
 
 // Waits for the host to answer again (about two minutes at most), then connects. A host that
 // answers but no longer knows this browser (it restarted, or the login expired) asks to sign in.
 const RECOVER_TRIES = 40;
-function recover(text, reason) {
+function recover(key, reason) {
   clearTimeout(recoverTimer);
-  setStatus(text, "connecting");
+  setStatus(key, "connecting");
   recoverTimer = setTimeout(async () => {
     recoverTimer = null;
     try {
@@ -435,12 +476,12 @@ function recover(text, reason) {
     } catch (err) {
       if (state !== "connecting") return; // the viewer pressed Disconnect meanwhile
       if (err.status === 401) {
-        setStatus("signed out", "idle");
-        showLogin(reason === "host_shutdown" ? "The host restarted. Sign in again." : "Your session ended on the host. Sign in again.");
+        setStatus("viewer.status.signedOut", "idle");
+        showLogin(tr(reason === "host_shutdown" ? "viewer.login.hostRestarted" : "viewer.login.sessionEnded"));
         return;
       }
-      if (++recoverTries < RECOVER_TRIES) { recover(text, reason); return; }
-      setStatus("the host can't be reached", "error");
+      if (++recoverTries < RECOVER_TRIES) { recover(key, reason); return; }
+      setStatus("viewer.status.unreachable", "error");
       return;
     }
     if (state === "connecting") connect();
@@ -449,21 +490,30 @@ function recover(text, reason) {
 
 // ---------------------------------------------------------------- stats
 
-const ROUTES = { host: "Direct (LAN)", srflx: "Direct (NAT)", prflx: "Direct (NAT)", relay: "Relayed (TURN)" };
+const ROUTES = { host: "viewer.route.lan", srflx: "viewer.route.nat", prflx: "viewer.route.nat", relay: "viewer.route.relay" };
 let last = { bytes: 0, ts: 0, lost: 0, recv: 0 };
 
 function resetStats() {
   last = { bytes: 0, ts: 0, lost: 0, recv: 0 };
   lastRtt = null;
-  for (const id of ["s-res", "s-fps", "s-bitrate", "s-rtt", "s-loss", "s-codec", "s-route"]) {
+  hostEncoder = null;
+  for (const id of ["s-res", "s-fps", "s-bitrate", "s-rtt", "s-loss", "s-codec", "s-encoder", "s-route"]) {
     $(id).textContent = "–";
     $(id).className = "";
   }
   $("quality").hidden = true;
 }
 
+// Which H.264 encoder the host streams with (the GPU's or OpenH264), as the host reports it.
+function renderEncoder() {
+  $("s-encoder").textContent = hostEncoder
+    ? tr(hostEncoder.hardware ? "viewer.stats.encoderHardware" : "viewer.stats.encoderSoftware", { name: hostEncoder.name })
+    : "–";
+}
+
 async function updateStats() {
   if (!pc) return;
+  renderEncoder();
   const report = await pc.getStats();
   let inbound = null, pair = null, selectedPairId = null;
   report.forEach((s) => {
@@ -485,58 +535,173 @@ async function updateStats() {
     last = { bytes, ts, lost, recv };
 
     $("s-res").textContent = w && h ? `${w}×${h}` : "–";
-    $("s-fps").textContent = `${fps.toFixed(0)} fps`;
-    $("s-bitrate").textContent = `${(kbps / 1000).toFixed(1)} Mbit/s`;
+    $("s-fps").textContent = tr("viewer.stats.fpsValue", { n: I18N.number(fps) });
+    $("s-bitrate").textContent = tr("viewer.stats.mbitValue", { n: I18N.number(kbps / 1000, 1, 1) });
     if (lossPct !== null) {
-      $("s-loss").innerHTML = `${lossPct.toFixed(1)}% <small>(${lost} total)</small>`;
+      const small = document.createElement("small");
+      small.textContent = `(${tr("viewer.stats.lossTotal", { n: I18N.number(lost) })})`;
+      $("s-loss").replaceChildren(`${I18N.number(lossPct, 1, 1)}% `, small);
       $("s-loss").className = lossPct < 1 ? "good" : "";
     }
     const codec = inbound.codecId && report.get(inbound.codecId);
     if (codec && codec.mimeType) $("s-codec").textContent = codec.mimeType.replace(/^video\//i, "");
   }
-  $("s-rtt").textContent = rtt !== null ? `${rtt.toFixed(0)} ms` : "–";
+  $("s-rtt").textContent = rtt !== null ? tr("viewer.status.ms", { n: I18N.number(rtt) }) : "–";
   $("s-rtt").className = rtt !== null && rtt < 50 ? "good" : "";
   const remote = pair && pair.remoteCandidateId && report.get(pair.remoteCandidateId);
   const local = pair && pair.localCandidateId && report.get(pair.localCandidateId);
   const types = [remote, local].filter(Boolean).map((c) => c.candidateType);
   const route = types.includes("relay") ? "relay" : types.find((t) => t !== "host") || types[0];
-  $("s-route").textContent = ROUTES[route] || "–";
+  $("s-route").textContent = ROUTES[route] ? tr(ROUTES[route]) : "–";
   $("s-route").className = "route";
 
   // A rough verdict from the measured round trip and packet loss.
   if (rtt !== null) {
     const loss = lossPct || 0;
     const q = rtt < 50 && loss < 1 ? "good" : rtt < 150 && loss < 5 ? "fair" : "poor";
-    $("quality").textContent = { good: "Good", fair: "Fair", poor: "Poor" }[q];
+    $("quality").textContent = tr(`viewer.quality.${q}`);
     $("quality").className = `badge ${q}`;
     $("quality").hidden = false;
   }
-  if (state === "connected") setStatus(statusText, state);
+  if (state === "connected") setStatus(statusKey, state, statusParams);
 }
 
 // ---------------------------------------------------------------- session controls
 
 $("btn-connect").addEventListener("click", () => { slotRetries = 0; connect(); });
 $("btn-disconnect").addEventListener("click", () => { clearTimeout(slotRetryTimer); slotRetries = 0; quickDrops = 0; disconnect(); });
-// Ctrl+Alt+Del cannot be sent as keys (the browser's OS would act on it first).
-$("btn-cad").addEventListener("click", () => {
+// Each item names its catalog keys: `name` for the label and `tip` for the tooltip. `label` is
+// shown as is (a key combination or a product name), and `kbd` is either a combination or,
+// with `hint`, a catalog key.
+const KEY_FOLDERS = [
+  {
+    os: "windows",
+    label: "Windows",
+    items: [
+      { label: "Ctrl + Alt + Del", hint: "viewer.keys.secure", action: "secure_attention", tip: "viewer.keys.cadTitle", pinned: true },
+      { name: "viewer.keys.lock", kbd: "Win + L", combo: "MetaLeft KeyL", tip: "viewer.keys.lockTitle", pinned: true },
+      { name: "viewer.keys.winKey", kbd: "Win", combo: "MetaLeft", tip: "viewer.keys.winKeyTitle", pinned: true },
+      { label: "Alt + Tab", hint: "viewer.keys.switch", combo: "AltLeft Tab", tip: "viewer.keys.altTabTitle", pinned: true },
+      { name: "viewer.keys.taskManager", kbd: "Ctrl+Shift+Esc", combo: "ControlLeft ShiftLeft Escape", tip: "viewer.keys.taskManagerTitle", pinned: true },
+      { name: "viewer.keys.taskView", kbd: "Win + Tab", combo: "MetaLeft Tab", tip: "viewer.keys.taskViewTitle" },
+      { name: "viewer.keys.run", kbd: "Win + R", combo: "MetaLeft KeyR", tip: "viewer.keys.runTitle" },
+      { name: "viewer.keys.desktop", kbd: "Win + D", combo: "MetaLeft KeyD", tip: "viewer.keys.desktopTitle" },
+    ],
+  },
+  {
+    os: "macos",
+    label: "macOS",
+    items: [
+      { name: "viewer.keys.lockScreen", kbd: "⌃ + ⌘ + Q", combo: "ControlLeft MetaLeft KeyQ", tip: "viewer.keys.lockScreenTitle", pinned: true },
+      { name: "viewer.keys.cmdKey", kbd: "⌘", combo: "MetaLeft", tip: "viewer.keys.cmdKeyTitle", pinned: true },
+      { name: "viewer.keys.appSwitcher", kbd: "⌘ + Tab", combo: "MetaLeft Tab", tip: "viewer.keys.appSwitcherTitle", pinned: true },
+      { label: "Spotlight", kbd: "⌘ + Space", combo: "MetaLeft Space", tip: "viewer.keys.spotlightTitle", pinned: true },
+      { name: "viewer.keys.forceQuit", kbd: "⌘ + ⌥ + Esc", combo: "MetaLeft AltLeft Escape", tip: "viewer.keys.forceQuitTitle", pinned: true },
+      { name: "viewer.keys.optionKey", kbd: "⌥", combo: "AltLeft", tip: "viewer.keys.optionKeyTitle" },
+      { name: "viewer.keys.controlKey", kbd: "⌃", combo: "ControlLeft", tip: "viewer.keys.controlKeyTitle" },
+      { label: "Mission Control", kbd: "⌃ + ↑", combo: "ControlLeft ArrowUp", tip: "viewer.keys.missionControlTitle" },
+      { name: "viewer.keys.quitApp", kbd: "⌘ + Q", combo: "MetaLeft KeyQ", tip: "viewer.keys.quitAppTitle" },
+      { name: "viewer.keys.closeWindow", kbd: "⌘ + W", combo: "MetaLeft KeyW", tip: "viewer.keys.closeWindowTitle" },
+      { name: "viewer.keys.screenshot", kbd: "⌘ + ⇧ + 4", combo: "MetaLeft ShiftLeft Digit4", tip: "viewer.keys.screenshotTitle" },
+    ],
+  },
+  {
+    os: "linux",
+    label: "Linux",
+    items: [
+      { label: "Ctrl + Alt + Del", hint: "viewer.keys.system", action: "secure_attention", tip: "viewer.keys.cadTitleLinux", pinned: true },
+      { name: "viewer.keys.lock", kbd: "Super + L", combo: "MetaLeft KeyL", tip: "viewer.keys.lockTitleLinux", pinned: true },
+      { name: "viewer.keys.superKey", kbd: "Super", combo: "MetaLeft", tip: "viewer.keys.superKeyTitle", pinned: true },
+      { label: "Alt + Tab", hint: "viewer.keys.switch", combo: "AltLeft Tab", tip: "viewer.keys.altTabTitle", pinned: true },
+      { name: "viewer.keys.terminal", kbd: "Ctrl+Alt+T", combo: "ControlLeft AltLeft KeyT", tip: "viewer.keys.terminalTitle", pinned: true },
+      { name: "viewer.keys.runCommand", kbd: "Alt + F2", combo: "AltLeft F2", tip: "viewer.keys.runCommandTitle" },
+      { name: "viewer.keys.workspaceLeft", kbd: "Ctrl+Alt+←", combo: "ControlLeft AltLeft ArrowLeft", tip: "viewer.keys.workspaceLeftTitle" },
+      { name: "viewer.keys.workspaceRight", kbd: "Ctrl+Alt+→", combo: "ControlLeft AltLeft ArrowRight", tip: "viewer.keys.workspaceRightTitle" },
+    ],
+  },
+];
+
+function createKeyButton(item) {
+  const b = document.createElement("button");
+  if (item.action) b.dataset.action = item.action;
+  if (item.combo) b.dataset.combo = item.combo;
+  if (item.tip) b.title = tr(item.tip);
+  const label = document.createElement("span");
+  label.textContent = item.name ? tr(item.name) : item.label;
+  const kbd = document.createElement("kbd");
+  kbd.textContent = item.hint ? tr(item.hint) : item.kbd;
+  b.append(label, kbd);
+  return b;
+}
+
+function updateKeysCapabilities() {
+  const cadSupported = !!info && ["windows", "linux"].includes(info.os);
+  document.querySelectorAll('#pop-keys [data-action="secure_attention"]').forEach((b) => {
+    b.disabled = !cadSupported;
+    if (!cadSupported && info) b.title = tr("viewer.keys.cadUnsupported");
+  });
+}
+
+function renderKeysMenu() {
+  const list = $("keys-list");
+  list.replaceChildren();
+  const hostOs = info?.os;
+  const activeFolder = KEY_FOLDERS.find((f) => f.os === hostOs) || KEY_FOLDERS[0];
+
+  for (const item of activeFolder.items.filter((i) => i.pinned)) {
+    list.append(createKeyButton(item));
+  }
+  list.append(createKeyButton({ label: "Esc", hint: "viewer.keys.cancel", combo: "Escape", tip: "viewer.keys.escTitle" }));
+
+  const sep = document.createElement("div");
+  sep.className = "key-sep";
+  list.append(sep);
+
+  for (const folder of KEY_FOLDERS) {
+    const details = document.createElement("details");
+    details.className = "key-folder";
+    const summary = document.createElement("summary");
+    const title = document.createElement("span");
+    title.className = "key-folder-label";
+    title.textContent = folder.label;
+    summary.append(title);
+    if (folder.os === hostOs) {
+      const badge = document.createElement("span");
+      badge.className = "key-badge";
+      badge.textContent = tr("viewer.keys.current");
+      summary.append(badge);
+    }
+    const body = document.createElement("div");
+    body.className = "key-folder-body";
+    for (const item of folder.items) body.append(createKeyButton(item));
+    details.append(summary, body);
+    list.append(details);
+  }
+  updateKeysCapabilities();
+}
+
+renderKeysMenu();
+
+// Key combinations the local OS or browser would catch before reaching the host.
+$("keys-list").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b || b.disabled) return;
   closePopovers();
-  if (!dc || dc.readyState !== "open") {
-    setStatus("not connected: Ctrl+Alt+Del was not sent", "error");
+  if (b.dataset.action === "secure_attention") {
+    if (!dc || dc.readyState !== "open") {
+      setStatus("viewer.status.cadNotSent", "error");
+      return;
+    }
+    send({ type: "secure_attention" });
+    stage.focus({ preventScroll: true });
     return;
   }
-  send({ type: "secure_attention" });
-  stage.focus({ preventScroll: true });
-});
-// Other combinations the local OS or browser would catch: press in order, release in reverse.
-document.querySelectorAll("#pop-keys [data-combo]").forEach((b) => {
-  b.addEventListener("click", () => {
-    closePopovers();
+  if (b.dataset.combo) {
     const codes = b.dataset.combo.split(" ");
     codes.forEach((code) => send({ type: "key", code, down: true }));
     codes.slice().reverse().forEach((code) => send({ type: "key", code, down: false }));
     stage.focus({ preventScroll: true });
-  });
+  }
 });
 $("btn-fullscreen").addEventListener("click", async () => {
   if (document.fullscreenElement) { await document.exitFullscreen().catch(() => {}); return; }
@@ -547,7 +712,7 @@ $("btn-fullscreen").addEventListener("click", async () => {
 });
 document.addEventListener("fullscreenchange", () => {
   const full = !!document.fullscreenElement;
-  $("btn-fullscreen").title = full ? "Exit fullscreen" : "Fullscreen (keyboard goes to the remote host)";
+  $("btn-fullscreen").title = tr(full ? "viewer.btn.exitFullscreen" : "viewer.btn.fullscreen");
   if (!full && navigator.keyboard && navigator.keyboard.unlock) navigator.keyboard.unlock();
   if (full && state === "connected") showHint(true);
 });
@@ -569,9 +734,22 @@ function releaseAll() {
   send({ type: "release_all" });
 }
 
+const viewport = $("viewport");
+const touchCursor = $("touch-cursor");
+const zoomResetBtn = $("zoom-reset");
+const kbdInput = $("kbd-input");
+const touchKeysBar = $("touch-keys");
+const btnKbd = $("btn-kbd");
+
+let zoom = 1;
+let panX = 0;
+let panY = 0;
+let cursor = { x: 0.5, y: 0.5 };
+let touchCursorShown = false;
+
 // Maps a client position to 0..1 of the *video content*, accounting for the
-// letterboxing introduced by object-fit: contain.
-function normalize(clientX, clientY) {
+// letterboxing introduced by object-fit: contain (and any active CSS zoom/pan).
+function videoContentBox() {
   const r = video.getBoundingClientRect();
   const vw = video.videoWidth || r.width;
   const vh = video.videoHeight || r.height;
@@ -579,8 +757,63 @@ function normalize(clientX, clientY) {
   const cw = vw * scale, ch = vh * scale;
   const ox = r.left + (r.width - cw) / 2;
   const oy = r.top + (r.height - ch) / 2;
+  return { ox, oy, cw, ch };
+}
+
+function normalize(clientX, clientY) {
+  const { ox, oy, cw, ch } = videoContentBox();
   const clamp = (v) => Math.min(1, Math.max(0, v));
-  return { x: clamp((clientX - ox) / cw), y: clamp((clientY - oy) / ch) };
+  return { x: clamp((clientX - ox) / (cw || 1)), y: clamp((clientY - oy) / (ch || 1)) };
+}
+
+function clampPan() {
+  const vp = viewport.getBoundingClientRect();
+  const minX = Math.min(0, vp.width * (1 - zoom));
+  const minY = Math.min(0, vp.height * (1 - zoom));
+  panX = Math.min(0, Math.max(minX, panX));
+  panY = Math.min(0, Math.max(minY, panY));
+}
+
+function applyZoom() {
+  if (zoom <= 1.01) {
+    zoom = 1;
+    panX = 0;
+    panY = 0;
+    video.style.transform = "";
+    zoomResetBtn.hidden = true;
+  } else {
+    clampPan();
+    video.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+    zoomResetBtn.textContent = tr("viewer.zoom.reset", { zoom: zoom.toFixed(1) });
+    zoomResetBtn.hidden = false;
+  }
+  updateTouchCursor();
+}
+
+function resetZoom() {
+  zoom = 1;
+  panX = 0;
+  panY = 0;
+  video.style.transform = "";
+  zoomResetBtn.hidden = true;
+  updateTouchCursor();
+}
+zoomResetBtn.addEventListener("click", resetZoom);
+
+function updateTouchCursor(show = touchCursorShown) {
+  touchCursorShown = show;
+  const visible = show && state === "connected" && prefs.touchMode === "touchpad";
+  touchCursor.hidden = !visible;
+  if (!visible) return;
+  const vp = viewport.getBoundingClientRect();
+  const { ox, oy, cw, ch } = videoContentBox();
+  touchCursor.style.left = `${ox - vp.left + cursor.x * cw}px`;
+  touchCursor.style.top = `${oy - vp.top + cursor.y * ch}px`;
+}
+
+function hideTouchCursor() {
+  touchCursorShown = false;
+  touchCursor.hidden = true;
 }
 
 const BUTTONS = ["left", "middle", "right", "back", "forward"];
@@ -591,11 +824,192 @@ function flushMove() {
   if (pendingMove) send({ type: "mouse_move", ...pendingMove });
   pendingMove = null;
 }
-video.addEventListener("pointermove", (e) => {
+function queueMove(pos) {
+  cursor = pos;
   if (!pendingMove) requestAnimationFrame(flushMove);
-  pendingMove = normalize(e.clientX, e.clientY);
+  pendingMove = pos;
+}
+
+// Touch gesture state (separated from mouse/pen so desktop behavior is untouched).
+const touches = new Map();
+let touchGesture = null;
+let twoFinger = null;
+let longPressTimer = null;
+let lastTapAt = 0;
+
+function clearLongPress() {
+  clearTimeout(longPressTimer);
+  longPressTimer = null;
+}
+
+function startLongPress(posFn) {
+  clearLongPress();
+  longPressTimer = setTimeout(() => {
+    if (!touchGesture || touchGesture.moved || touches.size !== 1) return;
+    touchGesture.longPressed = true;
+    const pos = posFn();
+    cursor = pos;
+    send({ type: "mouse_move", ...pos });
+    send({ type: "mouse_button", button: "right", down: true, ...pos });
+    send({ type: "mouse_button", button: "right", down: false, ...pos });
+  }, 480);
+}
+
+function touchPairInfo() {
+  const [a, b] = [...touches.values()];
+  const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  const dist = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  return { mid, dist };
+}
+
+function onTouchDown(e) {
+  e.preventDefault();
+  focusStageUnlessTyping();
+  wakeLockScreen();
+  try { video.setPointerCapture(e.pointerId); } catch (_) {}
+  touches.set(e.pointerId, {
+    id: e.pointerId,
+    x: e.clientX,
+    y: e.clientY,
+    startX: e.clientX,
+    startY: e.clientY,
+    lastX: e.clientX,
+    lastY: e.clientY,
+  });
+
+  if (touches.size === 1) {
+    twoFinger = null;
+    touchGesture = {
+      mode: "one",
+      moved: false,
+      longPressed: false,
+      downSent: false,
+      dragging: false,
+      tapDragPending: prefs.touchMode === "touchpad" && (Date.now() - lastTapAt < 280),
+    };
+    if (prefs.touchMode === "touchpad") updateTouchCursor(true);
+    startLongPress(() => prefs.touchMode === "touchpad" ? cursor : normalize(e.clientX, e.clientY));
+  } else if (touches.size === 2) {
+    clearLongPress();
+    if (touchGesture && (touchGesture.downSent || touchGesture.dragging)) {
+      flushMove();
+      send({ type: "mouse_button", button: "left", down: false, ...cursor });
+    }
+    touchGesture = null;
+    const { mid, dist } = touchPairInfo();
+    twoFinger = {
+      startDist: dist,
+      startMid: mid,
+      prevMid: mid,
+      startZoom: zoom,
+      startPanX: panX,
+      startPanY: panY,
+      mode: null,
+    };
+  }
+}
+
+function onTouchMove(e) {
+  const t = touches.get(e.pointerId);
+  if (!t) return;
+  t.x = e.clientX;
+  t.y = e.clientY;
+
+  if (touches.size === 2 && twoFinger) {
+    const { mid, dist } = touchPairInfo();
+    if (!twoFinger.mode) {
+      const distDelta = Math.abs(dist - twoFinger.startDist);
+      const scaleRatio = Math.abs(dist / twoFinger.startDist - 1);
+      const midDelta = Math.hypot(mid.x - twoFinger.startMid.x, mid.y - twoFinger.startMid.y);
+      if (distDelta > 18 && scaleRatio > 0.12 && distDelta >= midDelta * 0.8) twoFinger.mode = "pinch";
+      else if (midDelta > 12 && distDelta <= 14) twoFinger.mode = "scroll";
+    }
+    if (twoFinger.mode === "pinch" && prefs.view !== "actual") {
+      const vp = viewport.getBoundingClientRect();
+      const newZoom = Math.min(5, Math.max(1, twoFinger.startZoom * (dist / twoFinger.startDist)));
+      const cx = (twoFinger.startMid.x - vp.left - twoFinger.startPanX) / twoFinger.startZoom;
+      const cy = (twoFinger.startMid.y - vp.top - twoFinger.startPanY) / twoFinger.startZoom;
+      zoom = newZoom;
+      panX = (mid.x - vp.left) - cx * zoom;
+      panY = (mid.y - vp.top) - cy * zoom;
+      applyZoom();
+    } else if (twoFinger.mode === "scroll") {
+      const dir = prefs.invertWheel ? -1 : 1;
+      const dx = (twoFinger.prevMid.x - mid.x) * 2.5 * dir;
+      const dy = (twoFinger.prevMid.y - mid.y) * 2.5 * dir;
+      if (dx !== 0 || dy !== 0) send({ type: "wheel", dx, dy });
+    }
+    twoFinger.prevMid = mid;
+    return;
+  }
+
+  if (touches.size !== 1 || !touchGesture || touchGesture.mode !== "one") return;
+  const dx = e.clientX - t.lastX;
+  const dy = e.clientY - t.lastY;
+  t.lastX = e.clientX;
+  t.lastY = e.clientY;
+
+  if (!touchGesture.moved && Math.hypot(e.clientX - t.startX, e.clientY - t.startY) > 7) {
+    touchGesture.moved = true;
+    clearLongPress();
+    if (prefs.touchMode === "direct") {
+      const p0 = normalize(t.startX, t.startY);
+      cursor = p0;
+      send({ type: "mouse_move", ...p0 });
+      send({ type: "mouse_button", button: "left", down: true, ...p0 });
+      touchGesture.downSent = true;
+    } else if (touchGesture.tapDragPending) {
+      send({ type: "mouse_button", button: "left", down: true, ...cursor });
+      touchGesture.dragging = true;
+    }
+  }
+
+  if (!touchGesture.moved || touchGesture.longPressed) return;
+
+  if (prefs.touchMode === "touchpad") {
+    const { cw, ch } = videoContentBox();
+    const gain = 1.35;
+    const clamp = (v) => Math.min(1, Math.max(0, v));
+    const next = {
+      x: clamp(cursor.x + (dx * gain) / (cw || 1)),
+      y: clamp(cursor.y + (dy * gain) / (ch || 1)),
+    };
+    queueMove(next);
+    updateTouchCursor(true);
+  } else {
+    queueMove(normalize(e.clientX, e.clientY));
+  }
+}
+
+function onTouchUp(e, cancelled = false) {
+  touches.delete(e.pointerId);
+  clearLongPress();
+  if (!cancelled && touchGesture && touchGesture.mode === "one" && !touchGesture.longPressed) {
+    if (touchGesture.dragging || touchGesture.downSent) {
+      flushMove();
+      send({ type: "mouse_button", button: "left", down: false, ...cursor });
+    } else if (!touchGesture.moved) {
+      if (prefs.touchMode === "direct") cursor = normalize(e.clientX, e.clientY);
+      send({ type: "mouse_move", ...cursor });
+      send({ type: "mouse_button", button: "left", down: true, ...cursor });
+      send({ type: "mouse_button", button: "left", down: false, ...cursor });
+      if (prefs.touchMode === "touchpad") {
+        lastTapAt = Date.now();
+        updateTouchCursor(true);
+      }
+    }
+  }
+  if (touches.size < 2) twoFinger = null;
+  if (touches.size === 0) touchGesture = null;
+}
+
+video.addEventListener("pointermove", (e) => {
+  if (e.pointerType === "touch") { onTouchMove(e); return; }
+  hideTouchCursor();
+  queueMove(normalize(e.clientX, e.clientY));
 });
 video.addEventListener("pointerdown", (e) => {
+  if (e.pointerType === "touch") { onTouchDown(e); return; }
   e.preventDefault();
   stage.focus();
   wakeLockScreen();
@@ -603,14 +1017,22 @@ video.addEventListener("pointerdown", (e) => {
   const button = BUTTONS[e.button];
   if (!button) return;
   pendingMove = null;
-  send({ type: "mouse_button", button, down: true, ...normalize(e.clientX, e.clientY) });
+  const pos = normalize(e.clientX, e.clientY);
+  cursor = pos;
+  send({ type: "mouse_button", button, down: true, ...pos });
 });
 video.addEventListener("pointerup", (e) => {
+  if (e.pointerType === "touch") { e.preventDefault(); onTouchUp(e, false); return; }
   e.preventDefault();
   const button = BUTTONS[e.button];
   if (!button) return;
   flushMove();
-  send({ type: "mouse_button", button, down: false, ...normalize(e.clientX, e.clientY) });
+  const pos = normalize(e.clientX, e.clientY);
+  cursor = pos;
+  send({ type: "mouse_button", button, down: false, ...pos });
+});
+video.addEventListener("pointercancel", (e) => {
+  if (e.pointerType === "touch") onTouchUp(e, true);
 });
 video.addEventListener("contextmenu", (e) => e.preventDefault());
 // Clicks next to the picture (letterbox, the locked notice) still mean "control the host";
@@ -629,6 +1051,151 @@ video.addEventListener("wheel", (e) => {
   const dir = prefs.invertWheel ? -1 : 1;
   send({ type: "wheel", dx: e.deltaX * k * dir, dy: e.deltaY * k * dir });
 }, { passive: false });
+
+// ---------------------------------------------------------------- on-screen touch keyboard
+
+const stickyMods = new Set();
+let touchKbdOpen = false;
+let kbdComposing = false;
+
+function positionTouchKeys() {
+  if (!touchKbdOpen) return;
+  const vv = window.visualViewport;
+  if (!vv) { touchKeysBar.style.bottom = ""; return; }
+  const covered = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+  touchKeysBar.style.bottom = `${covered + 12}px`;
+}
+
+function clearStickyMods() {
+  if (!stickyMods.size) return;
+  stickyMods.clear();
+  for (const b of touchKeysBar.querySelectorAll("button[data-mod]")) {
+    b.setAttribute("aria-pressed", "false");
+  }
+}
+
+function sendTouchKey(code) {
+  for (const m of stickyMods) send({ type: "key", code: m, down: true });
+  send({ type: "key", code, down: true });
+  send({ type: "key", code, down: false });
+  for (const m of [...stickyMods].reverse()) send({ type: "key", code: m, down: false });
+  clearStickyMods();
+}
+
+function charToCode(ch) {
+  if (/^[a-zA-Z]$/.test(ch)) return `Key${ch.toUpperCase()}`;
+  if (/^[0-9]$/.test(ch)) return `Digit${ch}`;
+  if (ch === " ") return "Space";
+  return null;
+}
+
+function sendTouchText(text) {
+  if (!text) return;
+  if (stickyMods.size > 0 && text.length === 1) {
+    const code = charToCode(text);
+    if (code) { sendTouchKey(code); return; }
+  }
+  send({ type: "text", text });
+}
+
+function resetKbdInput() {
+  // Keep a leading space so Backspace on Android/iOS always has something to delete.
+  kbdInput.value = " ";
+  try { kbdInput.setSelectionRange(1, 1); } catch (_) {}
+}
+
+function openTouchKeyboard() {
+  if (state !== "connected") return;
+  closePopovers();
+  touchKbdOpen = true;
+  touchKeysBar.hidden = false;
+  btnKbd.setAttribute("aria-pressed", "true");
+  resetKbdInput();
+  kbdInput.focus({ preventScroll: true });
+  positionTouchKeys();
+}
+
+function closeTouchKeyboard() {
+  if (!touchKbdOpen && touchKeysBar.hidden) return;
+  touchKbdOpen = false;
+  touchKeysBar.hidden = true;
+  touchKeysBar.style.bottom = "";
+  btnKbd.setAttribute("aria-pressed", "false");
+  clearStickyMods();
+  if (document.activeElement === kbdInput) kbdInput.blur();
+}
+
+btnKbd.addEventListener("click", () => {
+  if (touchKbdOpen) closeTouchKeyboard();
+  else openTouchKeyboard();
+});
+
+touchKeysBar.addEventListener("pointerdown", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  e.preventDefault(); // Keep focus on #kbd-input so the soft keyboard stays open.
+  if (b.id === "touch-keys-close") { closeTouchKeyboard(); return; }
+  if (b.dataset.mod) {
+    const mod = b.dataset.mod;
+    const on = !stickyMods.has(mod);
+    if (on) stickyMods.add(mod);
+    else stickyMods.delete(mod);
+    b.setAttribute("aria-pressed", String(on));
+    return;
+  }
+  if (b.dataset.key) sendTouchKey(b.dataset.key);
+});
+
+const KBD_NAV_KEYS = new Set([
+  "Escape", "Tab", "Backspace", "Enter", "Delete", "Home", "End",
+  "PageUp", "PageDown", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
+]);
+
+kbdInput.addEventListener("keydown", (e) => {
+  if (e.isComposing || kbdComposing) return;
+  const code = KBD_NAV_KEYS.has(e.code) ? e.code : KBD_NAV_KEYS.has(e.key) ? e.key : null;
+  if (!code) return;
+  e.preventDefault();
+  sendTouchKey(code);
+});
+
+kbdInput.addEventListener("compositionstart", () => { kbdComposing = true; });
+kbdInput.addEventListener("compositionend", (e) => {
+  kbdComposing = false;
+  if (e.data) sendTouchText(e.data);
+  resetKbdInput();
+});
+
+kbdInput.addEventListener("beforeinput", (e) => {
+  if (kbdComposing || e.isComposing) return;
+  if (e.inputType === "insertText" && e.data) {
+    e.preventDefault();
+    sendTouchText(e.data);
+  } else if (e.inputType === "insertLineBreak" || e.inputType === "insertParagraph") {
+    e.preventDefault();
+    sendTouchKey("Enter");
+  } else if (e.inputType === "deleteContentBackward") {
+    e.preventDefault();
+    sendTouchKey("Backspace");
+  }
+});
+
+kbdInput.addEventListener("input", () => {
+  if (kbdComposing) return;
+  const val = kbdInput.value;
+  if (val.length > 1) {
+    const text = val.startsWith(" ") ? val.slice(1) : val;
+    if (text) sendTouchText(text);
+  } else if (val.length === 0) {
+    sendTouchKey("Backspace");
+  }
+  resetKbdInput();
+});
+
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", positionTouchKeys);
+  window.visualViewport.addEventListener("scroll", positionTouchKeys);
+}
 
 // Keyboard goes to the host only while the remote screen itself has focus, not the toolbar.
 // Only keys pressed here are released here: a toolbar button that hands focus back on
@@ -774,7 +1341,17 @@ function onHostMessage(data) {
     renderClip();
   } else if (msg.type === "settings_applied") {
     applied = msg;
+    // The host's limits can change while connected (Dalker Settings on the host). The choices
+    // here are shares of them, so ask again for the same shares of the new limits.
+    const h = hostStream();
+    if (h && msg.max_fps && (h.max_fps !== msg.max_fps || h.max_bitrate_kbps !== msg.max_bitrate_kbps)) {
+      Object.assign(h, { max_fps: msg.max_fps, max_bitrate_kbps: msg.max_bitrate_kbps, max_downscale: msg.max_downscale });
+      sendStreamSettings();
+    }
     renderSettings();
+  } else if (msg.type === "encoder") {
+    hostEncoder = { name: String(msg.name || ""), hardware: !!msg.hardware };
+    renderEncoder();
   } else if (msg.type === "session_end") {
     // The host is about to close the session; the channel closes next (see sessionEnded).
     endReason = msg.reason || "";
@@ -833,7 +1410,7 @@ function sendClipboard(text) {
   text = normalizeEol(text);
   if (!dc || dc.readyState !== "open" || clip.available !== true) return false;
   if (new Blob([text]).size > MAX_CLIP) {
-    flashNote("That text is too large to send (the limit is 1 MB).");
+    flashNote(tr("viewer.clip.tooLarge"));
     return false;
   }
   const parts = Array.from(text);
@@ -903,23 +1480,23 @@ function setClipAuto(on) {
 }
 $("clip-auto").addEventListener("change", (e) => setClipAuto(e.target.checked));
 $("clip-send").addEventListener("click", () => {
-  if (sendClipboard($("clip-text").value)) flashNote("Sent. Paste on the host as usual.");
+  if (sendClipboard($("clip-text").value)) flashNote(tr("viewer.clip.sent"));
 });
 $("clip-copy").addEventListener("click", async () => {
   const text = $("clip-text").value;
   let ok = copyWithCommand(text);
   if (!ok && secureClipboard) ok = await navigator.clipboard.writeText(text).then(() => true, () => false);
-  if (ok) { if (text === clip.pending) clip.pending = null; clip.synced = text; renderClip(true); flashNote("Copied to this computer."); }
-  else { $("clip-text").select(); flashNote("The browser didn't allow copying. Press Ctrl+C to copy the selected text."); }
+  if (ok) { if (text === clip.pending) clip.pending = null; clip.synced = text; renderClip(true); flashNote(tr("viewer.clip.copied")); }
+  else { $("clip-text").select(); flashNote(tr("viewer.clip.copyBlocked")); }
 });
 $("clip-read").addEventListener("click", async () => {
   try {
     const text = await navigator.clipboard.readText();
     $("clip-text").value = text;
     clip.lastRead = normalizeEol(text);
-    if (sendClipboard(text)) flashNote("Sent your clipboard to the host.");
+    if (sendClipboard(text)) flashNote(tr("viewer.clip.readSent"));
   } catch (_) {
-    flashNote("The browser didn't allow reading the clipboard. Paste into the box with Ctrl+V instead.");
+    flashNote(tr("viewer.clip.readBlocked"));
   }
 });
 
@@ -934,23 +1511,22 @@ function renderClip(flash = false) {
   const btn = $("btn-clip");
   let cls, badge, title, note;
   if (clip.available === false) {
-    cls = "unavailable"; badge = "Unavailable";
-    title = "Clipboard: not available on this host";
-    note = `The host's clipboard can't be shared${clip.reason ? `: ${clip.reason}` : "."}`;
+    cls = "unavailable"; badge = tr("viewer.clip.badgeUnavailable");
+    title = tr("viewer.clip.titleUnavailable");
+    // The reason comes from the host, in English.
+    note = clip.reason ? tr("viewer.clip.noteUnavailableWhy", { reason: clip.reason }) : tr("viewer.clip.noteUnavailable");
   } else if (clip.available === null) {
-    cls = "off"; badge = "…"; title = "Clipboard"; note = "Waiting for the host…";
+    cls = "off"; badge = "…"; title = tr("viewer.clip.title"); note = tr("viewer.clip.noteWaiting");
   } else if (!clip.auto) {
-    cls = "off"; badge = "Off"; title = "Clipboard: sync is off";
-    note = "Automatic sync is off. Move text by hand with the box below.";
+    cls = "off"; badge = tr("viewer.clip.badgeOff"); title = tr("viewer.clip.titleOff");
+    note = tr("viewer.clip.noteOff");
   } else if (clip.pending !== null) {
-    cls = "pending"; badge = "Waiting"; title = "Clipboard: the host copied text; click the screen to copy it here";
-    note = "The host copied text. Click the remote screen or press a key there to put it on this computer's clipboard, or use Copy here.";
+    cls = "pending"; badge = tr("viewer.clip.badgeWaiting"); title = tr("viewer.clip.titlePending");
+    note = tr("viewer.clip.notePending");
   } else {
-    cls = "synced"; badge = "Synced"; title = "Clipboard: synced with the host";
-    note = "Copy on either side and paste on the other. Ctrl+V on the remote screen sends your text to the host first.";
-    if (!window.isSecureContext) {
-      note += " This page isn't HTTPS, so text the host copies lands here after your next click or key on the remote screen.";
-    }
+    cls = "synced"; badge = tr("viewer.clip.badgeSynced"); title = tr("viewer.clip.titleSynced");
+    note = tr("viewer.clip.noteSynced");
+    if (!window.isSecureContext) note += " " + tr("viewer.clip.noteInsecure");
   }
   btn.className = `icon clip session-only ${cls}`;
   btn.title = title;
@@ -983,7 +1559,7 @@ renderClip();
 // this browser.
 
 const SETTINGS_KEY = "dalker.settings";
-const DEFAULTS = { fps: 0, bw: 1, scale: 1, view: "fit", keyboard: "hardware", invertWheel: false, keepAlive: false, keepAliveSec: 60 }; // fps 0 = the host's maximum
+const DEFAULTS = { fps: 0, bw: 1, scale: 1, view: "fit", keyboard: "hardware", touchMode: "touchpad", invertWheel: false, keepAlive: false, keepAliveSec: 60, autoHide: false }; // fps 0 = the host's maximum
 const AWAKE_CHOICES = [30, 60, 120, 300];
 let prefs = { ...DEFAULTS };
 let applied = null; // the host's last settings_applied
@@ -1037,33 +1613,38 @@ function renderSettings() {
   if (h) {
     const max = h.max_fps;
     const fps = prefs.fps && prefs.fps < max ? prefs.fps : max;
-    $("set-fps-max").textContent = `host max ${max}`;
-    renderSeg("set-fps", fpsChoices(max).map((v) => [v, `${v}`, `${v} frames per second`]), fps,
+    $("set-fps-max").textContent = tr("viewer.set.fpsMax", { n: max });
+    renderSeg("set-fps", fpsChoices(max).map((v) => [v, `${v}`, tr("viewer.set.fpsChoice", { n: v })]), fps,
       (v) => { prefs.fps = v >= max ? 0 : v; sendStreamSettings(); });
-    renderSeg("set-bw", [1, 2, 4, 8].map((d) => [d, mbit(h.max_bitrate_kbps / d), `Up to ${mbit(h.max_bitrate_kbps / d)} Mbit/s`]), prefs.bw,
+    renderSeg("set-bw", [1, 2, 4, 8].map((d) => [d, mbit(h.max_bitrate_kbps / d), tr("viewer.set.bwChoice", { n: mbit(h.max_bitrate_kbps / d) })]), prefs.bw,
       (v) => { prefs.bw = v; sendStreamSettings(); });
     const scales = [1, 2, 3].filter((d) => d <= (h.max_downscale || 1));
-    renderSeg("set-scale", scales.map((d) => [d, `${Math.round(100 / d)}%`, d === 1 ? "As the host sends it" : `1/${d} of the width and height`]),
+    renderSeg("set-scale", scales.map((d) => [d, `${Math.round(100 / d)}%`, d === 1 ? tr("viewer.set.scaleFull") : tr("viewer.set.scalePart", { n: d })]),
       Math.min(prefs.scale, scales[scales.length - 1]), (v) => { prefs.scale = v; sendStreamSettings(); });
   }
-  renderSeg("set-view", [["fit", "Fit window"], ["actual", "1:1 pixels", "One stream pixel per screen pixel; scroll with the scrollbars"]], prefs.view,
+  renderSeg("set-view", [["fit", tr("viewer.set.fit")], ["actual", tr("viewer.set.actual"), tr("viewer.set.actualTitle")]], prefs.view,
     (v) => { prefs.view = v; applyView(); });
+  renderSeg("set-touch", [
+    ["touchpad", tr("viewer.set.touchpad"), tr("viewer.set.touchpadTitle")],
+    ["direct", tr("viewer.set.touchDirect"), tr("viewer.set.touchDirectTitle")],
+  ], prefs.touchMode, (v) => { prefs.touchMode = v; updateTouchCursor(v === "touchpad"); });
   renderKeyboardMode("set-kbd");
   $("set-clip").checked = clip.auto;
   $("set-wheel").checked = prefs.invertWheel;
   $("set-awake").checked = prefs.keepAlive;
+  $("set-autohide").checked = prefs.autoHide;
   $("set-awake-row").hidden = !prefs.keepAlive;
-  renderSeg("set-awake-sec", AWAKE_CHOICES.map((v) => [v, v < 60 ? `${v}s` : `${v / 60} min`, `Press F15 on the host after ${v} seconds without input`]),
+  renderSeg("set-awake-sec", AWAKE_CHOICES.map((v) => [v, v < 60 ? tr("viewer.set.seconds", { n: v }) : tr("viewer.set.minutes", { n: v / 60 }), tr("viewer.set.awakeChoice", { n: v })]),
     prefs.keepAliveSec, (v) => { prefs.keepAliveSec = v; });
 
   const live = !!dc && dc.readyState === "open";
   const badge = $("set-badge");
   if (live && applied) {
-    $("set-applied").textContent = `The host sends up to ${applied.fps} fps at up to ${mbit(applied.bitrate_kbps)} Mbit/s` +
-      (applied.downscale > 1 ? `, at 1/${applied.downscale} resolution.` : ".");
-    badge.textContent = "Applied"; badge.className = "badge good"; badge.hidden = false;
+    const p = { fps: applied.fps, mbit: mbit(applied.bitrate_kbps), n: applied.downscale };
+    $("set-applied").textContent = tr(applied.downscale > 1 ? "viewer.set.appliedScaled" : "viewer.set.applied", p);
+    badge.textContent = tr("viewer.set.appliedBadge"); badge.className = "badge good"; badge.hidden = false;
   } else {
-    $("set-applied").textContent = live || !h ? "" : "Stream settings apply when connected.";
+    $("set-applied").textContent = live || !h ? "" : tr("viewer.set.whenConnected");
     badge.hidden = true;
   }
 }
@@ -1075,6 +1656,8 @@ function applyView() {
   const dpr = window.devicePixelRatio || 1;
   video.style.width = actual ? `${video.videoWidth / dpr}px` : "";
   video.style.height = actual ? `${video.videoHeight / dpr}px` : "";
+  if (actual) resetZoom();
+  else applyZoom();
 }
 video.addEventListener("resize", applyView);
 window.addEventListener("resize", applyView);
@@ -1082,12 +1665,13 @@ window.addEventListener("resize", applyView);
 $("set-clip").addEventListener("change", (e) => setClipAuto(e.target.checked));
 $("set-wheel").addEventListener("change", (e) => { prefs.invertWheel = e.target.checked; savePrefs(); });
 $("set-awake").addEventListener("change", (e) => { prefs.keepAlive = e.target.checked; savePrefs(); renderSettings(); });
+$("set-autohide").addEventListener("change", (e) => { prefs.autoHide = e.target.checked; savePrefs(); applyAutoHide(); });
 
 // The keyboard mode is in Settings and in the keys menu.
 function renderKeyboardMode(id) {
   renderSeg(id, [
-    ["hardware", "Hardware", "Keys by position: the host's keyboard layout decides the characters. Best for shortcuts and games"],
-    ["text", "Direct text", "Types the characters of this computer's keyboard layout, whatever the host's layout is. Shortcuts still go by key position"],
+    ["hardware", tr("viewer.set.hardware"), tr("viewer.set.hardwareTitle")],
+    ["text", tr("viewer.set.text"), tr("viewer.set.textTitle")],
   ], prefs.keyboard, (v) => { prefs.keyboard = v; releaseAll(); renderKeyboardMode("keys-kbd"); });
 }
 renderKeyboardMode("keys-kbd");
@@ -1106,10 +1690,74 @@ $("set-reset").addEventListener("click", () => {
   applyView();
   sendStreamSettings();
   setClipAuto(true);
+  applyAutoHide();
   renderSettings();
   renderKeyboardMode("keys-kbd");
 });
 $("set-done").addEventListener("click", () => { closePopover("pop-settings"); stage.focus({ preventScroll: true }); });
+
+// "Auto-hide the toolbar": while connected, the toolbar folds into the notch after a few
+// seconds without the pointer near it, and comes back when the pointer reaches the top edge of
+// the screen (or leaves the page through it) or on a tap of the notch. It stays while a menu is
+// open, while it has keyboard focus and while it is being dragged. Folding it away by hand
+// keeps it folded until the notch is clicked.
+
+const AUTO_HIDE_MS = 3000;
+const NEAR_PX = 48; // how close counts as "near" the bar
+const EDGE_PX = 6; // the strip along the top edge that brings it back
+let autoHidden = false;
+let autoHideTimer = 0;
+let pointerNear = false;
+
+function toolbarBusy() {
+  return pointerNear || !!drag || toolbar.matches(":hover") || toolbar.contains(document.activeElement) ||
+    Object.keys(POPOVERS).some((id) => !$(id).hidden);
+}
+
+function scheduleAutoHide() {
+  clearTimeout(autoHideTimer);
+  if (!prefs.autoHide || state !== "connected" || toolbar.hidden) return;
+  autoHideTimer = setTimeout(() => {
+    if (toolbarBusy()) { scheduleAutoHide(); return; }
+    autoHidden = true;
+    collapseToolbar();
+  }, AUTO_HIDE_MS);
+}
+
+// Called when the setting or the connection changes.
+function applyAutoHide() {
+  if (prefs.autoHide && state === "connected") { scheduleAutoHide(); return; }
+  clearTimeout(autoHideTimer);
+  if (autoHidden) showToolbar();
+}
+
+function nearBar(x, y) {
+  const r = toolbar.querySelector(".bar").getBoundingClientRect();
+  const dx = Math.max(r.left - x, 0, x - r.right);
+  const dy = Math.max(r.top - y, 0, y - r.bottom);
+  return Math.hypot(dx, dy) <= NEAR_PX;
+}
+
+document.addEventListener("pointermove", (e) => {
+  if (!prefs.autoHide) return;
+  // A finger on the screen is controlling the host, not looking for the toolbar.
+  if (e.pointerType === "touch") { pointerNear = false; return; }
+  if (autoHidden) {
+    if (e.clientY - stage.getBoundingClientRect().top <= EDGE_PX) showToolbar();
+    return;
+  }
+  if (toolbar.hidden) return;
+  pointerNear = nearBar(e.clientX, e.clientY);
+  if (pointerNear) scheduleAutoHide();
+}, true);
+// A quick flick out of the window can skip the top strip; leaving through the top counts too.
+document.documentElement.addEventListener("pointerleave", (e) => {
+  pointerNear = false;
+  if (prefs.autoHide && autoHidden && e.pointerType !== "touch" && e.clientY <= 0) showToolbar();
+});
+// Using the toolbar restarts the countdown.
+toolbar.addEventListener("pointerdown", scheduleAutoHide);
+toolbar.addEventListener("focusout", scheduleAutoHide);
 
 // ---------------------------------------------------------------- file transfer
 //
@@ -1139,15 +1787,15 @@ function fmtBytes(n) {
   const u = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
   while (n >= 1000 && i < u.length - 1) { n /= 1000; i++; }
-  return `${n >= 100 || i === 0 ? n.toFixed(0) : n.toFixed(1)} ${u[i]}`;
+  return `${n >= 100 || i === 0 ? I18N.number(n) : I18N.number(n, 1, 1)} ${u[i]}`;
 }
 function fmtTime(s) {
   if (!isFinite(s) || s < 0) return "";
   s = Math.ceil(s);
-  if (s < 60) return `~${s}s left`;
+  if (s < 60) return tr("viewer.files.leftSeconds", { s });
   const m = Math.floor(s / 60);
-  if (m < 60) return `~${m}m ${s % 60}s left`;
-  return `~${Math.floor(m / 60)}h ${m % 60}m left`;
+  if (m < 60) return tr("viewer.files.leftMinutes", { m, s: s % 60 });
+  return tr("viewer.files.leftHours", { h: Math.floor(m / 60), m: m % 60 });
 }
 
 function openFilesChannel() {
@@ -1157,14 +1805,14 @@ function openFilesChannel() {
   fdc.bufferedAmountLowThreshold = BUF_HIGH / 2;
   fdc.onmessage = (ev) => (typeof ev.data === "string" ? onFilesText(ev.data) : onFilesData(ev.data));
   fdc.onbufferedamountlow = wakeUploads;
-  fdc.onclose = () => { fdc = null; fileHost.status = null; failActive("The connection closed."); renderFiles(); };
+  fdc.onclose = () => { fdc = null; fileHost.status = null; failActive(tr("viewer.files.closed")); renderFiles(); };
 }
 
 function closeFilesChannel() {
   if (fdc) { fdc.onclose = null; fdc.onmessage = null; fdc.close(); fdc = null; }
   fileHost.status = null;
   fileHost.listing = null;
-  failActive("Disconnected.");
+  failActive(tr("viewer.files.disconnected"));
   renderFiles();
 }
 
@@ -1180,7 +1828,8 @@ function onFilesText(data) {
       break;
     case "unavailable":
       fileHost.status = "unavailable";
-      fileHost.reason = m.reason || "File transfer isn't available on the host.";
+      // The host's reason is in English.
+      fileHost.reason = m.reason || tr("viewer.files.unavailable");
       break;
     case "list":
       if (m.path !== fileHost.cwd) return;
@@ -1284,7 +1933,7 @@ async function pumpUpload(t) {
           block = { start: t.sent, bytes: new Uint8Array(await t.file.slice(t.sent, end).arrayBuffer()) };
         } catch (err) {
           fsend({ op: "cancel", id: t.id });
-          finish(t, "error", `Can't read the file here: ${err.message || err}`);
+          finish(t, "error", I18N.t("viewer.files.cantRead", { error: err.message || err }));
           renderFiles();
           return;
         }
@@ -1346,20 +1995,20 @@ const ICONS = {
   file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
 };
 
-function xferMeta(t) {
-  const where = t.dir === "up" ? "Uploading to host" : "Downloading here";
-  switch (t.state) {
-    case "queued": return [where.replace("Uploading", "Waiting to upload"), "queued"];
-    case "starting": return [t.dir === "up" ? "Starting upload" : "Starting download", ""];
-    case "done": return t.dir === "up"
-      ? ["Saved on host", `Downloads${sep()}${t.hostName || t.name}`]
-      : ["Downloaded", "saved by your browser"];
-    case "cancelled": return ["Cancelled", ""];
-    case "error": return ["Failed", t.error || ""];
+function xferMeta(x) {
+  const where = tr(x.dir === "up" ? "viewer.files.uploading" : "viewer.files.downloading");
+  switch (x.state) {
+    case "queued": return [tr("viewer.files.waitingUpload"), tr("viewer.files.queued")];
+    case "starting": return [tr(x.dir === "up" ? "viewer.files.startingUpload" : "viewer.files.startingDownload"), ""];
+    case "done": return x.dir === "up"
+      ? [tr("viewer.files.savedOnHost"), `Downloads${sep()}${x.hostName || x.name}`]
+      : [tr("viewer.files.downloaded"), tr("viewer.files.savedByBrowser")];
+    case "cancelled": return [tr("viewer.files.cancelled"), ""];
+    case "error": return [tr("viewer.files.failed"), x.error || ""];
   }
-  if (t.paused) return ["Paused", ""];
-  const rest = t.speed > 0 ? fmtTime((t.size - t.done) / t.speed) : "";
-  return [where, [t.speed > 0 ? `${fmtBytes(t.speed)}/s` : "", rest].filter(Boolean).join(" • ")];
+  if (x.paused) return [tr("viewer.files.paused"), ""];
+  const rest = x.speed > 0 ? fmtTime((x.size - x.done) / x.speed) : "";
+  return [where, [x.speed > 0 ? tr("viewer.files.speed", { size: fmtBytes(x.speed) }) : "", rest].filter(Boolean).join(" • ")];
 }
 
 function renderXfers() {
@@ -1394,7 +2043,7 @@ function renderXfers() {
     if (btns.dataset.want !== want) {
       btns.dataset.want = want;
       btns.innerHTML = want.split(" ").map((a) => {
-        const title = { pause: "Pause", resume: "Resume", cancel: "Cancel", remove: "Remove from the list" }[a];
+        const title = tr({ pause: "viewer.files.pause", resume: "viewer.files.resume", cancel: "viewer.files.cancel", remove: "viewer.files.remove" }[a]);
         return `<button type="button" class="${a === "remove" ? "cancel" : a}" data-act="${a}" title="${title}" aria-label="${title}">${ICONS[a === "remove" ? "cancel" : a]}</button>`;
       }).join("");
     }
@@ -1406,20 +2055,20 @@ function renderXfers() {
 function renderFiles() {
   const active = activeXfers();
   $("btn-files").classList.toggle("active", active.length > 0);
-  $("btn-files").title = active.length ? `File transfers (${active.length} active)` : "File transfers";
+  $("btn-files").title = active.length ? tr("viewer.files.buttonActive", { n: active.length }) : tr("viewer.files.button");
   const badge = $("files-badge");
   badge.hidden = active.length === 0;
-  badge.textContent = `${active.length} active`;
+  badge.textContent = tr("viewer.files.active", { n: active.length });
   const note = $("files-note");
   const usable = filesReady();
   if (fileHost.status === "unavailable") { note.hidden = false; note.className = "note warn"; note.textContent = fileHost.reason; }
-  else if (!usable && dc && dc.readyState === "open" && fileHost.status === null && info.files) { note.hidden = false; note.className = "note"; note.textContent = "Connecting to the host's files…"; }
+  else if (!usable && dc && dc.readyState === "open" && fileHost.status === null && info.files) { note.hidden = false; note.className = "note"; note.textContent = tr("viewer.files.connecting"); }
   else note.hidden = true;
   $("dropzone").classList.toggle("disabled", !usable);
-  $("drop-dest").textContent = fileHost.downloads ? `To ${fileHost.downloads} on the host` : "They go to the Downloads folder on the host";
-  $("drop-overlay-dest").textContent = fileHost.downloads ? `Files go to ${fileHost.downloads}` : "Files go to the Downloads folder";
+  $("drop-dest").textContent = fileHost.downloads ? tr("viewer.files.dropDestPath", { path: fileHost.downloads }) : tr("viewer.files.dropDest");
+  $("drop-overlay-dest").textContent = fileHost.downloads ? tr("viewer.files.overlayDestPath", { path: fileHost.downloads }) : tr("viewer.files.overlayDest");
   $("fb-toggle").disabled = !usable;
-  $("fb-toggle-label").textContent = fileHost.browsing ? "Hide host files" : "Get files from host";
+  $("fb-toggle-label").textContent = tr(fileHost.browsing ? "viewer.files.hideBrowse" : "viewer.files.browse");
   $("fb").hidden = !fileHost.browsing || !usable;
   $("xfer-clear").hidden = !xfers.some((t) => !["running", "starting", "queued"].includes(t.state));
   renderXfers();
@@ -1462,7 +2111,7 @@ function renderBrowser() {
     b.addEventListener("click", () => listDir(path));
     crumbs.appendChild(b);
   };
-  crumb(fileHost.user ? `${fileHost.user} (home)` : "Home", "");
+  crumb(fileHost.user ? tr("viewer.files.userHome", { user: fileHost.user }) : tr("viewer.files.home"), "");
   parts.forEach((p, i) => {
     crumbs.appendChild(document.createTextNode("/"));
     crumb(p, parts.slice(0, i + 1).join("/"));
@@ -1472,10 +2121,10 @@ function renderBrowser() {
   list.textContent = "";
   const l = fileHost.listing;
   const msg = (text, cls = "empty") => { const d = document.createElement("div"); d.className = cls; d.textContent = text; list.appendChild(d); };
-  if (!l) return msg("Loading…");
+  if (!l) return msg(tr("viewer.files.loading"));
   if (l.error) return msg(l.error, "empty err");
   const shown = l.entries.filter((e) => fileHost.hidden || !e.hidden);
-  if (!shown.length) return msg("This folder is empty.");
+  if (!shown.length) return msg(tr("viewer.files.empty"));
   for (const e of shown) {
     const b = document.createElement("button");
     b.type = "button";
@@ -1485,7 +2134,7 @@ function renderBrowser() {
     b.querySelector(".fname").textContent = e.name;
     b.querySelector(".fsize").textContent = e.dir ? "" : fmtBytes(e.size);
     const path = fileHost.cwd ? `${fileHost.cwd}/${e.name}` : e.name;
-    b.title = e.dir ? `Open ${e.name}` : `Download ${e.name} (${fmtBytes(e.size)})`;
+    b.title = e.dir ? tr("viewer.files.open", { name: e.name }) : tr("viewer.files.download", { name: e.name, size: fmtBytes(e.size) });
     b.addEventListener("click", () => (e.dir ? listDir(path) : startDownload(path, e.name, e.size)));
     list.appendChild(b);
   }
@@ -1535,7 +2184,7 @@ function droppedFiles(e) {
   [...e.dataTransfer.files].forEach((f, i) => {
     const entry = items[i] && items[i].webkitGetAsEntry ? items[i].webkitGetAsEntry() : null;
     if (entry && entry.isDirectory) {
-      xfers.unshift({ id: nextXferId++, dir: "up", name: f.name, size: 0, done: 0, state: "error", error: "Folders can't be sent. Zip it first." });
+      xfers.unshift({ id: nextXferId++, dir: "up", name: f.name, size: 0, done: 0, state: "error", error: tr("viewer.files.folderNotSent") });
     } else out.push(f);
   });
   return out;
@@ -1587,13 +2236,13 @@ async function start() {
     info = await api("/api/info");
   } catch (err) {
     if (err.status === 401) { showLogin(); return; }
-    setStatus(`error: ${err.message}`, "error");
+    setStatus("viewer.status.error", "error", { message: err.message });
     return;
   }
   $("pop-host").textContent = info.hostname || "Dalker";
   $("s-system").textContent = [info.os, info.capture].filter(Boolean).join(" · ") || "–";
   $("s-version").textContent = info.version ? `Dalker ${info.version}` : "–";
-  if (info.os === "linux") $("btn-cad").title = "Send Ctrl+Alt+Del to the host (GNOME: log out / power off dialog)";
+  renderKeysMenu();
   $("set-version").textContent = info.version ? `v${info.version}` : "";
   $("btn-files").hidden = !info.files;
   renderSettings();
@@ -1602,5 +2251,31 @@ async function start() {
   await connect();
 }
 
-setStatus("disconnected", "idle");
+// ---------------------------------------------------------------- language
+//
+// Chosen in Settings and kept in this browser; "auto" follows the browser's languages. Text set
+// by this script is drawn again in the new language.
+
+function renderLanguagePicker() {
+  const select = $("set-lang");
+  const auto = new Option(tr("language.autoBrowser"), "auto");
+  select.replaceChildren(auto, ...I18N.languages().map((l) => new Option(l.name, l.code)));
+  select.value = I18N.choice();
+}
+$("set-lang").addEventListener("change", (e) => { I18N.setChoice(e.target.value); });
+I18N.onChange(() => {
+  renderLanguagePicker();
+  setStatus(statusKey, state, statusParams);
+  if (state !== "connected") hideHint();
+  renderClip();
+  renderSettings();
+  renderKeyboardMode("keys-kbd");
+  renderFiles();
+  if (fileHost.browsing) renderBrowser();
+  $("btn-fullscreen").title = tr(document.fullscreenElement ? "viewer.btn.exitFullscreen" : "viewer.btn.fullscreen");
+  renderKeysMenu();
+});
+renderLanguagePicker();
+
+setStatus("viewer.status.disconnected", "idle");
 start();

@@ -1,0 +1,96 @@
+name: Release (macOS)
+
+# Builds Dalker-<version>.pkg for the same vX.Y.Z tag as release.yml and adds it to that
+# release. Separate on purpose: a Mac failure never holds back the Linux and Windows release,
+# and this can be run again for one tag (Actions > Release (macOS) > Run workflow).
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to add the macOS package to (empty = build only)
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  DALKER_REQUIRE_NASM: 1
+
+jobs:
+  macos:
+    # Apple silicon, macOS 14 or later.
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'push' && github.ref || inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: openh264-asm
+      - run: brew install nasm
+
+      - name: Check tag against Cargo.toml
+        run: |
+          sh scripts/version.sh check
+          version=$(sh scripts/version.sh)
+          if [ -n "$TAG" ] && [ "$TAG" != "v$version" ]; then
+            echo "::error::Tag $TAG does not match Cargo.toml version $version (expected v$version)"
+            exit 1
+          fi
+
+      - run: cargo build --release --locked -p dalker-agent
+
+      # The project's self-signed code-signing certificate keeps macOS permissions across
+      # updates. Without the secrets the app is signed ad hoc (fine for a test build).
+      - name: Import signing certificate
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          if [ -z "$CERT_P12" ]; then
+            echo "::warning::MACOS_CERT_P12 is not set; signing ad hoc"
+            exit 0
+          fi
+          kc="$RUNNER_TEMP/dalker.keychain-db"
+          kcpass=$(uuidgen)
+          security create-keychain -p "$kcpass" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kcpass" "$kc"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kcpass" "$kc" >/dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          echo "DALKER_SIGN_IDENTITY=Dalker" >> "$GITHUB_ENV"
+
+      - name: Package
+        run: |
+          sh packaging/macos/build-pkg.sh target/release/dalkerd dist
+          tar -C target/release -czf dist/dalker-agent-macos-arm64.tar.gz dalkerd
+          cd dist && shasum -a 256 *.pkg *.tar.gz > SHA256SUMS-macos.txt
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos
+          path: dist/*
+          if-no-files-found: error
+
+      # release.yml creates the release; wait for it (up to 30 minutes), then add to it.
+      - name: Add to the GitHub Release
+        if: env.TAG != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for i in $(seq 60); do
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && break
+            sleep 30
+          done
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber dist/*

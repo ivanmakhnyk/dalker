@@ -21,6 +21,10 @@ use crate::cli::{self, OnOff};
 pub struct Wanted {
     pub web: Option<SocketAddr>,
     pub mcp: Option<SocketAddr>,
+    /// HTTPS on both ports (`DALKER_TLS`).
+    pub tls: bool,
+    /// Plain HTTP from other computers is sent to HTTPS (`DALKER_TLS_REDIRECT`).
+    pub tls_redirect: bool,
 }
 
 /// The listener settings the agent started with, and which of them the config file can't
@@ -32,6 +36,9 @@ pub struct Startup {
     pub bind: SocketAddr,
     pub mcp: bool,
     pub mcp_bind: SocketAddr,
+    pub tls: bool,
+    pub tls_redirect: bool,
+    /// Config keys the file can't change (the stream limits' too, see `stream.rs`).
     pub pinned: Vec<&'static str>,
 }
 
@@ -40,12 +47,16 @@ pub const KEY_WEB: &str = "DALKER_WEB";
 pub const KEY_BIND: &str = "DALKER_BIND";
 pub const KEY_MCP: &str = "DALKER_MCP";
 pub const KEY_MCP_BIND: &str = "DALKER_MCP_BIND";
+pub const KEY_TLS: &str = "DALKER_TLS";
+pub const KEY_TLS_REDIRECT: &str = "DALKER_TLS_REDIRECT";
 
 impl Startup {
     pub fn wanted(&self) -> Wanted {
         Wanted {
             web: self.web.then_some(self.bind),
             mcp: self.mcp.then_some(self.mcp_bind),
+            tls: self.tls,
+            tls_redirect: self.tls_redirect,
         }
     }
 
@@ -64,7 +75,7 @@ impl Startup {
         };
         let switch = |key: &str, started: bool| match get(key) {
             Err(()) => started,
-            Ok(None) => key == KEY_WEB,
+            Ok(None) => key == KEY_WEB || key == KEY_TLS,
             Ok(Some(v)) => OnOff::parse(v).unwrap_or(started),
         };
         let addr = |key: &str, started: SocketAddr, default: &str| match get(key) {
@@ -77,6 +88,8 @@ impl Startup {
         Wanted {
             web: web.then(|| addr(KEY_BIND, self.bind, cli::DEFAULT_BIND)),
             mcp: mcp.then(|| addr(KEY_MCP_BIND, self.mcp_bind, cli::DEFAULT_MCP_BIND)),
+            tls: switch(KEY_TLS, self.tls),
+            tls_redirect: switch(KEY_TLS_REDIRECT, self.tls_redirect),
         }
     }
 }
@@ -86,6 +99,8 @@ impl Startup {
 pub struct Status {
     pub web: Mutex<Option<SocketAddr>>,
     pub mcp: Mutex<Option<SocketAddr>>,
+    /// SHA-256 fingerprint of the certificate served, while HTTPS is on.
+    pub fingerprint: Mutex<Option<String>>,
 }
 
 /// What the web listener serves.
@@ -105,8 +120,8 @@ pub struct McpParts {
 }
 
 struct Running {
-    /// The address asked for (may have port 0).
-    wanted: SocketAddr,
+    /// The address asked for (may have port 0) and the TLS setup.
+    wanted: Setup,
     stop: oneshot::Sender<()>,
     task: JoinHandle<()>,
 }
@@ -149,13 +164,24 @@ pub async fn supervise(
     mcp: McpParts,
     mut stop: watch::Receiver<bool>,
     status: Arc<Status>,
+    certs: crate::tls::Certs,
 ) {
     let mut web_slot = Slot::default();
     let mut mcp_slot = Slot::default();
+    let mut certificate = Certificate::default();
     loop {
         let want = *wanted.borrow_and_update();
-        reconcile_web(&mut web_slot, want.web, &web, &status).await;
-        reconcile_mcp(&mut mcp_slot, want.mcp, &mcp, &status).await;
+        let tls = if want.tls && (want.web.is_some() || want.mcp.is_some()) {
+            tls_for(
+                certificate.get(&certs, want.tls_redirect),
+                want.tls_redirect,
+            )
+        } else {
+            None
+        };
+        *status.fingerprint.lock().unwrap() = tls.as_ref().and_then(|t| t.fingerprint.clone());
+        reconcile_web(&mut web_slot, want.web, tls.as_ref(), &web, &status).await;
+        reconcile_mcp(&mut mcp_slot, want.mcp, tls.as_ref(), &mcp, &status).await;
         tokio::select! {
             _ = wanted.changed() => {}
             _ = stop.wait_for(|s| *s) => break,
@@ -171,9 +197,86 @@ pub async fn supervise(
     }
 }
 
+/// The certificate, read once (and again after an error, every few seconds).
+#[derive(Default)]
+struct Certificate {
+    identity: Option<dalker_web::tls::Identity>,
+    last_error: Option<String>,
+}
+
+impl Certificate {
+    fn get(
+        &mut self,
+        certs: &crate::tls::Certs,
+        redirect: bool,
+    ) -> Option<&dalker_web::tls::Identity> {
+        if self.identity.is_none() {
+            match certs.load() {
+                Ok(id) => {
+                    tracing::info!(
+                        fingerprint = %id.fingerprint,
+                        "HTTPS certificate: {}",
+                        id.cert_path.display()
+                    );
+                    self.identity = Some(id);
+                    self.last_error = None;
+                }
+                Err(e) => {
+                    let e = format!("{e:#}");
+                    if self.last_error.as_ref() != Some(&e) {
+                        if redirect {
+                            tracing::error!(
+                                "HTTPS not available: {e} (plain HTTP from other computers is \
+                                 refused until it is; retrying)"
+                            );
+                        } else {
+                            tracing::error!("HTTPS not available: {e} (plain HTTP only; retrying)");
+                        }
+                        self.last_error = Some(e);
+                    }
+                }
+            }
+        }
+        self.identity.as_ref()
+    }
+}
+
+/// How the listeners take TLS right now.
+struct Tls {
+    tls: dalker_web::tls::Tls,
+    /// `None` while HTTPS is required but the certificate can't be loaded.
+    fingerprint: Option<String>,
+}
+
+/// TLS for the listeners from the certificate, if it loaded. Without one, HTTPS with the
+/// redirect fails closed: the listeners refuse plain HTTP from other computers rather than
+/// fall back to serving it (logins would cross the network in the clear).
+fn tls_for(identity: Option<&dalker_web::tls::Identity>, redirect: bool) -> Option<Tls> {
+    match identity {
+        Some(id) => Some(Tls {
+            tls: dalker_web::tls::Tls::new(id, redirect),
+            fingerprint: Some(id.fingerprint.clone()),
+        }),
+        None if redirect => Some(Tls {
+            tls: dalker_web::tls::Tls::unavailable(),
+            fingerprint: None,
+        }),
+        None => None,
+    }
+}
+
+/// What a running listener is compared by: its address, and with TLS the certificate (none
+/// while it can't be loaded) and whether plain HTTP is redirected.
+type Setup = (SocketAddr, Option<(Option<String>, bool)>);
+
+fn setup(addr: SocketAddr, tls: Option<&Tls>) -> Setup {
+    (addr, tls.map(|t| (t.fingerprint.clone(), t.tls.redirect)))
+}
+
 async fn reconcile_web(
     slot: &mut Slot,
     want: Option<SocketAddr>,
+    tls: Option<&Tls>,
     parts: &WebParts,
     status: &Status,
 ) {
@@ -181,7 +284,8 @@ async fn reconcile_web(
         slot.running = None;
         *status.web.lock().unwrap() = None;
     }
-    if slot.running.as_ref().map(|r| r.wanted) == want {
+    let want_setup = want.map(|a| setup(a, tls));
+    if slot.running.as_ref().map(|r| r.wanted.clone()) == want_setup {
         return;
     }
     let was_running = slot.running.is_some();
@@ -203,6 +307,7 @@ async fn reconcile_web(
     };
     let local = listener.local_addr().unwrap_or(addr);
     let (stop_tx, stop_rx) = oneshot::channel::<()>();
+    let tls = tls.map(|t| t.tls.clone());
     let (auth, signaling, extra) = (
         Arc::clone(&parts.auth),
         Arc::clone(&parts.signaling),
@@ -213,13 +318,13 @@ async fn reconcile_web(
             let _ = stop_rx.await;
         };
         if let Err(e) =
-            dalker_web::serve_listener_with(listener, auth, signaling, extra, shutdown).await
+            dalker_web::serve_listener_tls(listener, tls, auth, signaling, extra, shutdown).await
         {
             tracing::error!("web server failed: {e:#}");
         }
     });
     slot.running = Some(Running {
-        wanted: addr,
+        wanted: want_setup.expect("an address"),
         stop: stop_tx,
         task,
     });
@@ -230,6 +335,7 @@ async fn reconcile_web(
 async fn reconcile_mcp(
     slot: &mut Slot,
     want: Option<SocketAddr>,
+    tls: Option<&Tls>,
     parts: &McpParts,
     status: &Status,
 ) {
@@ -237,7 +343,8 @@ async fn reconcile_mcp(
         slot.running = None;
         *status.mcp.lock().unwrap() = None;
     }
-    if slot.running.as_ref().map(|r| r.wanted) == want {
+    let want_setup = want.map(|a| setup(a, tls));
+    if slot.running.as_ref().map(|r| r.wanted.clone()) == want_setup {
         return;
     }
     let was_running = slot.running.is_some();
@@ -254,18 +361,29 @@ async fn reconcile_mcp(
         return;
     };
     let loopback = addr.ip().is_loopback();
-    if !loopback && !parts.allow_plaintext {
+    // With the redirect, other computers' requests are only served over HTTPS (one that
+    // still uses http:// is answered with the redirect alone).
+    let https_only = tls.is_some_and(|t| t.tls.redirect);
+    if !loopback && !parts.allow_plaintext && !https_only {
         return slot.fail(
             "MCP server",
             format!(
                 "{addr} is not a loopback address and DALKER_MCP_ALLOW_PLAINTEXT is off (bearer tokens would \
                  cross the network as plain HTTP). Set DALKER_MCP_BIND to 127.0.0.1 and use an SSH tunnel, VPN \
-                 or TLS reverse proxy, or allow plain HTTP on a network you trust"
+                 or TLS reverse proxy, turn on DALKER_TLS_REDIRECT, or allow plain HTTP on a network you trust"
             ),
         );
     }
     if !loopback {
-        tracing::info!("MCP server reachable from the network on {addr} (plain HTTP)");
+        let how = match tls {
+            Some(t) if !t.tls.has_certificate() => {
+                "HTTPS only, not available until the certificate loads"
+            }
+            Some(t) if t.tls.redirect => "HTTPS",
+            Some(_) => "HTTPS and plain HTTP",
+            None => "plain HTTP",
+        };
+        tracing::info!("MCP server reachable from the network on {addr} ({how})");
     }
     if parts.server.tokens().is_empty() {
         tracing::warn!("no MCP tokens yet: create one in the settings window or with `dalkerd mcp-token create`");
@@ -277,16 +395,29 @@ async fn reconcile_mcp(
     let local = listener.local_addr().unwrap_or(addr);
     let (stop_tx, stop_rx) = oneshot::channel::<()>();
     let server = parts.server.clone();
+    let tls = tls.map(|t| t.tls.clone());
+    match &tls {
+        Some(t) if t.has_certificate() => {
+            tracing::info!("MCP server on http://{local}/mcp and https://{local}/mcp")
+        }
+        Some(_) => tracing::warn!(
+            "MCP server on http://{local}/mcp for this computer only: HTTPS is required and not available yet"
+        ),
+        None => tracing::info!("MCP server on http://{local}/mcp"),
+    }
     let task = tokio::spawn(async move {
         let shutdown = async move {
             let _ = stop_rx.await;
         };
-        if let Err(e) = server.serve(listener, shutdown).await {
+        let served = server.serve_with(shutdown, move |router, shutdown| {
+            dalker_web::tls::serve(listener, tls, router, shutdown)
+        });
+        if let Err(e) = served.await {
             tracing::error!("MCP server failed: {e:#}");
         }
     });
     slot.running = Some(Running {
-        wanted: addr,
+        wanted: want_setup.expect("an address"),
         stop: stop_tx,
         task,
     });
@@ -296,22 +427,24 @@ async fn reconcile_mcp(
 
 /// Follows the listener settings in the config file and publishes them on `wanted`.
 pub async fn follow_config(
-    path: std::path::PathBuf,
+    mut config: watch::Receiver<crate::config_watch::Snapshot>,
     startup: Startup,
     wanted: watch::Sender<Wanted>,
 ) {
-    loop {
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        // A file that can't be read right now changes nothing.
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let now = startup.wanted_from(&cli::parse_config(&text));
+    while config.changed().await.is_ok() {
+        let snapshot = config.borrow_and_update().clone();
+        let now = startup.wanted_from(&snapshot);
         wanted.send_if_modified(|w| {
             if *w == now {
                 return false;
             }
-            tracing::info!(web = ?now.web, mcp = ?now.mcp, "listener settings changed on the host");
+            tracing::info!(
+                web = ?now.web,
+                mcp = ?now.mcp,
+                tls = now.tls,
+                tls_redirect = now.tls_redirect,
+                "listener settings changed on the host"
+            );
             *w = now;
             true
         });
@@ -328,6 +461,8 @@ mod tests {
             bind: "0.0.0.0:9000".parse().unwrap(),
             mcp: false,
             mcp_bind: "127.0.0.1:9001".parse().unwrap(),
+            tls: true,
+            tls_redirect: false,
             pinned,
         }
     }
@@ -340,6 +475,45 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_certificate_with_the_redirect_fails_closed() {
+        let dir = std::env::temp_dir().join(format!(
+            "dalker-listeners-{}-{}",
+            std::process::id(),
+            rand::random::<u32>()
+        ));
+        // The host's own files, as with --tls-cert and --tls-key, and they are gone.
+        let certs = crate::tls::Certs::new(
+            Some(dir.join("missing-cert.pem")),
+            Some(dir.join("missing-key.pem")),
+            &dir.join("config.env"),
+        );
+        let mut certificate = Certificate::default();
+        assert!(certificate.get(&certs, true).is_none());
+        let addr: SocketAddr = "0.0.0.0:28742".parse().unwrap();
+
+        // Redirect on: the listener still runs, but refuses plain HTTP from other computers.
+        let tls = tls_for(None, true).expect("TLS stays required");
+        assert!(tls.tls.redirect && !tls.tls.has_certificate());
+        assert_eq!(tls.fingerprint, None);
+        assert_eq!(setup(addr, Some(&tls)), (addr, Some((None, true))));
+
+        // Redirect off: plain HTTP was allowed anyway, so it is served as before.
+        assert!(tls_for(None, false).is_none());
+
+        // Once the certificate loads the setup changes, so the listener restarts with HTTPS.
+        dalker_web::tls::write_self_signed(&dir, &["localhost".into()]).unwrap();
+        let id = dalker_web::tls::Identity::from_files(
+            &dir.join(dalker_web::tls::CERT_FILE),
+            &dir.join(dalker_web::tls::KEY_FILE),
+        )
+        .unwrap();
+        let tls = tls_for(Some(&id), true).unwrap();
+        assert!(tls.tls.has_certificate());
+        assert_ne!(setup(addr, Some(&tls)), (addr, Some((None, true))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn file_settings_and_defaults() {
         let s = startup(vec![]);
         // An empty file means the defaults: web on its default port, MCP off.
@@ -347,19 +521,25 @@ mod tests {
             s.wanted_from(&[]),
             Wanted {
                 web: Some("0.0.0.0:8742".parse().unwrap()),
-                mcp: None
+                mcp: None,
+                tls: true,
+                tls_redirect: false,
             }
         );
         let w = s.wanted_from(&kv(&[
             ("DALKER_WEB", "off"),
             ("DALKER_MCP", "on"),
             ("DALKER_MCP_BIND", "127.0.0.1:7000"),
+            ("DALKER_TLS", "off"),
+            ("DALKER_TLS_REDIRECT", "on"),
         ]));
         assert_eq!(
             w,
             Wanted {
                 web: None,
-                mcp: Some("127.0.0.1:7000".parse().unwrap())
+                mcp: Some("127.0.0.1:7000".parse().unwrap()),
+                tls: false,
+                tls_redirect: true,
             }
         );
         // Values that don't parse keep what the agent started with; the last line wins.
@@ -372,24 +552,29 @@ mod tests {
             w,
             Wanted {
                 web: Some("0.0.0.0:9000".parse().unwrap()),
-                mcp: None
+                mcp: None,
+                tls: true,
+                tls_redirect: false,
             }
         );
     }
 
     #[test]
     fn pinned_settings_ignore_the_file() {
-        let s = startup(vec![KEY_BIND, KEY_MCP]);
+        let s = startup(vec![KEY_BIND, KEY_MCP, KEY_TLS]);
         let w = s.wanted_from(&kv(&[
             ("DALKER_BIND", "0.0.0.0:1234"),
             ("DALKER_MCP", "on"),
             ("DALKER_WEB", "on"),
+            ("DALKER_TLS", "off"),
         ]));
         assert_eq!(
             w,
             Wanted {
                 web: Some("0.0.0.0:9000".parse().unwrap()),
-                mcp: None
+                mcp: None,
+                tls: true,
+                tls_redirect: false,
             }
         );
     }

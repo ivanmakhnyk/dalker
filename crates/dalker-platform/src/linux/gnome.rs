@@ -13,22 +13,21 @@
 //!   the same extension also exports the shell's clipboard text ([`GnomeClipboard`]).
 
 use std::collections::HashMap;
-use std::io::Read;
-use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Condvar, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use bytes::Bytes;
 use dalker_core::{
-    CaptureError, Clipboard, ClipboardError, DisplayInfo, PixelFormat, RawFrame, ScreenCapturer,
+    CaptureError, Clipboard, ClipboardError, DisplayInfo, PlatformError, RawFrame, ScreenCapturer,
     ViewerIndicator,
 };
 use zbus::blocking::fdo::DBusProxy;
 use zbus::blocking::{Connection, Proxy};
 use zbus::names::BusName;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+
+use super::gst::{self, backend, GstStream};
 
 const SC: &str = "org.gnome.Mutter.ScreenCast";
 const SC_PATH: &str = "/org/gnome/Mutter/ScreenCast";
@@ -39,7 +38,7 @@ const BUS_NAME: &str = "io.github.ivanmakhnyk.Dalker";
 const BORDER: &str = "io.github.ivanmakhnyk.Dalker.Border";
 const BORDER_PATH: &str = "/io/github/ivanmakhnyk/Dalker/Border";
 
-fn name_has_owner(conn: &Connection, name: &str) -> bool {
+pub(super) fn name_has_owner(conn: &Connection, name: &str) -> bool {
     let Ok(bus_name) = BusName::try_from(name) else {
         return false;
     };
@@ -106,7 +105,7 @@ pub const BORDER_INSET: u32 = 5;
 
 /// Stream pixels to cut from each edge for a monitor `stream_width` pixels wide that
 /// takes `layout_width` layout pixels (more than [`BORDER_INSET`] when it is scaled).
-fn border_crop(stream_width: u32, layout_width: u32) -> u32 {
+pub(super) fn border_crop(stream_width: u32, layout_width: u32) -> u32 {
     if layout_width == 0 {
         return BORDER_INSET;
     }
@@ -114,13 +113,14 @@ fn border_crop(stream_width: u32, layout_width: u32) -> u32 {
 }
 
 /// One logical monitor (a monitor, or mirrored monitors) in layout coordinates.
+/// `primary` marks the one that is streamed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LogicalRect {
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-    primary: bool,
+pub(super) struct LogicalRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub primary: bool,
 }
 
 /// Size a monitor takes up in the layout: rotated by `transform` (odd values are
@@ -142,7 +142,7 @@ fn layout_size(mode: (i32, i32), scale: f64, transform: u32, logical_pixels: boo
     )
 }
 
-fn layout_of(rects: &[LogicalRect]) -> Option<MonitorLayout> {
+pub(super) fn layout_of(rects: &[LogicalRect]) -> Option<MonitorLayout> {
     let primary = rects.iter().find(|r| r.primary).or_else(|| rects.first())?;
     let min_x = rects.iter().map(|r| r.x).min()?;
     let min_y = rects.iter().map(|r| r.y).min()?;
@@ -196,7 +196,7 @@ pub fn monitor_layout(conn: &Connection) -> Option<MonitorLayout> {
     let logical_pixels = props
         .get("layout-mode")
         .and_then(|v| u32::try_from(v.clone()).ok())
-        .map_or(true, |m| m == 1);
+        .is_none_or(|m| m == 1);
     let current_mode = |spec: &MonitorSpec| -> Option<(i32, i32)> {
         let (_, modes, _) = monitors.iter().find(|(s, _, _)| s == spec)?;
         modes
@@ -227,32 +227,14 @@ pub fn monitor_layout(conn: &Connection) -> Option<MonitorLayout> {
 
 // ---------------------------------------------------------------------------- capture
 
-struct Shared {
-    /// (sequence, latest frame bytes). The reader overwrites, so slow consumers see fresh frames.
-    latest: Mutex<(u64, Option<Bytes>)>,
-    cond: Condvar,
-    closed: AtomicBool,
-    /// Set when we stop the session ourselves, so its end is not reported as GNOME's.
-    stopping: AtomicBool,
-}
-
 pub struct GnomeCapturer {
     conn: Connection,
     session_path: OwnedObjectPath,
-    child: Child,
-    reader: Option<JoinHandle<()>>,
-    shared: Arc<Shared>,
-    size: (u32, u32),
-    seen: u64,
-    start: Instant,
+    stream: GstStream,
 }
 
 fn unsupported(msg: impl std::fmt::Display) -> CaptureError {
     CaptureError::Unsupported(msg.to_string())
-}
-
-fn backend(ctx: &str, e: impl std::fmt::Display) -> CaptureError {
-    CaptureError::Backend(format!("{ctx}: {e}"))
 }
 
 impl GnomeCapturer {
@@ -268,16 +250,7 @@ impl GnomeCapturer {
                 "org.gnome.Mutter.ScreenCast is not on the session bus",
             ));
         }
-        if Command::new("gst-launch-1.0")
-            .arg("--version")
-            .stdout(Stdio::null())
-            .status()
-            .is_err()
-        {
-            return Err(unsupported(
-                "gst-launch-1.0 not found (install gstreamer1.0-tools and gstreamer1.0-pipewire)",
-            ));
-        }
+        gst::check_installed()?;
 
         let sc = Proxy::new(&conn, SC, SC_PATH, SC).map_err(|e| backend("ScreenCast proxy", e))?;
         let session_path: OwnedObjectPath = sc
@@ -345,72 +318,14 @@ impl GnomeCapturer {
             ));
         }
 
-        // Fixed output size: if the monitor is resized, frames are rescaled instead of
-        // changing size mid-stream; the stride below is always w*4.
-        let mut cmd = Command::new("gst-launch-1.0");
-        cmd.args(["-q", "pipewiresrc"])
-            .arg(format!("path={node}"))
-            .args(["do-timestamp=true", "!", "videoconvert", "!", "videocrop"])
-            .args([
-                format!("top={crop}"),
-                format!("bottom={crop}"),
-                format!("left={crop}"),
-                format!("right={crop}"),
-            ])
-            .args(["!", "videoscale", "!"])
-            .arg(format!("video/x-raw,format=BGRx,width={w},height={h}"))
-            .args(["!", "fdsink", "fd=1"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        // If the agent dies without dropping the capturer (killed, crashed), take the
-        // pipeline with it: an orphaned reader keeps GNOME's stream busy.
-        // SAFETY: prctl is async-signal-safe and touches no memory of the parent.
-        unsafe {
-            std::os::unix::process::CommandExt::pre_exec(&mut cmd, || {
-                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
-                Ok(())
-            });
-        }
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| backend("spawn gst-launch-1.0", e))?;
-        let mut stdout = child.stdout.take().expect("piped stdout");
-
-        let shared = Arc::new(Shared {
-            latest: Mutex::new((0, None)),
-            cond: Condvar::new(),
-            closed: AtomicBool::new(false),
-            stopping: AtomicBool::new(false),
-        });
-        let frame_len = w as usize * h as usize * 4;
-        let sh = Arc::clone(&shared);
-        let reader = std::thread::Builder::new()
-            .name("dalker-gst-reader".into())
-            .spawn(move || {
-                let mut buf = vec![0u8; frame_len];
-                while stdout.read_exact(&mut buf).is_ok() {
-                    let mut g = sh.latest.lock().unwrap();
-                    g.0 += 1;
-                    g.1 = Some(Bytes::copy_from_slice(&buf));
-                    sh.cond.notify_all();
-                }
-                sh.closed.store(true, Ordering::SeqCst);
-                sh.cond.notify_all();
-            })
-            .map_err(|e| backend("spawn reader", e))?;
-        let sh = Arc::clone(&shared);
+        let stream = GstStream::spawn(node, None, crop, w, h)?;
+        let closer = stream.closer();
         std::thread::Builder::new()
             .name("dalker-sc-closed".into())
             .spawn(move || {
                 // Ends on the signal, or when the connection goes away with the capturer.
                 if session_closed.next().is_some() {
-                    if !sh.stopping.load(Ordering::SeqCst) {
-                        tracing::info!("GNOME ended the screen cast (screen locked?)");
-                    }
-                    sh.closed.store(true, Ordering::SeqCst);
-                    let _g = sh.latest.lock().unwrap();
-                    sh.cond.notify_all();
+                    closer.close("GNOME ended the screen cast (screen locked?)");
                 }
             })
             .map_err(|e| backend("spawn session watcher", e))?;
@@ -419,26 +334,16 @@ impl GnomeCapturer {
         Ok(Self {
             conn,
             session_path,
-            child,
-            reader: Some(reader),
-            shared,
-            size: (w, h),
-            seen: 0,
-            start: Instant::now(),
+            stream,
         })
     }
 }
 
 impl Drop for GnomeCapturer {
     fn drop(&mut self) {
-        self.shared.stopping.store(true, Ordering::SeqCst);
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.stream.stop();
         if let Ok(session) = Proxy::new(&self.conn, SC, self.session_path.clone(), SESSION_IFACE) {
             let _ = session.call_method("Stop", &());
-        }
-        if let Some(r) = self.reader.take() {
-            let _ = r.join();
         }
     }
 }
@@ -449,39 +354,12 @@ impl ScreenCapturer for GnomeCapturer {
     }
 
     fn display(&self) -> DisplayInfo {
-        DisplayInfo {
-            width: self.size.0,
-            height: self.size.1,
-        }
+        let (width, height) = self.stream.size();
+        DisplayInfo { width, height }
     }
 
     fn next_frame(&mut self, timeout: Duration) -> Result<Option<RawFrame>, CaptureError> {
-        let guard = self.shared.latest.lock().unwrap();
-        let (guard, _) = self
-            .shared
-            .cond
-            .wait_timeout_while(guard, timeout, |g| {
-                g.0 == self.seen && !self.shared.closed.load(Ordering::SeqCst)
-            })
-            .unwrap();
-        if guard.0 == self.seen {
-            return if self.shared.closed.load(Ordering::SeqCst) {
-                Err(CaptureError::Lost("the screen-cast stream ended".into()))
-            } else {
-                Ok(None)
-            };
-        }
-        self.seen = guard.0;
-        let data = guard.1.clone().expect("sequence advanced");
-        drop(guard);
-        Ok(Some(RawFrame {
-            width: self.size.0,
-            height: self.size.1,
-            stride: self.size.0 as usize * 4,
-            format: PixelFormat::Bgra8,
-            data,
-            timestamp: self.start.elapsed(),
-        }))
+        self.stream.next_frame(timeout)
     }
 }
 
@@ -491,29 +369,48 @@ impl ScreenCapturer for GnomeCapturer {
 pub struct GnomeBorder {
     conn: Connection,
     active: Arc<AtomicBool>,
+    /// The extension answered the last `SetActive(true)`.
+    shown: Arc<AtomicBool>,
+    label: Arc<std::sync::Mutex<Option<String>>>,
     stop: Arc<AtomicBool>,
+    /// The person at the host chose "Disconnect everyone" in the extension's panel menu.
+    disconnect: Arc<AtomicBool>,
     heartbeat: Option<JoinHandle<()>>,
 }
 
 impl GnomeBorder {
-    pub fn new() -> Result<Self, String> {
-        let conn = Connection::session().map_err(|e| format!("no D-Bus session bus: {e}"))?;
+    /// [`PlatformError::Transient`] while the shell or its extension is not there (still
+    /// starting, the screen locked, waiting for the next login).
+    pub fn new() -> Result<Self, PlatformError> {
+        let conn = Connection::session()
+            .map_err(|e| PlatformError::Transient(format!("no D-Bus session bus: {e}")))?;
         if !name_has_owner(&conn, BUS_NAME) {
             if screen_locked() {
-                return Err(
+                return Err(PlatformError::Transient(
                     "the screen is locked (GNOME turns extensions off on the lock screen; \
                             the desktop is served again once it is unlocked)"
                         .into(),
-                );
+                ));
             }
-            return Err(format!(
+            return Err(PlatformError::Transient(
                 "GNOME Shell extension dalker-border@ivanmakhnyk.github.io is not running \
                  (it is loaded at login: log out and back in after installing)"
+                    .to_string(),
             ));
         }
         let active = Arc::new(AtomicBool::new(false));
+        let shown = Arc::new(AtomicBool::new(false));
+        let label = Arc::new(std::sync::Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
-        let (c, a, s) = (conn.clone(), Arc::clone(&active), Arc::clone(&stop));
+        let disconnect = Arc::new(AtomicBool::new(false));
+        let (c, a, v, l, s) = (
+            conn.clone(),
+            Arc::clone(&active),
+            Arc::clone(&shown),
+            Arc::clone(&label),
+            Arc::clone(&stop),
+        );
+        let d = Arc::clone(&disconnect);
         // Ping every second while active; the extension hides the frame ~3 s after the
         // last ping, so a crashed agent can never leave a stale "recording" border (or,
         // more importantly, stream without one).
@@ -522,25 +419,63 @@ impl GnomeBorder {
             .spawn(move || {
                 let proxy = Proxy::new(&c, BUS_NAME, BORDER_PATH, BORDER).ok();
                 let mut last = false;
+                let mut last_label: Option<String> = None;
                 while !s.load(Ordering::SeqCst) {
                     let now = a.load(Ordering::SeqCst);
+                    let cur_label = l.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    if !now {
+                        v.store(false, Ordering::SeqCst);
+                    }
                     if let Some(p) = &proxy {
+                        if cur_label != last_label || (now && !last) {
+                            let _ =
+                                p.call_method("SetLabel", &(cur_label.as_deref().unwrap_or(""),));
+                            last_label = cur_label.clone();
+                        }
                         if now || last {
-                            let _ = p.call_method("SetActive", &(now,));
+                            // The extension draws the frame before it answers.
+                            let ok = p.call_method("SetActive", &(now,)).is_ok();
+                            v.store(now && ok, Ordering::SeqCst);
+                        }
+                        // "Disconnect everyone" in the panel menu. An extension from before
+                        // this method answers with an error, which counts as no.
+                        if now {
+                            let asked = p
+                                .call::<_, _, bool>("TakeDisconnectRequest", &())
+                                .unwrap_or(false);
+                            if asked {
+                                d.store(true, Ordering::SeqCst);
+                            }
                         }
                     }
                     last = now;
-                    std::thread::sleep(Duration::from_millis(if now { 1000 } else { 200 }));
+                    // While off, look often: the frame must come up quickly when a viewer
+                    // connects, since nothing is served before it does.
+                    let mut waited = Duration::ZERO;
+                    let period = Duration::from_millis(if now { 1000 } else { 50 });
+                    while waited < period
+                        && !s.load(Ordering::SeqCst)
+                        && a.load(Ordering::SeqCst) == now
+                        && *l.lock().unwrap_or_else(|e| e.into_inner()) == cur_label
+                    {
+                        std::thread::sleep(Duration::from_millis(10));
+                        waited += Duration::from_millis(10);
+                    }
                 }
+                v.store(false, Ordering::SeqCst);
                 if let Some(p) = &proxy {
+                    let _ = p.call_method("SetLabel", &("",));
                     let _ = p.call_method("SetActive", &(false,));
                 }
             })
-            .map_err(|e| format!("spawn border thread: {e}"))?;
+            .map_err(|e| PlatformError::Fatal(format!("spawn border thread: {e}")))?;
         Ok(Self {
             conn,
             active,
+            shown,
+            label,
             stop,
+            disconnect,
             heartbeat: Some(heartbeat),
         })
     }
@@ -555,8 +490,20 @@ impl ViewerIndicator for GnomeBorder {
         self.active.store(active, Ordering::SeqCst);
     }
 
+    fn shown(&self) -> bool {
+        self.shown.load(Ordering::SeqCst)
+    }
+
     fn healthy(&self) -> bool {
         name_has_owner(&self.conn, BUS_NAME)
+    }
+
+    fn take_disconnect_request(&self) -> bool {
+        self.disconnect.swap(false, Ordering::SeqCst)
+    }
+
+    fn set_label(&self, label: Option<&str>) {
+        *self.label.lock().unwrap_or_else(|e| e.into_inner()) = label.map(str::to_owned);
     }
 }
 
@@ -583,9 +530,11 @@ pub struct GnomeClipboard {
 }
 
 impl GnomeClipboard {
-    pub fn new() -> Result<Self, String> {
+    /// [`PlatformError::Transient`] while the extension is not running.
+    pub fn new() -> Result<Self, PlatformError> {
         let mut c = Self { conn: None };
-        c.proxy().map_err(|e| e.to_string())?;
+        c.proxy()
+            .map_err(|e| PlatformError::Transient(e.to_string()))?;
         Ok(c)
     }
 

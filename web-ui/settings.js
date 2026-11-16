@@ -5,6 +5,8 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+// Strings in the page's language (i18n.js, loaded first).
+const tr = I18N.t;
 const KEY = new URLSearchParams(location.hash.slice(1)).get("key");
 const EMBEDDED = new URLSearchParams(location.search).has("embed");
 if (EMBEDDED) document.body.classList.add("embedded");
@@ -44,10 +46,9 @@ async function load() {
     render(await api("GET", "/api/settings"));
   } catch (e) {
     if (e.status === 401) {
-      showBlocked(KEY ? "This settings page has expired. Close the window and open Dalker Settings again."
-        : "Sign in to the web client first.");
+      showBlocked(tr(KEY ? "settings.expired" : "settings.signInFirst"));
     } else {
-      setSync("bad", "NO CONNECTION");
+      setSync("bad", "settings.sync.noConnection");
     }
   }
 }
@@ -68,6 +69,7 @@ function render(s) {
   $("mcp-version").textContent = $("version").textContent;
   $("mcp-version").hidden = !s.version || host;
   if (s.blocked) return showBlocked(s.blocked);
+  $("copy-diagnostics").hidden = !host;
   $("blocked").hidden = true;
   $("tabs").hidden = !host;
   const shown = host ? tab : "mcp";
@@ -84,20 +86,28 @@ function render(s) {
     const web = renderAddress("web", s.web.urls);
     $("web-url").textContent = web.url;
     $("web-dot").className = "dot " + statusClass(s.web.status);
-    $("web-reach").textContent = !s.web.enabled
-      ? "The web server is off."
+    $("web-reach").textContent = tr(!s.web.enabled
+      ? "settings.web.off"
       : s.web.loopback
-        ? "Only browsers on this computer can open it."
+        ? "settings.web.loopback"
         : isLocal(web.host)
-          ? "This address works only on this computer. Choose a network address for other computers."
-          : "Open it in a browser on another computer on the same network.";
+          ? "settings.web.localOnly"
+          : "settings.web.network");
+    // The certificate the agent serves over HTTPS, to compare with what the browser shows.
+    const tls = s.tls || {};
+    $("web-tls").hidden = !(s.web.enabled && tls.enabled && tls.fingerprint);
+    $("web-fingerprint").textContent = tls.fingerprint || "";
+    // A certificate of the host's own is trusted by browsers: no warning to compare with.
+    $("web-fingerprint-hint").hidden = !!tls.own;
     const pw = $("pw-badge");
     pw.className = "badge " + (s.web.password_set ? "ok" : "bad");
     pw.innerHTML = s.web.password_set
-      ? `${ICON.shield}<span>Password is set &amp; active</span>`
-      : `${ICON.alert}<span>No password: nobody can sign in</span>`;
-    $("pw-hint").textContent =
-      `At least ${s.min_password} characters. Changing it signs out everyone who is connected.`;
+      ? `${ICON.shield}<span>${esc(tr("settings.pw.set"))}</span>`
+      : `${ICON.alert}<span>${esc(tr("settings.pw.none"))}</span>`;
+    $("pw-hint").textContent = tr("settings.pw.hint", { n: s.min_password });
+    $("web-port-default").textContent = tr("settings.default", { port: 8742 });
+    renderStream(s.stream);
+    renderSharing(s.screen_sharing);
   }
 
   // AI agents.
@@ -106,7 +116,8 @@ function render(s) {
   $("mcp-switch-box").hidden = !host;
   $("mcp-remote-box").hidden = !host;
   setSwitch("mcp-remote", !s.mcp.loopback);
-  $("mcp-switch-box").title = host ? "" : "The MCP server is turned on and off on the host, in Dalker Settings.";
+  $("mcp-switch-box").title = host ? "" : tr("settings.mcp.hostOnly");
+  $("mcp-port-default").textContent = tr("settings.default", { port: 8743 });
   if (host) setPort("mcp-port", s.mcp.port, !s.mcp.enabled);
   else $("mcp-port").value = String(s.mcp.port);
   $("mcp-port").readOnly = !host;
@@ -115,23 +126,23 @@ function render(s) {
   if (host) renderAddress("mcp", s.mcp.urls);
   $("mcp-url").textContent = mcpUrl();
   $("mcp-dot").className = "dot " + statusClass(s.mcp.status);
-  $("mcp-reach").textContent = !s.mcp.enabled
-    ? "The MCP server is off."
+  $("mcp-reach").textContent = tr(!s.mcp.enabled
+    ? "settings.mcp.off"
     : s.mcp.loopback
-      ? "Only programs on the host computer can reach it. Use an SSH tunnel or VPN to reach it from elsewhere."
-      : "Other computers on the network can connect too (plain HTTP, protected by the token).";
+      ? "settings.mcp.loopback"
+      : "settings.mcp.network");
   renderTokens(s.tokens);
 
   // Footer.
-  pill("pill-web", "Web", s.web.status, s.web.port, host);
-  pill("pill-mcp", "MCP", s.mcp.status, s.mcp.port, true);
+  pill("pill-web", "web", s.web.status, s.web.port, host);
+  pill("pill-mcp", "mcp", s.mcp.status, s.mcp.port, true);
   $("pill-web").hidden = !host;
   $("file").textContent = s.file || "";
   const statuses = host ? [s.web.status, s.mcp.status] : [s.mcp.status];
-  if (statuses.includes("down")) setSync("bad", "NOT ANSWERING");
-  else if (statuses.includes("stopping")) setSync("warn", "APPLYING");
-  else if (statuses.includes("checking")) setSync("", "CHECKING");
-  else setSync("on live", host ? "AGENT IN SYNC" : "CONNECTED");
+  if (statuses.includes("down")) setSync("bad", "settings.sync.notAnswering");
+  else if (statuses.includes("stopping")) setSync("warn", "settings.sync.applying");
+  else if (statuses.includes("checking")) setSync("", "settings.sync.checking");
+  else setSync("on live", host ? "settings.sync.inSync" : "settings.sync.connected");
 }
 
 for (const t of document.querySelectorAll(".tab")) {
@@ -149,35 +160,33 @@ document.querySelector(".tabs").addEventListener("keydown", (e) => {
 });
 
 function showBlocked(text) {
+  $("copy-diagnostics").hidden = true;
   $("tabs").hidden = true;
   $("blocked").hidden = false;
   $("blocked").textContent = text;
   $("card-web").hidden = true;
   $("card-mcp").hidden = true;
-  setSync("bad", "UNAVAILABLE");
+  setSync("bad", "settings.sync.unavailable");
 }
 
-function setSync(cls, text) {
+// `key`: the string to show.
+function setSync(cls, key) {
   $("sync-pill").querySelector(".dot").className = "dot " + cls;
-  $("sync-text").textContent = text;
+  $("sync-text").textContent = tr(key);
 }
 
 function statusClass(st) {
   return { running: "on live", stopped: "", down: "bad", stopping: "warn", checking: "" }[st] ?? "";
 }
 
-function pill(id, label, st, port, show) {
+// `kind`: "web" or "mcp".
+function pill(id, kind, st, port, show) {
   const el = $(id);
   el.querySelector(".dot").className = "dot " + statusClass(st);
-  const text = { running: `:${port}`, stopped: "off", down: `:${port} not answering`, stopping: "stopping…", checking: "…" }[st];
+  const text = { running: `:${port}`, stopped: tr("settings.pill.off"), down: tr("settings.pill.notAnswering", { port }), stopping: tr("settings.pill.stopping"), checking: "…" }[st];
   el.querySelector("strong").textContent = text ?? "";
-  el.title = {
-    running: `${label} server running on port ${port}`,
-    stopped: `${label} server is off`,
-    down: `${label} server is on but not answering on port ${port}: Dalker may not be running, may still be applying the change, or another program uses the port`,
-    stopping: `${label} server is being stopped`,
-    checking: `Checking the ${label} server`,
-  }[st] ?? "";
+  const title = { running: "Running", stopped: "Stopped", down: "Down", stopping: "Stopping", checking: "Checking" }[st];
+  el.title = title ? tr(`settings.pill.${kind}${title}`, { port }) : "";
   el.hidden = !show;
 }
 
@@ -207,10 +216,139 @@ function isLocal(host) {
   return host === "127.0.0.1" || host === "::1";
 }
 
+// ---------------------------------------------------------------- stream limits
+
+// The most frame rate and bitrate every viewer gets, and the width wider screens are scaled
+// down to (0 = full size). The running agent applies them to open streams too.
+const STREAM = [["stream-fps", "fps"], ["stream-bitrate", "bitrate_kbps"], ["stream-width", "max_width"]];
+let streamDirty = false;
+// Opened with the switch but not applied yet: the file still has no limits of its own.
+let streamOpen = false;
+
+function renderStream(st) {
+  if (!st) return;
+  const d = st.default;
+  $("stream-default").textContent = tr("settings.stream.default", { fps: d.fps, kbps: d.bitrate_kbps, px: d.max_width });
+  // Collapsed while the defaults apply; expanded once the host sets its own limits.
+  const open = st.custom || streamOpen;
+  setSwitch("stream-enabled", open);
+  $("stream-fields").hidden = !open;
+  $("stream-off-hint").hidden = open;
+  $("stream-off-hint").textContent =
+    tr("settings.stream.offHint", { fps: d.fps, kbps: d.bitrate_kbps, px: d.max_width });
+  for (const [id, key] of STREAM) {
+    if (!streamDirty && !STREAM.some(([i]) => document.activeElement === $(i))) $(id).value = String(st[key]);
+  }
+  validateStream();
+}
+
+function streamValues() {
+  const out = {};
+  for (const [id, key] of STREAM) {
+    const v = $(id).value.trim();
+    out[key] = /^\d{1,6}$/.test(v) ? Number(v) : null;
+  }
+  return out;
+}
+
+function validateStream() {
+  const st = state && state.stream;
+  if (!st) return false;
+  const v = streamValues();
+  const r = st.range;
+  const within = (x, [lo, hi]) => x !== null && x >= lo && x <= hi;
+  let err = "", bad = "";
+  if (!within(v.fps, r.fps)) [bad, err] = ["stream-fps", tr("settings.stream.badFps", { min: r.fps[0], max: r.fps[1] })];
+  else if (!within(v.bitrate_kbps, r.bitrate_kbps)) [bad, err] = ["stream-bitrate", tr("settings.stream.badBitrate", { min: r.bitrate_kbps[0], max: r.bitrate_kbps[1] })];
+  else if (v.max_width !== 0 && !within(v.max_width, r.max_width)) {
+    [bad, err] = ["stream-width", tr("settings.stream.badWidth", { min: r.max_width[0], max: r.max_width[1] })];
+  }
+  $("stream-error").textContent = err;
+  for (const [id] of STREAM) $(id).classList.toggle("invalid", id === bad);
+  const same = STREAM.every(([, key]) => v[key] === st[key]);
+  $("stream-apply").disabled = !!err || same;
+  return !err;
+}
+
+$("stream-enabled").addEventListener("change", async (e) => {
+  const sw = e.target;
+  if (sw.checked) {
+    // Nothing changes until Apply: the fields start at the limits in force.
+    streamOpen = true;
+    render(state);
+    $("stream-fps").focus();
+    return;
+  }
+  streamOpen = false;
+  streamDirty = false;
+  if (!state.stream.custom) return render(state);
+  sw.dataset.pending = "1";
+  sw.disabled = true;
+  try {
+    const d = state.stream.default;
+    applyResult(await api("POST", "/api/settings/stream", { custom: false }),
+      tr("settings.stream.reset", { fps: d.fps, kbps: d.bitrate_kbps, px: d.max_width }));
+  } catch (err) {
+    sw.checked = true;
+    message(err.message, false);
+  } finally {
+    delete sw.dataset.pending;
+    sw.disabled = false;
+  }
+});
+
+for (const [id] of STREAM) {
+  $(id).addEventListener("input", () => { streamDirty = true; validateStream(); });
+  $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") $("stream-apply").click(); });
+}
+$("stream-apply").addEventListener("click", async () => {
+  if (!validateStream()) return;
+  const v = streamValues();
+  $("stream-apply").disabled = true;
+  try {
+    const data = await api("POST", "/api/settings/stream", v);
+    streamDirty = false;
+    streamOpen = false;
+    applyResult(data, tr("settings.stream.applied", { fps: v.fps, kbps: v.bitrate_kbps }));
+  } catch (err) {
+    $("stream-error").textContent = err.message;
+    validateStream();
+  }
+});
+
+// KDE Plasma, sway and other portal desktops ask the person at the computer to allow
+// screen sharing. Doing it here, ahead of time, spares a remote viewer a black screen.
+function renderSharing(share) {
+  $("share-box").hidden = !share;
+  if (!share) return;
+  const badge = $("share-badge");
+  badge.className = "badge " + (share.allowed ? "ok" : "bad");
+  badge.innerHTML = share.allowed
+    ? `${ICON.shield}<span>${esc(tr("settings.share.allowed"))}</span>`
+    : `${ICON.alert}<span>${esc(tr("settings.share.willAsk"))}</span>`;
+  $("share-hint").textContent = tr(share.allowed ? "settings.share.allowedHint" : "settings.share.askHint");
+}
+
+$("share-allow").addEventListener("click", async () => {
+  const b = $("share-allow");
+  b.disabled = true;
+  try {
+    const r = await api("POST", "/api/settings/screen-sharing");
+    applyResult(r);
+    toast(tr(r.allowed ? "settings.share.done" : "settings.share.refused"), !r.allowed);
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    b.disabled = false;
+  }
+});
+
 function renderAddress(kind, urls) {
   const chosen = pickAddress(urls);
   const select = $(`${kind}-addr`);
-  const options = urls.map((u) => `<option value="${esc(u.host)}">${esc(u.name ? `${u.name} · ${u.host}` : u.host)}</option>`).join("");
+  // The server names loopback addresses in English; this page names them itself.
+  const name = (u) => (isLocal(u.host) ? tr("settings.thisComputer") : u.name);
+  const options = urls.map((u) => `<option value="${esc(u.host)}">${esc(name(u) ? `${name(u)} · ${u.host}` : u.host)}</option>`).join("");
   if (select.dataset.options !== options) {
     select.innerHTML = options;
     select.dataset.options = options;
@@ -254,27 +392,29 @@ const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 
 function renderTokens(tokens) {
   $("token-empty").hidden = tokens.length > 0;
-  const old = "Made before Dalker kept tokens: only its hash is stored. Generate a new token to copy it.";
+  const old = esc(tr("settings.tokens.old"));
+  const attr = (key) => esc(tr(key));
   $("token-rows").innerHTML = tokens.map((t) => {
     const dot = t.expired ? "bad" : t.copyable ? "on" : "warn";
     const remote = t.remote === "full"
-      ? `<button class="pill on" data-act="remote" title="Screenshots, mouse and keyboard. Click to turn off.">${ICON.mouse}Screen + Input</button>`
+      ? `<button class="pill on" data-act="remote" title="${attr("settings.tokens.fullTitle")}">${ICON.mouse}${attr("settings.tokens.full")}</button>`
       : t.remote === "view"
-        ? `<button class="pill view" data-act="remote" title="Screenshots only (made on the command line). Click to allow mouse and keyboard too.">${ICON.shot}Screenshots only</button>`
-        : `<button class="pill" data-act="remote" title="Click to allow screenshots, mouse and keyboard.">${ICON.off}Off</button>`;
+        ? `<button class="pill view" data-act="remote" title="${attr("settings.tokens.viewTitle")}">${ICON.shot}${attr("settings.tokens.view")}</button>`
+        : `<button class="pill" data-act="remote" title="${attr("settings.tokens.remoteOffTitle")}">${ICON.off}${attr("settings.tokens.off")}</button>`;
     const clip = t.clipboard
-      ? `<button class="pill on" data-act="clip" title="Reads and writes the clipboard. Click to turn off.">${ICON.clip}Active</button>`
-      : `<button class="pill" data-act="clip" title="Click to allow clipboard access.">${ICON.off}Off</button>`;
-    const sub = t.expired ? "expired" : t.expires ? `until ${t.expires}` : `created ${t.created}`;
+      ? `<button class="pill on" data-act="clip" title="${attr("settings.tokens.clipOnTitle")}">${ICON.clip}${attr("settings.tokens.clipOn")}</button>`
+      : `<button class="pill" data-act="clip" title="${attr("settings.tokens.clipOffTitle")}">${ICON.off}${attr("settings.tokens.off")}</button>`;
+    const sub = t.expired ? tr("settings.tokens.expired")
+      : t.expires ? tr("settings.tokens.until", { date: t.expires }) : tr("settings.tokens.created", { date: t.created });
     return `<tr data-id="${esc(t.id)}" data-name="${esc(t.name)}" class="${t.expired ? "expired" : ""}">
       <td><div class="tname"><span class="dot ${dot}"></span><strong title="${esc(t.name)}">${esc(t.name)}</strong><small>${esc(sub)}</small></div></td>
-      <td>${t.expired ? '<span class="expired-tag">EXPIRED</span>' : `<span class="tkey">${esc(t.masked)}</span>`}</td>
+      <td>${t.expired ? `<span class="expired-tag">${attr("settings.tokens.expiredTag")}</span>` : `<span class="tkey">${esc(t.masked)}</span>`}</td>
       <td class="c">${t.expired ? '<span class="pill dead">—</span>' : remote}</td>
       <td class="c">${t.expired ? '<span class="pill dead">—</span>' : clip}</td>
       <td class="r"><div class="actions">
-        <button class="icon-btn" data-act="copy" ${t.copyable ? 'title="Copy the token"' : `disabled title="${old}"`} aria-label="Copy the token">${ICON.copy}</button>
-        <button class="icon-btn indigo" data-act="config" ${t.copyable ? 'title="MCP configuration for Claude, Cursor or LM Studio"' : `disabled title="${old}"`} aria-label="MCP configuration">${ICON.json}</button>
-        <button class="icon-btn danger" data-act="revoke" title="Revoke the token" aria-label="Revoke the token">${ICON.trash}</button>
+        <button class="icon-btn" data-act="copy" ${t.copyable ? `title="${attr("settings.tokens.copy")}"` : `disabled title="${old}"`} aria-label="${attr("settings.tokens.copy")}">${ICON.copy}</button>
+        <button class="icon-btn indigo" data-act="config" ${t.copyable ? `title="${attr("settings.tokens.configTitle")}"` : `disabled title="${old}"`} aria-label="${attr("settings.tokens.config")}">${ICON.json}</button>
+        <button class="icon-btn danger" data-act="revoke" title="${attr("settings.tokens.revoke")}" aria-label="${attr("settings.tokens.revoke")}">${ICON.trash}</button>
       </div></td>
     </tr>`;
   }).join("");
@@ -292,17 +432,17 @@ $("token-rows").addEventListener("click", async (e) => {
       case "remote":
         btn.disabled = true;
         applyResult(await api("PATCH", `/api/settings/tokens/${id}`, { remote: t.remote !== "full" }),
-          `Permissions of “${name}” changed. An AI agent using it reconnects with them.`);
+          tr("settings.tokens.permissionsChanged", { name }));
         break;
       case "clip":
         btn.disabled = true;
         applyResult(await api("PATCH", `/api/settings/tokens/${id}`, { clipboard: !t.clipboard }),
-          `Permissions of “${name}” changed. An AI agent using it reconnects with them.`);
+          tr("settings.tokens.permissionsChanged", { name }));
         break;
       case "copy": {
         const { token } = await api("GET", `/api/settings/tokens/${id}/secret`);
         await copyText(token);
-        toast(`The token “${name}” is on the clipboard.`);
+        toast(tr("settings.tokens.copiedNamed", { name }));
         break;
       }
       case "config": {
@@ -312,7 +452,7 @@ $("token-rows").addEventListener("click", async (e) => {
       }
       case "revoke":
         revokeTarget = { id, name };
-        $("dlg-revoke-title").textContent = `Revoke “${name}”?`;
+        $("dlg-revoke-title").textContent = tr("settings.tokens.revokeNamed", { name });
         openModal("dlg-revoke");
         break;
     }
@@ -324,7 +464,7 @@ $("token-rows").addEventListener("click", async (e) => {
 
 // ---------------------------------------------------------------- switches, ports, password
 
-for (const [id, path, what] of [["web-enabled", "/api/settings/web", "Web server"], ["mcp-enabled", "/api/settings/mcp", "MCP server"]]) {
+for (const [id, path, kind] of [["web-enabled", "/api/settings/web", "web"], ["mcp-enabled", "/api/settings/mcp", "mcp"]]) {
   $(id).addEventListener("change", async (e) => {
     const sw = e.target;
     const on = sw.checked;
@@ -332,7 +472,7 @@ for (const [id, path, what] of [["web-enabled", "/api/settings/web", "Web server
     sw.disabled = true;
     try {
       applyResult(await api("POST", path, { enabled: on }),
-        `${what} turned ${on ? "on" : "off"}. Dalker applies it within a few seconds.`);
+        tr(`settings.${kind}.${on ? "turnedOn" : "turnedOff"}`));
     } catch (err) {
       sw.checked = !on;
       message(err.message, false);
@@ -350,7 +490,7 @@ $("mcp-remote").addEventListener("change", async (e) => {
   sw.disabled = true;
   try {
     applyResult(await api("POST", "/api/settings/mcp", { remote: on }),
-      on ? "Other computers can now connect to the MCP server." : "Only this computer can connect to the MCP server now.");
+      tr(on ? "settings.mcp.remoteOn" : "settings.mcp.remoteOff"));
   } catch (err) {
     sw.checked = !on;
     message(err.message, false);
@@ -371,9 +511,9 @@ function validatePort(id) {
   const errId = id + "-error";
   const saved = state ? (id === "web-port" ? state.web.port : state.mcp.port) : null;
   let err = "";
-  if (input.value.trim() === "") err = "Enter a port from 1024 to 65535.";
-  else if (p === null || p < 1024 || p > 65535) err = "Choose a port from 1024 to 65535.";
-  else if (state && p === (id === "web-port" ? state.mcp.port : state.web.port)) err = `The other server already uses port ${p}.`;
+  if (input.value.trim() === "") err = tr("settings.port.enter");
+  else if (p === null || p < 1024 || p > 65535) err = tr("settings.port.range");
+  else if (state && p === (id === "web-port" ? state.mcp.port : state.web.port)) err = tr("settings.port.taken", { port: p });
   if (input.disabled) err = "";
   $(errId).textContent = err;
   input.classList.toggle("invalid", !!err);
@@ -381,7 +521,7 @@ function validatePort(id) {
   return !err;
 }
 
-for (const [id, path, what] of [["web-port", "/api/settings/web", "Web server"], ["mcp-port", "/api/settings/mcp", "MCP server"]]) {
+for (const [id, path, kind] of [["web-port", "/api/settings/web", "web"], ["mcp-port", "/api/settings/mcp", "mcp"]]) {
   const input = $(id);
   input.addEventListener("input", () => {
     dirty[id] = true;
@@ -395,7 +535,7 @@ for (const [id, path, what] of [["web-port", "/api/settings/web", "Web server"],
     try {
       const data = await api("POST", path, { port });
       dirty[id] = false;
-      applyResult(data, `${what} moves to port ${port} within a few seconds.`);
+      applyResult(data, tr(`settings.${kind}.moves`, { port }));
     } catch (err) {
       $(id + "-error").textContent = err.message;
       validatePort(id);
@@ -408,8 +548,8 @@ function validatePassword() {
   const b = $("pw-repeat").value;
   const min = state?.min_password ?? 8;
   let err = "";
-  if (a && a.length < min) err = `The password must have at least ${min} characters.`;
-  else if (a && b && a !== b) err = "The two passwords do not match.";
+  if (a && [...a].length < min) err = tr("settings.pw.tooShort", { n: min });
+  else if (a && b && a !== b) err = tr("settings.pw.mismatch");
   $("pw-error").textContent = err;
   $("pw-apply").disabled = !a || !b || !!err;
 }
@@ -424,7 +564,7 @@ $("pw-apply").addEventListener("click", async () => {
     const data = await api("POST", "/api/settings/password", { password: $("pw-new").value, repeat: $("pw-repeat").value });
     $("pw-new").value = "";
     $("pw-repeat").value = "";
-    applyResult(data, "Password changed. Everyone who was connected is signed out.");
+    applyResult(data, tr("settings.pw.changed"));
   } catch (err) {
     $("pw-error").textContent = err.message;
   } finally {
@@ -439,7 +579,7 @@ for (const eye of document.querySelectorAll(".eye")) {
     for (const id of ["pw-new", "pw-repeat"]) $(id).type = show ? "text" : "password";
     for (const e of document.querySelectorAll(".eye")) {
       e.setAttribute("aria-pressed", String(show));
-      e.title = show ? "Hide password" : "Show password";
+      e.title = e.ariaLabel = tr(show ? "settings.pw.hide" : "settings.pw.show");
     }
     input.focus();
   });
@@ -447,12 +587,12 @@ for (const eye of document.querySelectorAll(".eye")) {
 
 $("web-url-copy").addEventListener("click", async () => {
   await copyText($("web-url").textContent);
-  toast("The address is on the clipboard.");
+  toast(tr("settings.addressCopied"));
 });
 
 $("mcp-url-copy").addEventListener("click", async () => {
   await copyText(mcpUrl());
-  toast("The address is on the clipboard.");
+  toast(tr("settings.addressCopied"));
 });
 
 // ---------------------------------------------------------------- dialogs
@@ -492,15 +632,23 @@ $("token-new").addEventListener("click", () => {
 $("new-name").addEventListener("keydown", (e) => { if (e.key === "Enter") $("new-go").click(); });
 $("new-go").addEventListener("click", async () => {
   const name = $("new-name").value.trim();
-  if (!name) return ($("new-error").textContent = "Enter a name for the token.");
+  if (!name) return ($("new-error").textContent = tr("settings.tokens.enterName"));
+  // The same rules as the server's (dalker-mcp's tokens.rs), so the reason shows in this
+  // page's language.
+  if (name.length > 64 || !/^[A-Za-z0-9\-_.@ ]+$/.test(name)) {
+    return ($("new-error").textContent = tr("settings.tokens.badName"));
+  }
+  if (state && state.tokens.some((x) => x.name === name)) {
+    return ($("new-error").textContent = tr("settings.tokens.duplicate", { name }));
+  }
   if (!$("new-remote").checked && !$("new-clip").checked) {
-    return ($("new-error").textContent = "Choose at least one permission.");
+    return ($("new-error").textContent = tr("settings.tokens.choosePermission"));
   }
   $("new-go").disabled = true;
   try {
     const data = await api("POST", "/api/settings/tokens",
       { name, remote: $("new-remote").checked, clipboard: $("new-clip").checked });
-    applyResult(data, `Token “${name}” created.`);
+    applyResult(data, tr("settings.tokens.createdNamed", { name }));
     showToken(name, data.token);
   } catch (err) {
     $("new-error").textContent = err.message;
@@ -512,13 +660,13 @@ $("new-go").addEventListener("click", async () => {
 let shown = null;
 function showToken(name, token) {
   shown = { name, token };
-  $("dlg-token-title").textContent = `Token for “${name}”`;
+  $("dlg-token-title").textContent = tr("settings.token.titleNamed", { name });
   $("token-value").textContent = token;
   openModal("dlg-token");
 }
 $("token-copy").addEventListener("click", async () => {
   await copyText(shown.token);
-  toast("The token is on the clipboard.");
+  toast(tr("settings.tokens.copied"));
 });
 $("token-config").addEventListener("click", () => openConfig(shown.name, shown.token));
 
@@ -526,40 +674,49 @@ $("revoke-go").addEventListener("click", async () => {
   const { id, name } = revokeTarget;
   closeModal();
   try {
-    applyResult(await api("DELETE", `/api/settings/tokens/${id}`), `“${name}” was revoked.`);
+    applyResult(await api("DELETE", `/api/settings/tokens/${id}`), tr("settings.tokens.revoked", { name }));
   } catch (err) {
     message(err.message, false);
   }
 });
 
-// MCP client configurations, in the field order each client's documentation uses.
+// MCP client configurations, in the field order each client's documentation uses. `text` gives
+// what to copy; by default the client's JSON with the token written out.
+//
+// Claude Code reads `.mcp.json` from the project, which usually ends up in Git: its default is
+// a command that keeps the token in the user's own config instead, and its project option reads
+// the token from an environment variable.
 const CLIENTS = [
-  { id: "code", label: "Claude Code", where: "Paste it into .mcp.json in your project, or ~/.claude.json.",
-    server: (url, auth) => ({ type: "http", url, headers: { Authorization: auth } }) },
-  { id: "cursor", label: "Cursor, LM Studio, Windsurf", where: "Paste it into the client's mcp.json (LM Studio: Program › Edit mcp.json).",
+  { id: "code", label: "Claude Code", where: "settings.config.codeWhere",
+    text: (url, auth) => `claude mcp add --scope user --transport http dalker ${url} --header "Authorization: ${auth}"` },
+  { id: "code-project", label: "settings.config.codeProject", where: "settings.config.codeProjectWhere",
+    server: (url) => ({ type: "http", url, headers: { Authorization: "Bearer ${DALKER_MCP_TOKEN}" } }) },
+  { id: "cursor", label: "Cursor, LM Studio, Windsurf", where: "settings.config.cursorWhere",
     server: (url, auth) => ({ url, headers: { Authorization: auth } }) },
-  { id: "desktop", label: "Claude Desktop", where: "Paste it into claude_desktop_config.json (Settings › Developer › Edit Config). Needs Node.js: the mcp-remote bridge runs through npx.",
+  { id: "desktop", label: "Claude Desktop", where: "settings.config.desktopWhere",
     // mcp-remote refuses plain http to anything but localhost unless told to allow it.
     server: (url, auth) => ({ command: "npx", args: ["mcp-remote", url, "--header", "Authorization:${AUTH}", ...(url.startsWith("http:") ? ["--allow-http"] : [])], env: { AUTH: auth } }) },
 ];
 let config = null;
 
-function configJson() {
+function configText() {
   const c = CLIENTS.find((x) => x.id === config.client);
-  return JSON.stringify({ mcpServers: { dalker: c.server(mcpUrl(), `Bearer ${config.token}`) } }, null, 2);
+  const auth = `Bearer ${config.token}`;
+  if (c.text) return c.text(mcpUrl(), auth);
+  return JSON.stringify({ mcpServers: { dalker: c.server(mcpUrl(), auth) } }, null, 2);
 }
 
 function renderConfig() {
   $("config-clients").innerHTML = CLIENTS.map((c) =>
-    `<button role="radio" aria-checked="${c.id === config.client}" data-client="${c.id}">${esc(c.label)}</button>`).join("");
-  $("config-where").textContent = CLIENTS.find((x) => x.id === config.client).where;
-  $("config-json").textContent = configJson();
+    `<button role="radio" aria-checked="${c.id === config.client}" data-client="${c.id}">${esc(tr(c.label))}</button>`).join("");
+  $("config-where").textContent = tr(CLIENTS.find((x) => x.id === config.client).where);
+  $("config-json").textContent = configText();
   $("config-off").hidden = state.mcp.enabled;
 }
 
 function openConfig(name, token) {
   config = { name, token, client: config?.client ?? "code" };
-  $("dlg-config-title").textContent = `MCP configuration for “${name}”`;
+  $("dlg-config-title").textContent = tr("settings.config.titleNamed", { name });
   renderConfig();
   openModal("dlg-config");
 }
@@ -570,8 +727,8 @@ $("config-clients").addEventListener("click", (e) => {
   renderConfig();
 });
 $("config-copy").addEventListener("click", async () => {
-  await copyText(configJson());
-  toast("The configuration is on the clipboard.");
+  await copyText(configText());
+  toast(tr("settings.config.copied"));
 });
 
 // ---------------------------------------------------------------- feedback
@@ -600,17 +757,66 @@ function toast(text, bad = false) {
 async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text);
-    return;
+    return true;
   } catch {
     const ta = document.createElement("textarea");
     ta.value = text;
     ta.style.cssText = "position:fixed;opacity:0;top:0;left:0";
     document.body.appendChild(ta);
     ta.select();
-    document.execCommand("copy");
-    ta.remove();
+    try {
+      return document.execCommand("copy");
+    } finally {
+      ta.remove();
+    }
   }
 }
+
+$("copy-diagnostics").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const { report } = await api("GET", "/api/settings/diagnostics");
+    if (!await copyText(report)) throw new Error(tr("settings.diag.clipFailed"));
+    toast(tr("settings.diag.copied"));
+  } catch (e) {
+    toast(tr("settings.diag.failed", { error: e.message }), true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+// ---------------------------------------------------------------- language
+//
+// On the host the choice is saved in the config file; "auto" follows the system languages. In
+// the web client's "AI agents" panel the viewer's choice applies and the picker is hidden.
+
+function renderLanguagePicker() {
+  const select = $("lang");
+  select.hidden = EMBEDDED;
+  const auto = new Option(tr(KEY ? "language.autoSystem" : "language.autoBrowser"), "auto");
+  select.replaceChildren(auto, ...I18N.languages().map((l) => new Option(l.name, l.code)));
+  select.value = I18N.choice();
+}
+$("lang").addEventListener("change", async (e) => {
+  try {
+    await I18N.setChoice(e.target.value);
+  } catch (err) {
+    message(tr("language.saveFailed", { error: err.message }), false);
+    renderLanguagePicker();
+  }
+});
+I18N.onChange(() => {
+  renderLanguagePicker();
+  if (state) render(state);
+  if (openDialog === "dlg-config") renderConfig();
+  if (openDialog === "dlg-token" && shown) $("dlg-token-title").textContent = tr("settings.token.titleNamed", { name: shown.name });
+  if (openDialog === "dlg-revoke" && revokeTarget) $("dlg-revoke-title").textContent = tr("settings.tokens.revokeNamed", { name: revokeTarget.name });
+  validatePassword();
+  validatePort("web-port");
+  validatePort("mcp-port");
+});
+renderLanguagePicker();
 
 // ---------------------------------------------------------------- start
 

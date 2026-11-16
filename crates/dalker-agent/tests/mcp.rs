@@ -241,7 +241,7 @@ fn refuses_a_plaintext_lan_bind_and_bad_token_requests() {
             "--name",
             "x",
             "--scopes",
-            "view,files",
+            "view,bogus",
             "--config",
         ])
         .arg(&config)

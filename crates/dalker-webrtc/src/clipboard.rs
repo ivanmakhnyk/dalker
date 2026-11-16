@@ -147,10 +147,10 @@ pub(crate) async fn forward_to_viewer(
     }
     while clipboard.changed().await.is_ok() {
         let now = clipboard.borrow_and_update().clone();
-        if (now.available, &now.reason) != (last.available, &last.reason) {
-            if dc.send_text(status_message(&now)).await.is_err() {
-                return;
-            }
+        if (now.available, &now.reason) != (last.available, &last.reason)
+            && dc.send_text(status_message(&now)).await.is_err()
+        {
+            return;
         }
         if now.serial != last.serial {
             if let Some(text) = &now.text {

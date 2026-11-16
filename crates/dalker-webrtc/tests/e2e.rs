@@ -40,6 +40,38 @@ async fn mock_stream_roundtrip_udp_mux_nat1to1() {
     roundtrip(config, false).await;
 }
 
+/// An offer that can't be applied is refused with an error (and its peer connection closed).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bad_offer_is_refused() {
+    let engine = WebRtcEngine::new(WebRtcConfig::default()).await.unwrap();
+    let (frame_tx, _) = watch::channel::<Option<Arc<RawFrame>>>(None);
+    let (_clip_tx, clip_rx) = watch::channel(ClipboardState::default());
+    let (control_tx, _control_rx) = mpsc::unbounded_channel();
+    let result = engine
+        .accept_offer(
+            "v=0 this is not SDP".into(),
+            frame_tx.subscribe(),
+            clip_rx,
+            control_tx,
+        )
+        .await;
+    assert!(result.is_err());
+}
+
+/// The fixed UDP port is taken by another program: the engine still starts, on random ports,
+/// and a viewer on this machine still connects.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn busy_udp_port_falls_back_to_random_ports() {
+    let holder = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    let port = holder.local_addr().unwrap().port();
+    let config = WebRtcConfig {
+        udp_port: Some(port),
+        ..Default::default()
+    };
+    roundtrip(config, false).await;
+    drop(holder);
+}
+
 /// The host ends the session (password changed): the viewer is told why before it closes,
 /// and the agent still hears that the session closed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -47,7 +79,9 @@ async fn host_ends_session_with_reason() {
     roundtrip(WebRtcConfig::default(), true).await;
 }
 
-async fn roundtrip(config: WebRtcConfig, host_ends: bool) {
+async fn roundtrip(mut config: WebRtcConfig, host_ends: bool) {
+    // OpenH264 whatever GPU this machine has, so the encoder message below is known.
+    config.encoder_backend = dalker_webrtc::EncoderBackend::Software;
     // Frame source: mock capturer on its own thread, like the agent.
     let (frame_tx, _) = watch::channel::<Option<Arc<RawFrame>>>(None);
     let frames = frame_tx.subscribe();
@@ -99,9 +133,15 @@ async fn roundtrip(config: WebRtcConfig, host_ends: bool) {
         Box::pin(async {})
     }));
     let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<serde_json::Value>();
+    // The encoder message comes whenever the encoder starts, so it has its own queue.
+    let (enc_tx, mut enc_rx) = mpsc::unbounded_channel::<serde_json::Value>();
     dc.on_message(Box::new(move |m| {
-        if let Ok(v) = serde_json::from_slice(&m.data) {
-            let _ = msg_tx.send(v);
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&m.data) {
+            let _ = if v["type"] == "encoder" {
+                enc_tx.send(v)
+            } else {
+                msg_tx.send(v)
+            };
         }
         Box::pin(async {})
     }));
@@ -160,6 +200,15 @@ async fn roundtrip(config: WebRtcConfig, host_ends: bool) {
     timeout(Duration::from_secs(10), open_rx.recv())
         .await
         .expect("control channel open");
+    // The viewer is told which encoder the stream comes from.
+    let enc = timeout(Duration::from_secs(5), enc_rx.recv())
+        .await
+        .expect("encoder message")
+        .unwrap();
+    assert_eq!(
+        enc,
+        serde_json::json!({"type": "encoder", "name": "OpenH264", "hardware": false})
+    );
     dc.send_text(
         r#"{"type":"mouse_button","button":"left","down":true,"x":0.25,"y":2.0}"#.to_string(),
     )
@@ -251,6 +300,29 @@ async fn roundtrip(config: WebRtcConfig, host_ends: bool) {
     assert_eq!(applied["type"], "settings_applied");
     assert_eq!(applied["fps"], 30, "the default host maximum");
     assert_eq!(applied["bitrate_kbps"], 1000);
+    assert_eq!(applied["downscale"], 2);
+
+    // New host limits while connected: the viewer's request again, within them, unasked.
+    engine.set_encoder(dalker_webrtc::EncoderSettings {
+        max_fps: 120.0,
+        bitrate_bps: 500_000,
+        ..engine.encoder()
+    });
+    let applied = timeout(Duration::from_secs(5), msg_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(applied["type"], "settings_applied");
+    assert_eq!(
+        (&applied["fps"], &applied["max_fps"]),
+        (&serde_json::json!(120), &serde_json::json!(120)),
+        "the viewer asked for 144"
+    );
+    assert_eq!(
+        (&applied["bitrate_kbps"], &applied["max_bitrate_kbps"]),
+        (&serde_json::json!(500), &serde_json::json!(500)),
+        "1000 is above the new limit"
+    );
     assert_eq!(applied["downscale"], 2);
 
     // Teardown reaches the agent so it can release held keys.

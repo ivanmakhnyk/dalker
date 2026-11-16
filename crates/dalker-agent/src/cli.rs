@@ -3,6 +3,8 @@ use std::net::SocketAddr;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+use crate::stream;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OnOff {
     On,
@@ -42,6 +44,27 @@ pub enum CaptureMode {
     Mock,
 }
 
+/// H.264 encoder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum EncoderMode {
+    /// The GPU's encoder (NVENC, Quick Sync, AMF, VA-API) when there is one, else OpenH264.
+    Auto,
+    /// Only the GPU's encoder, without falling back to OpenH264 (for trying it out).
+    Hardware,
+    /// Always OpenH264 on the CPU.
+    Software,
+}
+
+impl EncoderMode {
+    pub fn backend(self) -> dalker_webrtc::EncoderBackend {
+        match self {
+            EncoderMode::Auto => dalker_webrtc::EncoderBackend::Auto,
+            EncoderMode::Hardware => dalker_webrtc::EncoderBackend::Hardware,
+            EncoderMode::Software => dalker_webrtc::EncoderBackend::Software,
+        }
+    }
+}
+
 /// Dalker host agent: remote desktop over WebRTC.
 #[derive(Debug, Parser)]
 #[command(name = "dalkerd", version, about)]
@@ -56,6 +79,25 @@ pub struct Cli {
     /// HTTP listen address for the web client and signaling.
     #[arg(long, env = "DALKER_BIND", default_value = DEFAULT_BIND)]
     pub bind: SocketAddr,
+
+    /// HTTPS on the web and MCP ports (they take plain HTTP too): `off` serves plain HTTP only.
+    /// Without --tls-cert, a self-signed certificate is made on first start.
+    #[arg(long, value_enum, env = "DALKER_TLS", default_value = "on")]
+    pub tls: OnOff,
+
+    /// Send browsers and AI agents on other computers that use plain HTTP to HTTPS (this
+    /// computer's own clients stay on HTTP).
+    #[arg(long, value_enum, env = "DALKER_TLS_REDIRECT", default_value = "off")]
+    pub tls_redirect: OnOff,
+
+    /// Your own TLS certificate (PEM, with its chain) instead of the self-signed one. Needs
+    /// --tls-key. Read at start: restart the agent after replacing the files.
+    #[arg(long, env = "DALKER_TLS_CERT", requires = "tls_key")]
+    pub tls_cert: Option<std::path::PathBuf>,
+
+    /// Private key (PEM) of --tls-cert.
+    #[arg(long, env = "DALKER_TLS_KEY", requires = "tls_cert")]
+    pub tls_key: Option<std::path::PathBuf>,
 
     /// Argon2 PHC hash of the login password (preferred; see `hash-password`).
     #[arg(long, env = "DALKER_PASSWORD_HASH", hide_env_values = true)]
@@ -83,17 +125,24 @@ pub struct Cli {
     #[arg(long, default_value_t = 720)]
     pub mock_height: u32,
 
-    /// Maximum frames per second sent to viewers.
-    #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=120))]
+    /// Maximum frames per second sent to viewers (1-120).
+    #[arg(long, env = stream::KEY_FPS, default_value_t = stream::DEFAULT_FPS,
+          value_parser = stream::parse_fps)]
     pub fps: u32,
 
-    /// Target H.264 bitrate in kbit/s.
-    #[arg(long, default_value_t = 6000)]
+    /// Target H.264 bitrate in kbit/s, the most a viewer gets (250-100000).
+    #[arg(long, env = stream::KEY_BITRATE_KBPS, default_value_t = stream::DEFAULT_BITRATE_KBPS,
+          value_parser = stream::parse_bitrate_kbps)]
     pub bitrate_kbps: u32,
 
     /// Downscale screens wider than this (integer factor). 0 = always native.
-    #[arg(long, default_value_t = 1920)]
+    #[arg(long, env = stream::KEY_MAX_WIDTH, default_value_t = stream::DEFAULT_MAX_WIDTH,
+          value_parser = stream::parse_max_width)]
     pub max_width: u32,
+
+    /// H.264 encoder: `auto` uses the GPU's encoder when there is one and OpenH264 otherwise.
+    #[arg(long, value_enum, env = "DALKER_ENCODER", default_value = "auto")]
+    pub encoder: EncoderMode,
 
     /// Concurrent viewers allowed.
     #[arg(long, default_value_t = 2)]
@@ -108,12 +157,12 @@ pub struct Cli {
     pub public_ip: Vec<String>,
 
     /// STUN/TURN server URL, e.g. stun:stun.l.google.com:19302. Repeatable.
-    #[arg(long, value_delimiter = ',')]
+    #[arg(long, env = "DALKER_STUN", value_delimiter = ',')]
     pub stun: Vec<String>,
 
-    /// Do not show the notification-area (tray) icon (Windows).
+    /// Do not show the notification-area (tray) icon (Windows) or menu bar icon (macOS).
     #[arg(long)]
-    #[cfg_attr(not(windows), allow(dead_code))]
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     pub no_tray: bool,
 
     /// MCP server for AI agents (Claude Desktop/Code...): `on` serves `/mcp` on --mcp-bind.
@@ -149,6 +198,8 @@ fn parse_cookie_secure(s: &str) -> Result<dalker_web::CookieSecure, String> {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Print a host diagnostics report for bug reports.
+    Diagnostics,
     /// Print an argon2 hash for DALKER_PASSWORD_HASH. Reads stdin if no argument.
     HashPassword { password: Option<String> },
     /// Store a new login password (as an argon2 hash) in the config file.
@@ -196,6 +247,12 @@ pub enum Command {
     McpToken {
         #[command(subcommand)]
         action: McpTokenCommand,
+    },
+    /// Make the self-signed TLS certificate if there is none yet and print its SHA-256
+    /// fingerprint (what browsers show). `--renew` replaces it; restart the agent afterwards.
+    TlsCert {
+        #[arg(long)]
+        renew: bool,
     },
     /// Set one `DALKER_*` key in the config file (used by the installers).
     SetConfig {
@@ -268,13 +325,17 @@ pub fn read_password_from_stdin(command: &str) -> anyhow::Result<String> {
     Ok(pw)
 }
 
-/// System-wide config file used by the installed service.
+/// Config file of the installed agent: system-wide on Windows and Linux, per user on macOS.
 pub fn default_config_path() -> std::path::PathBuf {
     if cfg!(windows) {
         let base = std::env::var_os("ProgramData").unwrap_or_else(|| r"C:\ProgramData".into());
         std::path::PathBuf::from(base)
             .join("Dalker")
             .join("dalker.conf")
+    } else if cfg!(target_os = "macos") {
+        // The agent runs as the signed-in user (a LaunchAgent), so its config is that user's.
+        let home = std::env::var_os("HOME").unwrap_or_else(|| "/".into());
+        std::path::PathBuf::from(home).join("Library/Application Support/Dalker/dalker.conf")
     } else {
         std::path::PathBuf::from("/etc/dalker/dalker.conf")
     }

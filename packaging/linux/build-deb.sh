@@ -20,6 +20,10 @@ EXTSRC="$HERE/gnome-extension/dalker-border@ivanmakhnyk.github.io"
 EXTDST="$STAGE/usr/share/gnome-shell/extensions/dalker-border@ivanmakhnyk.github.io"
 install -D -m 0644 "$EXTSRC/metadata.json" "$EXTDST/metadata.json"
 install -D -m 0644 "$EXTSRC/extension.js" "$EXTDST/extension.js"
+# The panel menu's strings, one file per language (the host UI's, crates/dalker-platform/i18n).
+for f in "$ROOT"/crates/dalker-platform/i18n/*.json; do
+    install -D -m 0644 "$f" "$EXTDST/i18n/$(basename "$f")"
+done
 install -D -m 0644 "$HERE/dalker.service" "$STAGE/lib/systemd/system/dalker.service"
 # Host settings window (`dalkerd settings`): web access, password, MCP server and tokens.
 # It runs as the desktop user and edits the root-only config through the pkexec helper.

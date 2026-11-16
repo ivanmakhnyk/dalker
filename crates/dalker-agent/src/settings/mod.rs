@@ -1,5 +1,6 @@
-//! `dalkerd settings`: the host's settings window. Web access (on/off, port, password) and
-//! the MCP server (on/off, port, tokens and what each may do), all stored in the config file.
+//! `dalkerd settings`: the host's settings window. Web access (on/off, port, password, stream
+//! limits) and the MCP server (on/off, port, tokens and what each may do), all stored in the
+//! config file.
 //!
 //! The config file belongs to the administrators (it holds the password and token hashes):
 //! * Windows: the window runs elevated (it relaunches itself through UAC) and edits the file.
@@ -20,7 +21,7 @@ use anyhow::Result;
 use dalker_mcp::tokens::{self, Scope, TokenRecord};
 
 use crate::cli::{self, OnOff};
-use crate::listeners::{KEY_BIND, KEY_MCP, KEY_MCP_BIND, KEY_WEB};
+use crate::listeners::{KEY_BIND, KEY_MCP, KEY_MCP_BIND, KEY_TLS, KEY_TLS_REDIRECT, KEY_WEB};
 
 /// Shortest password the settings window accepts.
 pub const MIN_PASSWORD_LEN: usize = 8;
@@ -61,12 +62,15 @@ pub fn run(path: &std::path::Path, elevated: bool, no_window: bool) -> Result<()
 /// Windows: starts the window again with administrator rights (UAC prompt).
 #[cfg(windows)]
 fn elevate(path: &std::path::Path, elevated: bool) {
+    use dalker_platform::i18n;
     use dalker_platform::windows::settings;
     if elevated {
-        settings::error_box(&format!(
-            "Dalker can't write its settings file:\n{}\n\nIs Dalker installed?",
-            path.display()
-        ));
+        // The file can't be read either: the system's language.
+        let lang = i18n::current(None);
+        settings::error_box(
+            &i18n::tr(lang, "settings.title", &[]),
+            &i18n::tr(lang, "settings.cantWrite", &[("path", &path.display())]),
+        );
         return;
     }
     let args = format!(
@@ -88,10 +92,21 @@ pub struct Saved {
     pub mcp_bind: SocketAddr,
     /// `DALKER_MCP_PUBLIC_URL`: where agents reach the MCP server through a reverse proxy.
     pub mcp_public_url: Option<String>,
+    /// `DALKER_TLS`, `DALKER_TLS_REDIRECT`, and whether `DALKER_TLS_CERT` is set.
+    pub tls: bool,
+    pub tls_redirect: bool,
+    pub tls_own: bool,
     pub password_set: bool,
+    /// `DALKER_FPS`, `DALKER_BITRATE_KBPS`, `DALKER_MAX_WIDTH` (defaults where missing).
+    pub stream: crate::stream::Limits,
+    /// Whether the file sets any stream limit (the window's "Custom stream limits" switch).
+    pub stream_custom: bool,
     pub tokens: Vec<TokenRecord>,
     /// The tokens themselves, by id, for those made since they are kept (copy again later).
     pub secrets: std::collections::BTreeMap<String, String>,
+    /// `DALKER_LANGUAGE`: the language chosen for Dalker Settings and the host's menus; `None`
+    /// follows the operating system.
+    pub language: Option<String>,
 }
 
 impl Saved {
@@ -120,10 +135,25 @@ impl Saved {
             bind: addr(KEY_BIND, cli::DEFAULT_BIND),
             mcp: get(KEY_MCP).and_then(OnOff::parse).unwrap_or(false),
             mcp_bind: addr(KEY_MCP_BIND, cli::DEFAULT_MCP_BIND),
+            tls: get(KEY_TLS).and_then(OnOff::parse).unwrap_or(true),
+            tls_redirect: get(KEY_TLS_REDIRECT)
+                .and_then(OnOff::parse)
+                .unwrap_or(false),
+            tls_own: get("DALKER_TLS_CERT").is_some_and(|v| !v.trim().is_empty()),
             mcp_public_url: get("DALKER_MCP_PUBLIC_URL")
                 .map(str::trim)
                 .filter(|v| !v.is_empty())
                 .map(str::to_owned),
+            language: get(dalker_platform::i18n::CONFIG_KEY)
+                .map(str::trim)
+                .filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("auto"))
+                .map(str::to_owned),
+            stream: crate::stream::Limits::from_config(
+                &pairs,
+                crate::stream::Limits::default(),
+                &[],
+            ),
+            stream_custom: crate::stream::KEYS.iter().any(|k| get(k).is_some()),
             password_set: get(KEY_PASSWORD_HASH).is_some_and(|v| !v.is_empty())
                 || get(KEY_PASSWORD).is_some_and(|v| !v.is_empty()),
             secrets: pairs
@@ -214,7 +244,7 @@ pub fn with_permissions(
     clipboard: bool,
 ) -> Result<TokenRecord, String> {
     // A view-only token stays view-only while only its clipboard permission changes.
-    let scopes = if !remote_control && remote_of(record) == Remote::ViewOnly {
+    let mut scopes = if !remote_control && remote_of(record) == Remote::ViewOnly {
         let mut s = BTreeSet::from([Scope::View]);
         if clipboard {
             s.insert(Scope::Clipboard);
@@ -223,6 +253,9 @@ pub fn with_permissions(
     } else {
         scopes_for(remote_control, clipboard)?
     };
+    if record.scopes.contains(&Scope::Files) {
+        scopes.insert(Scope::Files);
+    }
     Ok(TokenRecord {
         scopes,
         ..record.clone()
@@ -252,6 +285,12 @@ mod tests {
         assert_eq!(s.bind.to_string(), "0.0.0.0:8742");
         assert_eq!(s.mcp_bind.to_string(), "127.0.0.1:8743");
         assert_eq!(s.mcp_public_url, None);
+        assert_eq!(s.language, None);
+        assert_eq!(Saved::parse("DALKER_LANGUAGE=auto\n").language, None);
+        assert_eq!(
+            Saved::parse("DALKER_LANGUAGE=uk\n").language.as_deref(),
+            Some("uk")
+        );
         let s = Saved::parse(
             "DALKER_MCP_PUBLIC_URL=https://desk.example.com/mcp
 ",
@@ -265,6 +304,18 @@ mod tests {
         ));
         assert!(!s.web && s.mcp && s.password_set);
         assert_eq!(s.bind.port(), 8080);
+        assert_eq!(s.stream, crate::stream::Limits::default());
+        assert!(!s.stream_custom);
+        let s = Saved::parse("DALKER_FPS=60\nDALKER_BITRATE_KBPS=12000\nDALKER_MAX_WIDTH=0\n");
+        assert_eq!(
+            s.stream,
+            crate::stream::Limits {
+                fps: 60,
+                bitrate_kbps: 12000,
+                max_width: 0
+            }
+        );
+        assert!(s.stream_custom);
     }
 
     #[test]

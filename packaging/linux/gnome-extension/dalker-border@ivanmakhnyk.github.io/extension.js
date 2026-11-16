@@ -20,6 +20,11 @@
 //                  apps), pressed as keysyms on a virtual keyboard (those must exist in the
 //                  current layout). Also only while the frame is shown.
 //
+//   TakeDisconnectRequest() -> b
+//                  True once after the person here chose "Disconnect everyone" in the panel
+//                  menu shown while the frame is on. The agent asks with every ping and then
+//                  ends every viewer's and AI agent's session.
+//
 // It also runs on the lock screen ("session-modes"), so a connected viewer can see and unlock it.
 
 import Clutter from 'gi://Clutter';
@@ -30,6 +35,8 @@ import St from 'gi://St';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 const BORDER_PX = 5;
 const TIMEOUT_MS = 3000;
@@ -39,6 +46,9 @@ const IFACE = `<node>
   <interface name="io.github.ivanmakhnyk.Dalker.Border">
     <method name="SetActive">
       <arg type="b" direction="in" name="active"/>
+    </method>
+    <method name="SetLabel">
+      <arg type="s" direction="in" name="label"/>
     </method>
     <property name="Active" type="b" access="read"/>
     <method name="ClipboardSerial">
@@ -53,18 +63,27 @@ const IFACE = `<node>
     <method name="TypeText">
       <arg type="s" direction="in" name="text"/>
     </method>
+    <method name="TakeDisconnectRequest">
+      <arg type="b" direction="out" name="requested"/>
+    </method>
   </interface>
 </node>`;
 
 export default class DalkerBorder extends Extension {
     enable() {
         this._active = false;
+        this._labelText = '';
         this._released = false;
         this._edges = [];
+        this._badge = null;
         this._timeoutId = 0;
 
         this._buildEdges();
         this._monitorsChangedId = Main.layoutManager.connect('monitors-changed', () => this._buildEdges());
+
+        this._disconnectRequested = false;
+        this._buildIndicator();
+        this._sessionModeId = Main.sessionMode.connect('updated', () => this._updateIndicator());
 
         this._clipSerial = 0;
         this._selection = global.display.get_selection();
@@ -97,6 +116,12 @@ export default class DalkerBorder extends Extension {
             this._ownerChangedId = 0;
             this._selection = null;
         }
+        if (this._sessionModeId) {
+            Main.sessionMode.disconnect(this._sessionModeId);
+            this._sessionModeId = 0;
+        }
+        this._indicator?.destroy();
+        this._indicator = null;
         this._clearTimeout();
         this._active = false;
         this._updateRemoteAccess();
@@ -115,6 +140,7 @@ export default class DalkerBorder extends Extension {
         this._active = !!active;
         for (const e of this._edges)
             e.visible = this._active;
+        this._updateBadge();
         if (this._active) {
             this._raise();
             // Dead-man switch: no ping for 3 s (agent crashed or stopped) hides the frame.
@@ -123,11 +149,26 @@ export default class DalkerBorder extends Extension {
                 this._active = false;
                 for (const e of this._edges)
                     e.visible = false;
+                this._updateBadge();
                 this._updateRemoteAccess();
+                this._updateIndicator();
                 return GLib.SOURCE_REMOVE;
             });
         }
         this._updateRemoteAccess();
+        this._updateIndicator();
+    }
+
+    SetLabel(label) {
+        this._labelText = label ?? '';
+        this._updateBadge();
+        this._updateIndicator();
+    }
+
+    TakeDisconnectRequest() {
+        const requested = this._disconnectRequested;
+        this._disconnectRequested = false;
+        return requested;
     }
 
     ClipboardSerial() {
@@ -162,7 +203,9 @@ export default class DalkerBorder extends Extension {
         if (im?.currentFocus) {
             im.commit(text);
         } else {
-            this._keyboard ??= global.stage.context.get_backend().get_default_seat()
+            // GNOME 47 moved the backend behind the stage's context; 46 only has the global one.
+            const backend = global.stage.context?.get_backend() ?? Clutter.get_default_backend();
+            this._keyboard ??= backend.get_default_seat()
                 .create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE);
             for (const ch of text) {
                 const keyval = Clutter.unicode_to_keysym(ch.codePointAt(0));
@@ -197,6 +240,70 @@ export default class DalkerBorder extends Extension {
         }
     }
 
+    // --- panel menu --------------------------------------------------------------------
+
+    // While someone is connected, a red icon in the top bar lets the person here end every
+    // session without an administrator password.
+    _buildIndicator() {
+        this._indicator = new PanelMenu.Button(0.0, 'Dalker', false);
+        this._indicator.add_child(new St.Icon({
+            icon_name: 'screen-shared-symbolic',
+            style_class: 'system-status-icon',
+            style: 'color: rgb(255, 0, 0);',
+        }));
+        this._text = this._strings();
+        this._statusItem = new PopupMenu.PopupMenuItem(
+            this._text['gnome.connected'] || 'Someone is connected through Dalker', {reactive: false});
+        this._indicator.menu.addMenuItem(this._statusItem);
+        const item = new PopupMenu.PopupMenuItem(this._text['gnome.disconnect'] || 'Disconnect everyone');
+        item.connect('activate', () => {
+            this._disconnectRequested = true;
+        });
+        this._indicator.menu.addMenuItem(item);
+        Main.panel.addToStatusArea(this.uuid, this._indicator);
+        this._updateIndicator();
+    }
+
+    // The menu's strings in the session's language (i18n/<code>.json next to this file, the
+    // same files as the agent's tray and menu bar), or {} for English. The choice made in
+    // Dalker Settings is in the root-only config, so the session's language decides here.
+    _strings() {
+        const special = {zh_TW: 'zh-TW', zh_HK: 'zh-TW', zh_MO: 'zh-TW', zh: 'zh-CN', pt_BR: 'pt-BR',
+            pt: 'pt-BR', no: 'nb', nn: 'nb', nb: 'nb'};
+        for (const name of GLib.get_language_names()) {
+            const tag = name.split(/[.@]/)[0];
+            if (tag === 'C' || tag === 'POSIX')
+                continue;
+            const [lang, region] = tag.split('_');
+            const candidates = [special[tag], tag.replace('_', '-'),
+                lang === 'pt' && region && region !== 'BR' ? 'pt-PT' : special[lang], lang];
+            for (const code of candidates.filter(Boolean)) {
+                try {
+                    const [ok, bytes] = GLib.file_get_contents(`${this.path}/i18n/${code}.json`);
+                    if (ok)
+                        return JSON.parse(new TextDecoder().decode(bytes));
+                } catch (_) {
+                    // No such language: try the next.
+                }
+            }
+        }
+        return {};
+    }
+
+    _updateIndicator() {
+        if (!this._active)
+            this._disconnectRequested = false;
+        if (this._statusItem) {
+            const text = this._text || {};
+            this._statusItem.label.text = this._labelText
+                ? (text['gnome.connectedNamed'] || '{name} is connected through Dalker')
+                    .replace('{name}', this._labelText)
+                : text['gnome.connected'] || 'Someone is connected through Dalker';
+        }
+        if (this._indicator)
+            this._indicator.visible = this._active && !Main.sessionMode.isLocked;
+    }
+
     // --- drawing -----------------------------------------------------------------------
 
     // The lock screen is streamed too ("session-modes" keeps this extension on there), so the
@@ -207,6 +314,33 @@ export default class DalkerBorder extends Extension {
             if (parent)
                 parent.set_child_above_sibling(e, null);
         }
+        if (this._badge) {
+            const parent = this._badge.get_parent();
+            if (parent)
+                parent.set_child_above_sibling(this._badge, null);
+        }
+    }
+
+    _updateBadge() {
+        if (!this._badge)
+            return;
+        this._badge.text = this._labelText;
+        this._badge.visible = this._active && this._labelText.length > 0;
+        if (this._badge.visible)
+            this._positionBadge();
+    }
+
+    _positionBadge() {
+        if (!this._badge)
+            return;
+        const m = Main.layoutManager.primaryMonitor ?? Main.layoutManager.monitors[0];
+        if (!m)
+            return;
+        const [, natW] = this._badge.get_preferred_width(-1);
+        this._badge.set_position(
+            Math.round(m.x + (m.width - natW) / 2),
+            m.y + BORDER_PX,
+        );
     }
 
     _clearTimeout() {
@@ -222,6 +356,11 @@ export default class DalkerBorder extends Extension {
             e.destroy();
         }
         this._edges = [];
+        if (this._badge) {
+            Main.layoutManager.removeChrome(this._badge);
+            this._badge.destroy();
+            this._badge = null;
+        }
     }
 
     _buildEdges() {
@@ -252,5 +391,20 @@ export default class DalkerBorder extends Extension {
                 this._edges.push(edge);
             }
         }
+        this._badge = new St.Label({
+            style: 'background-color: rgb(255, 0, 0); color: rgb(255, 255, 255); ' +
+                   'font-weight: bold; font-size: 12px; padding: 2px 10px 4px 10px; ' +
+                   'border-radius: 0 0 6px 6px;',
+            text: this._labelText,
+            reactive: false,
+            can_focus: false,
+            track_hover: false,
+            visible: this._active && this._labelText.length > 0,
+        });
+        Main.layoutManager.addTopChrome(this._badge, {
+            affectsStruts: false,
+            trackFullscreen: false,
+        });
+        this._positionBadge();
     }
 }

@@ -9,13 +9,18 @@
 //! | Route | Body | |
 //! |---|---|---|
 //! | `GET /api/settings` | | the whole state ([`state_json`]) |
+//! | `GET /api/settings/diagnostics` | | host only: shareable diagnostics text |
 //! | `POST /api/settings/web` | `{enabled?, port?}` | host only |
 //! | `POST /api/settings/password` | `{password, repeat}` | host only |
 //! | `POST /api/settings/mcp` | `{enabled?, port?, remote?}` | host only |
+//! | `POST /api/settings/stream` | `{custom?, fps?, bitrate_kbps?, max_width?}` | host only: stream limits; `custom: false` goes back to the defaults |
 //! | `POST /api/settings/tokens` | `{name, remote, clipboard}` | → `{token, state}` |
 //! | `PATCH /api/settings/tokens/{id}` | `{remote, clipboard}` | |
 //! | `DELETE /api/settings/tokens/{id}` | | |
 //! | `GET /api/settings/tokens/{id}/secret` | | → `{token}` |
+//! | `POST /api/settings/screen-sharing` | | host only: show the portal's "share your screen" dialog now → `{allowed, state}` |
+//! | `GET /api/settings/language` | | host only → `{choice, system}` ([`language_json`]) |
+//! | `POST /api/settings/language` | `{language}` | host only: a code or `auto` → `{choice, system}` |
 //!
 //! Every change answers with the new state, so the page redraws from one source.
 
@@ -28,6 +33,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use dalker_mcp::tokens::{self, Scope};
+use dalker_platform::i18n;
 use serde_json::{json, Value};
 
 use super::store::Store;
@@ -37,6 +43,7 @@ use super::{
 };
 use crate::cli::OnOff;
 use crate::listeners::{KEY_BIND, KEY_MCP, KEY_MCP_BIND, KEY_WEB};
+use crate::stream;
 
 /// What a caller of the API may change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,13 +55,16 @@ pub enum Access {
 }
 
 /// Whether each server answers right now: `None` = not known yet.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Live {
     pub web: Option<bool>,
     pub mcp: Option<bool>,
+    /// SHA-256 fingerprint of the certificate the servers present over HTTPS, if they do.
+    pub fingerprint: Option<String>,
 }
 
 type Check = Box<dyn Fn(&HeaderMap) -> bool + Send + Sync>;
+type Observer = Box<dyn Fn(&Saved) + Send + Sync>;
 
 pub struct Api {
     store: Mutex<Box<dyn Store>>,
@@ -66,7 +76,7 @@ pub struct Api {
     /// Why tokens can't be changed here (shown instead of the controls), if they can't.
     blocked: Option<String>,
     /// Told what the file says after every read (the window probes those addresses).
-    observe: Option<Box<dyn Fn(&Saved) + Send + Sync>>,
+    observe: Option<Observer>,
 }
 
 impl Api {
@@ -110,15 +120,22 @@ impl Api {
     pub fn router(self) -> Router {
         Router::new()
             .route("/api/settings", get(get_state))
+            .route("/api/settings/diagnostics", get(get_diagnostics))
             .route("/api/settings/web", post(set_web))
             .route("/api/settings/password", post(set_password))
             .route("/api/settings/mcp", post(set_mcp))
+            .route("/api/settings/stream", post(set_stream))
             .route("/api/settings/tokens", post(create_token))
             .route(
                 "/api/settings/tokens/{id}",
                 patch(change_token).delete(revoke_token),
             )
             .route("/api/settings/tokens/{id}/secret", get(token_secret))
+            .route("/api/settings/screen-sharing", post(allow_screen_sharing))
+            .route(
+                "/api/settings/language",
+                get(get_language).post(set_language),
+            )
             .with_state(Arc::new(self))
     }
 
@@ -194,6 +211,22 @@ fn bad(msg: impl Into<String>) -> (StatusCode, String) {
     (StatusCode::BAD_REQUEST, msg.into())
 }
 
+async fn get_diagnostics(State(api): ApiState, headers: HeaderMap) -> Response {
+    let mut response = guarded(api, headers, true, |api| {
+        let (config, journal) = {
+            let mut store = api.store.lock().unwrap();
+            (store.read().ok(), store.diagnostic_journal())
+        };
+        Ok(json!({ "report": crate::diagnostics::collect(config.as_deref(), None, journal.as_deref()) }))
+    })
+    .await;
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
 fn saved_or_500(r: Result<Saved, String>) -> Result<Saved, (StatusCode, String)> {
     r.map_err(|e| {
         (
@@ -217,6 +250,7 @@ pub fn state_json(api: &Api, saved: &Saved) -> Value {
                 "masked": masked(r),
                 "remote": match remote_of(r) { Remote::Full => "full", Remote::ViewOnly => "view", Remote::None => "none" },
                 "clipboard": r.scopes.contains(&Scope::Clipboard),
+                "files": r.scopes.contains(&Scope::Files),
                 "created": date(r.created),
                 "expires": r.expires.map(date),
                 "expired": r.expired_at(now),
@@ -228,7 +262,7 @@ pub fn state_json(api: &Api, saved: &Saved) -> Value {
     // The web client reaches the host by the name it opened it with (see `mcpUrl()` in
     // settings.js), so only the host's own window lists the host's network addresses.
     let addrs = if host { host_addresses() } else { Vec::new() };
-    let mcp = reach(saved.mcp_bind, &addrs, "/mcp");
+    let mcp = reach(saved.mcp_bind, &addrs, "/mcp", saved.tls);
     json!({
         "access": if host { "host" } else { "tokens" },
         "version": env!("CARGO_PKG_VERSION"),
@@ -240,7 +274,14 @@ pub fn state_json(api: &Api, saved: &Saved) -> Value {
             "status": status(saved.web, live.web),
             "password_set": saved.password_set,
             "loopback": saved.bind.ip().is_loopback(),
-            "urls": reach(saved.bind, &addrs, "/"),
+            "urls": reach(saved.bind, &addrs, "/", saved.tls),
+        },
+        "tls": {
+            "enabled": saved.tls,
+            "redirect": saved.tls_redirect,
+            // The host's own certificate (`DALKER_TLS_CERT`) rather than the self-signed one.
+            "own": saved.tls_own,
+            "fingerprint": live.fingerprint,
         },
         "mcp": {
             "enabled": saved.mcp,
@@ -251,9 +292,88 @@ pub fn state_json(api: &Api, saved: &Saved) -> Value {
             "loopback": saved.mcp_bind.ip().is_loopback(),
             "status": status(saved.mcp, live.mcp),
         },
+        "stream": {
+            "custom": saved.stream_custom,
+            "fps": saved.stream.fps,
+            "bitrate_kbps": saved.stream.bitrate_kbps,
+            "max_width": saved.stream.max_width,
+            "default": {
+                "fps": stream::DEFAULT_FPS,
+                "bitrate_kbps": stream::DEFAULT_BITRATE_KBPS,
+                "max_width": stream::DEFAULT_MAX_WIDTH,
+            },
+            "range": {
+                "fps": [1, stream::MAX_FPS],
+                "bitrate_kbps": [stream::MIN_BITRATE_KBPS, stream::MAX_BITRATE_KBPS],
+                "max_width": [stream::MIN_MAX_WIDTH, stream::MAX_MAX_WIDTH],
+            },
+        },
         "tokens": token_rows,
         "min_password": MIN_PASSWORD_LEN,
+        // `null` where nobody at the host is asked to allow screen sharing.
+        "screen_sharing": (host && portal_desktop()).then(|| json!({
+            "allowed": dalker_platform::screen_sharing_allowed(),
+        })),
     })
+}
+
+/// Whether this desktop shares the screen through xdg-desktop-portal (asked once: the page
+/// redraws every two seconds).
+fn portal_desktop() -> bool {
+    static PORTAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PORTAL.get_or_init(dalker_platform::screen_sharing_needs_permission)
+}
+
+/// Shows the "share your screen" dialog while the person is at the computer and keeps the
+/// answer, so a remote viewer later doesn't wait for somebody to click Share. The settings
+/// window runs in the desktop user's session, like the agent that captures.
+async fn allow_screen_sharing(State(api): ApiState, headers: HeaderMap) -> Response {
+    guarded(api, headers, true, move |api| {
+        let allowed = dalker_platform::allow_screen_sharing_now()
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        tracing::info!(allowed, "screen sharing asked ahead of time");
+        let saved = api.read().map_err(bad)?;
+        Ok(json!({ "allowed": allowed, "state": state_json(api, &saved) }))
+    })
+    .await
+}
+
+/// The language of Dalker Settings and the host's menus: what was chosen (`auto` follows the
+/// system) and the operating system's preferred languages, best first. The page picks the
+/// language from these the same way the host's menus do (`dalker_platform::i18n::resolve`).
+pub fn language_json(saved: &Saved) -> Value {
+    json!({
+        "choice": saved.language.as_deref().and_then(i18n::supported).unwrap_or("auto"),
+        "system": i18n::system_languages(),
+    })
+}
+
+async fn get_language(State(api): ApiState, headers: HeaderMap) -> Response {
+    guarded(api, headers, true, move |api| {
+        let saved = api.read().map_err(bad)?;
+        Ok(language_json(&saved))
+    })
+    .await
+}
+
+async fn set_language(
+    State(api): ApiState,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    guarded(api, headers, true, move |api| {
+        let choice = body["language"].as_str().unwrap_or_default();
+        let saved = if choice.eq_ignore_ascii_case("auto") {
+            saved_or_500(api.edit(&[], &[i18n::CONFIG_KEY.to_owned()]))?
+        } else {
+            let code = i18n::supported(choice)
+                .ok_or_else(|| bad(format!("Dalker has no translation for “{choice}”.")))?;
+            saved_or_500(api.edit(&[(i18n::CONFIG_KEY.to_owned(), code.to_owned())], &[]))?
+        };
+        tracing::info!(language = ?saved.language, "language changed in the settings");
+        Ok(language_json(&saved))
+    })
+    .await
 }
 
 /// `running`, `stopped`, `down` (on but not answering), `stopping` or `checking`.
@@ -305,17 +425,26 @@ fn host_addresses() -> Vec<HostAddr> {
 }
 
 /// The addresses a server bound to `bind` answers on, best first, as `{host, name, url}`
-/// (`path` is appended to each URL). One logic for the web server and the MCP server:
+/// (`path` is appended to each URL). With `https`, the addresses of other computers' use
+/// `https://`; this computer's own stays on `http://` (it never crosses the network, and it
+/// isn't redirected). One logic for the web server and the MCP server:
 ///
 /// * bound to every address (`0.0.0.0` or `[::]`): each of `addrs` of that family, then this
 ///   computer's own `127.0.0.1` (or `[::1]`) for clients on the host;
 /// * bound to loopback or to one address: that address alone.
 ///
 /// Never empty.
-fn reach(bind: SocketAddr, addrs: &[HostAddr], path: &str) -> Vec<Value> {
-    let url = |ip: IpAddr| match ip {
-        IpAddr::V6(v6) => format!("http://[{v6}]:{}{path}", bind.port()),
-        IpAddr::V4(v4) => format!("http://{v4}:{}{path}", bind.port()),
+fn reach(bind: SocketAddr, addrs: &[HostAddr], path: &str, https: bool) -> Vec<Value> {
+    let url = |ip: IpAddr| {
+        let scheme = if https && !ip.is_loopback() {
+            "https"
+        } else {
+            "http"
+        };
+        match ip {
+            IpAddr::V6(v6) => format!("{scheme}://[{v6}]:{}{path}", bind.port()),
+            IpAddr::V4(v4) => format!("{scheme}://{v4}:{}{path}", bind.port()),
+        }
     };
     let entry =
         |ip: IpAddr, name: &str| json!({ "host": ip.to_string(), "name": name, "url": url(ip) });
@@ -420,6 +549,42 @@ async fn set_mcp(State(api): ApiState, headers: HeaderMap, Json(body): Json<Valu
         let bind = SocketAddr::new(ip, port);
         if bind != saved.mcp_bind {
             set.push((KEY_MCP_BIND.to_owned(), bind.to_string()));
+        }
+        let saved = saved_or_500(api.edit(&set, &[]))?;
+        tracing::info!(keys = ?set.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), "settings saved");
+        Ok(json!({ "state": state_json(api, &saved) }))
+    })
+    .await
+}
+
+/// The stream limits every viewer gets: the most frame rate and bitrate, and the width wider
+/// screens are scaled down to. The agent applies them to running streams too. `custom: false`
+/// removes them from the file, so the defaults apply.
+async fn set_stream(State(api): ApiState, headers: HeaderMap, Json(body): Json<Value>) -> Response {
+    guarded(api, headers, true, move |api| {
+        if body["custom"].as_bool() == Some(false) {
+            let remove: Vec<String> = stream::KEYS.iter().map(|k| k.to_string()).collect();
+            let saved = saved_or_500(api.edit(&[], &remove))?;
+            tracing::info!("stream limits back to the defaults in the settings");
+            return Ok(json!({ "state": state_json(api, &saved) }));
+        }
+        type Parse = fn(&str) -> Result<u32, String>;
+        let fields: [(&str, &str, &str, Parse); 3] = [
+            ("fps", stream::KEY_FPS, "Frame rate", stream::parse_fps),
+            ("bitrate_kbps", stream::KEY_BITRATE_KBPS, "Bitrate", stream::parse_bitrate_kbps),
+            ("max_width", stream::KEY_MAX_WIDTH, "Width", stream::parse_max_width),
+        ];
+        let mut set = Vec::new();
+        for (field, key, what, parse) in fields {
+            let value = &body[field];
+            if value.is_null() {
+                continue;
+            }
+            let v = value
+                .as_u64()
+                .ok_or_else(|| bad(format!("{what}: enter a whole number.")))?;
+            let v = parse(&v.to_string()).map_err(|e| bad(format!("{}.", capitalize(&e))))?;
+            set.push((key.to_owned(), v.to_string()));
         }
         let saved = saved_or_500(api.edit(&set, &[]))?;
         tracing::info!(keys = ?set.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), "settings saved");
@@ -568,6 +733,7 @@ mod tests {
             || Live {
                 web: Some(true),
                 mcp: Some(false),
+                fingerprint: Some("AB:CD".into()),
             },
         )
         .router()
@@ -609,6 +775,10 @@ mod tests {
             v["mcp"]["url"], "http://127.0.0.1:8743/mcp",
             "this computer only by default"
         );
+        assert_eq!(v["tls"]["enabled"], true, "HTTPS by default");
+        assert_eq!(v["tls"]["redirect"], false);
+        assert_eq!(v["tls"]["own"], false);
+        assert_eq!(v["tls"]["fingerprint"], "AB:CD");
 
         let (s, v) = call(&app, "POST", "/api/settings/web", json!({"port": 9000})).await;
         assert_eq!(s, StatusCode::OK, "{v}");
@@ -664,6 +834,72 @@ mod tests {
             text.contains("DALKER_BIND=0.0.0.0:9000") && text.contains("DALKER_MCP=on"),
             "{text}"
         );
+
+        // Stream limits.
+        let (_, v) = call(&app, "GET", "/api/settings", Value::Null).await;
+        assert_eq!(
+            v["stream"],
+            json!({"custom": false, "fps": 30, "bitrate_kbps": 6000, "max_width": 1920,
+                   "default": {"fps": 30, "bitrate_kbps": 6000, "max_width": 1920},
+                   "range": {"fps": [1, 120], "bitrate_kbps": [250, 100000], "max_width": [320, 16384]}})
+        );
+        let (s, v) = call(
+            &app,
+            "POST",
+            "/api/settings/stream",
+            json!({"fps": 60, "bitrate_kbps": 12000, "max_width": 0}),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(
+            (
+                &v["state"]["stream"]["fps"],
+                &v["state"]["stream"]["bitrate_kbps"],
+                &v["state"]["stream"]["max_width"]
+            ),
+            (&json!(60), &json!(12000), &json!(0))
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("DALKER_FPS=60")
+                && text.contains("DALKER_BITRATE_KBPS=12000")
+                && text.contains("DALKER_MAX_WIDTH=0"),
+            "{text}"
+        );
+        for bad in [
+            json!({"fps": 121}),
+            json!({"fps": "fast"}),
+            json!({"bitrate_kbps": 100}),
+            json!({"max_width": 100}),
+        ] {
+            let (s, v) = call(&app, "POST", "/api/settings/stream", bad.clone()).await;
+            assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}: {v}");
+        }
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("DALKER_FPS=60"),
+            "unchanged"
+        );
+        let (s, v) = call(
+            &app,
+            "POST",
+            "/api/settings/stream",
+            json!({"custom": false}),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(
+            (
+                &v["state"]["stream"]["custom"],
+                &v["state"]["stream"]["fps"]
+            ),
+            (&json!(false), &json!(30)),
+            "back to the defaults"
+        );
+        assert!(!std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("DALKER_FPS"));
 
         // Tokens: create, copy again, change, revoke.
         let (s, v) = call(
@@ -747,7 +983,7 @@ mod tests {
             },
         ];
         let urls = |bind: &str, path| {
-            reach(bind.parse().unwrap(), &addrs, path)
+            reach(bind.parse().unwrap(), &addrs, path, false)
                 .iter()
                 .map(|v| v["url"].as_str().unwrap().to_owned())
                 .collect::<Vec<_>>()
@@ -771,14 +1007,72 @@ mod tests {
             "http://[2001:db8::5]:8743/mcp"
         );
         assert_eq!(
-            reach("0.0.0.0:8742".parse().unwrap(), &[], "/")[0]["url"],
+            reach("0.0.0.0:8742".parse().unwrap(), &[], "/", false)[0]["url"],
             "http://127.0.0.1:8742/",
             "no network"
         );
         assert_eq!(
-            reach("0.0.0.0:8742".parse().unwrap(), &addrs, "/")[0]["name"],
+            reach("0.0.0.0:8742".parse().unwrap(), &addrs, "/", false)[0]["name"],
             "Ethernet"
         );
+        // HTTPS for other computers; this computer's own address stays on HTTP.
+        let https: Vec<_> = reach("0.0.0.0:8742".parse().unwrap(), &addrs, "/", true)
+            .iter()
+            .map(|v| v["url"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            https,
+            [
+                "https://192.168.1.20:8742/",
+                "https://100.101.102.103:8742/",
+                "http://127.0.0.1:8742/"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn host_chooses_the_language() {
+        let path = temp("language");
+        let app = app(&path, Access::Host);
+        let (s, v) = call(&app, "GET", "/api/settings/language", Value::Null).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(v["choice"], "auto");
+        assert!(v["system"].is_array());
+        let (s, v) = call(
+            &app,
+            "POST",
+            "/api/settings/language",
+            json!({"language": "pt-br"}),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["choice"], "pt-BR", "saved as listed");
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("DALKER_LANGUAGE=pt-BR"));
+        let (s, v) = call(
+            &app,
+            "POST",
+            "/api/settings/language",
+            json!({"language": "xx"}),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+        let (_, v) = call(&app, "GET", "/api/settings/language", Value::Null).await;
+        assert_eq!(v["choice"], "pt-BR", "unchanged");
+        let (s, v) = call(
+            &app,
+            "POST",
+            "/api/settings/language",
+            json!({"language": "auto"}),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(v["choice"], "auto");
+        assert!(!std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("DALKER_LANGUAGE"));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[tokio::test]
@@ -792,17 +1086,29 @@ mod tests {
             v["file"].is_null(),
             "the host's file path is not shown to viewers"
         );
+        assert!(v["screen_sharing"].is_null(), "a host-only setting");
+        let (s, _) = call(&app, "GET", "/api/settings/diagnostics", Value::Null).await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
         for (uri, body) in [
             ("/api/settings/web", json!({"enabled": false})),
+            ("/api/settings/stream", json!({"fps": 60})),
             ("/api/settings/mcp", json!({"enabled": true})),
             (
                 "/api/settings/password",
                 json!({"password": "long-enough", "repeat": "long-enough"}),
             ),
+            ("/api/settings/screen-sharing", Value::Null),
+            ("/api/settings/language", json!({"language": "uk"})),
         ] {
             let (s, _) = call(&app, "POST", uri, body).await;
             assert_eq!(s, StatusCode::FORBIDDEN, "{uri}");
         }
+        let (s, _) = call(&app, "GET", "/api/settings/language", Value::Null).await;
+        assert_eq!(
+            s,
+            StatusCode::FORBIDDEN,
+            "the viewer's browser decides there"
+        );
         let (s, _) = call(
             &app,
             "POST",
@@ -820,6 +1126,27 @@ mod tests {
             app.clone().oneshot(req).await.unwrap().status(),
             StatusCode::UNAUTHORIZED
         );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn diagnostics_require_the_host_key_and_exclude_secrets() {
+        let path = temp("diagnostics");
+        std::fs::write(&path, "DALKER_WEB=off\nDALKER_PASSWORD=test-password\n").unwrap();
+        let app = app(&path, Access::Host);
+        let req = Request::builder()
+            .uri("/api/settings/diagnostics")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(req).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let (status, value) = call(&app, "GET", "/api/settings/diagnostics", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        let report = value["report"].as_str().unwrap();
+        assert!(report.contains("DALKER_WEB=off"));
+        assert!(!report.contains("test-password"));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

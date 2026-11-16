@@ -9,6 +9,7 @@ use dalker_core::keymap;
 use dalker_core::{DisplayInfo, InputError, InputEvent, InputInjector, MouseButton, NormPoint};
 
 use super::gnome::{self, MonitorLayout};
+use super::portal;
 
 /// One wheel notch in hi-res units (and in the browser's normalized units).
 const WHEEL_NOTCH: f32 = 120.0;
@@ -29,12 +30,13 @@ pub struct UinputInjector {
     keyboard: VirtualDevice,
     pointer: Option<VirtualDevice>,
     display: DisplayInfo,
-    /// GNOME only: the absolute device spans every monitor, while only the primary one
-    /// is streamed. `None` (X11) = the device spans exactly the captured screen.
+    /// Wayland and GNOME: the absolute device spans every monitor, while only one is
+    /// streamed. `None` (X11) = the device spans exactly the captured screen.
     layout: Option<MonitorLayout>,
     gnome: Option<zbus::blocking::Connection>,
     /// Started for a Wayland session: GNOME may not be on the bus yet (the agent starts
-    /// with the session), so keep looking for its monitor layout.
+    /// with the session), and other desktops' layout is known once a stream started, so
+    /// keep looking for it.
     wayland: bool,
     layout_checked: Instant,
     wheel_acc: (f32, f32),
@@ -89,7 +91,7 @@ impl UinputInjector {
         };
         if inj.wayland || gnome::gnome_session_available() {
             inj.gnome = zbus::blocking::Connection::session().ok();
-            inj.layout = inj.gnome.as_ref().and_then(gnome::monitor_layout);
+            inj.layout = inj.desktop_layout();
         }
         inj.pointer = Some(inj.build_pointer()?);
         Ok(inj)
@@ -151,17 +153,28 @@ impl UinputInjector {
             .ok_or_else(|| InputError::Backend("pointer device unavailable".into()))
     }
 
-    /// Re-reads the GNOME monitor layout and recreates the pointer if it changed
-    /// (monitors added, moved, rescaled...).
+    /// Where the streamed monitor lies on the desktop: from Mutter on GNOME, otherwise (other
+    /// Wayland desktops) from the compositor's outputs and the portal's stream.
+    fn desktop_layout(&self) -> Option<MonitorLayout> {
+        self.gnome
+            .as_ref()
+            .and_then(gnome::monitor_layout)
+            .or_else(|| self.wayland.then(portal::monitor_layout).flatten())
+    }
+
+    /// Re-reads the monitor layout and recreates the pointer if it changed (monitors
+    /// added, moved, rescaled...).
     fn refresh_layout(&mut self) {
         self.layout_checked = Instant::now();
         if self.gnome.is_none() && self.wayland {
             self.gnome = zbus::blocking::Connection::session().ok();
         }
-        let Some(conn) = &self.gnome else { return };
-        let layout = gnome::monitor_layout(conn);
+        if self.gnome.is_none() && !self.wayland {
+            return;
+        }
+        let layout = self.desktop_layout();
         if layout != self.layout || self.pointer.is_none() {
-            tracing::info!(?layout, "pointer mapped to the GNOME monitor layout");
+            tracing::info!(?layout, "pointer mapped to the desktop's monitor layout");
             self.layout = layout;
             self.rebuild_pointer();
         }

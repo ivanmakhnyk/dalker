@@ -1,17 +1,21 @@
-//! Linux backends: X11 capture (MIT-SHM, `GetImage` fallback) and `/dev/uinput` injection.
+//! Linux backends: screen capture, `/dev/uinput` injection and the red border.
 //!
-//! Requirements on the host:
-//! * An X11 session reachable via `$DISPLAY` (+ `$XAUTHORITY` when running as a
-//!   service). Wayland sessions need the PipeWire portal backend ([`pipewire`]),
-//!   which is not implemented yet.
-//! * Write access to `/dev/uinput` (see the README for the udev rule).
+//! * X11: the root window (MIT-SHM, `GetImage` fallback) and an X11 overlay window, reached
+//!   through `$DISPLAY` (+ `$XAUTHORITY` when running as a service).
+//! * GNOME (Wayland or Xorg): Mutter's screen cast and the Dalker Shell extension ([`gnome`]).
+//! * Other Wayland desktops (KDE Plasma, sway, Hyprland...): the xdg-desktop-portal screen
+//!   cast ([`portal`]) and a wlr-layer-shell border ([`wayland`]).
+//! * Input everywhere: write access to `/dev/uinput` (see the README for the udev rule).
 
 mod capture;
 pub mod files;
 pub mod gnome;
+mod gst;
 mod input;
+pub mod kde;
 mod overlay;
-pub mod pipewire;
+pub mod portal;
+pub mod wayland;
 
 pub use capture::X11Capturer;
 pub use input::UinputInjector;

@@ -24,7 +24,10 @@ body:
         - Windows 10
         - Ubuntu, GNOME on Wayland
         - Ubuntu, GNOME on Xorg
+        - KDE Plasma on Wayland
+        - sway, Hyprland or another Wayland desktop
         - Other Linux (describe below)
+        - macOS 14 or later
     validations:
       required: true
   - type: dropdown
@@ -34,6 +37,7 @@ body:
       options:
         - MSI installer
         - .deb package
+        - .pkg installer (macOS)
         - tar.gz / zip archive
         - Built from source
     validations:
@@ -67,8 +71,8 @@ body:
     validations:
       required: true
   - type: textarea
-    id: logs
+    id: diagnostics
     attributes:
-      label: Logs
-      description: The agent's log lines around the problem. Remove passwords, tokens and cookies.
+      label: Diagnostics
+      description: Use Copy diagnostics in Dalker Settings or run `dalkerd diagnostics`. Review the report before posting it. If you include additional log lines, remove passwords, tokens and cookies.
       render: text

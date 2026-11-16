@@ -28,3 +28,21 @@ exceptions = [
     { crate = "option-ext", allow = ["MPL-2.0"] },
     { crate = "selectors", allow = ["MPL-2.0"] },
 ]
+
+# cargo deny check advisories (run by CI and weekly): no dependency with a known vulnerability
+# (RustSec). Each ignored advisory below was reviewed; remove it once an update is possible.
+[advisories]
+ignore = [
+    # crypto-bigint 0.5 (timing variability). Comes in through elliptic-curve 0.13 for dtls in
+    # webrtc 0.17, which can't move to 0.7; DTLS uses it for the handshake's ECDHE/ECDSA. Goes
+    # away with webrtc 1.x (#69).
+    { id = "RUSTSEC-2026-0387", reason = "pinned by webrtc 0.17's dtls (#69)" },
+    # Unmaintained, no known vulnerability: pin-utils (webrtc-util via nix 0.26),
+    # proc-macro-error (gtk-rs 0.18 macros for the Linux settings window), and the zbus 5
+    # helper crates (#89).
+    { id = "RUSTSEC-2026-0441", reason = "unmaintained only; through webrtc 0.17 (#69)" },
+    { id = "RUSTSEC-2024-0370", reason = "unmaintained only; build-time macro of gtk-rs 0.18" },
+    { id = "RUSTSEC-2026-0370", reason = "unmaintained only; zbus 5 (#89)" },
+    { id = "RUSTSEC-2026-0371", reason = "unmaintained only; zbus 5 (#89)" },
+    { id = "RUSTSEC-2026-0372", reason = "unmaintained only; zbus 5 (#89)" },
+]

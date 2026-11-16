@@ -11,18 +11,28 @@ use std::time::Duration;
 
 use axum::http::HeaderMap;
 use axum::routing::get;
+use dalker_platform::i18n;
 use rand::TryRng;
 
 use super::api::{Access, Api, Live};
 use super::store::Store;
+use super::Saved;
 
-const TITLE: &str = "Dalker Settings";
 /// Header that carries the per-launch key (the page reads it from its URL's fragment).
 const KEY_HEADER: &str = "x-dalker-key";
 
 /// Shows the window until it is closed. `store` is where the config file is read and written,
 /// or why it can't be (shown on the page).
-pub fn show(store: Result<Box<dyn Store>, String>, no_window: bool) {
+pub fn show(mut store: Result<Box<dyn Store>, String>, no_window: bool) {
+    // The window's title and error messages; the page picks its language itself (i18n.js).
+    let lang = i18n::current(
+        store
+            .as_mut()
+            .ok()
+            .and_then(|s| s.read().ok())
+            .and_then(|text| Saved::parse(&text).language)
+            .as_deref(),
+    );
     let mut raw = [0u8; 24];
     rand::rngs::SysRng
         .try_fill_bytes(&mut raw)
@@ -44,8 +54,10 @@ pub fn show(store: Result<Box<dyn Store>, String>, no_window: bool) {
     let api = match store {
         Ok(store) => {
             let live = Arc::clone(&live);
-            Api::new(store, Access::Host, check, move || *live.lock().unwrap())
-                .on_read(move |saved| *targets.lock().unwrap() = Some((saved.bind, saved.mcp_bind)))
+            Api::new(store, Access::Host, check, move || {
+                live.lock().unwrap().clone()
+            })
+            .on_read(move |saved| *targets.lock().unwrap() = Some((saved.bind, saved.mcp_bind)))
         }
         Err(why) => Api::unavailable(format!("The settings can't be opened: {why}"), check),
     };
@@ -90,8 +102,19 @@ pub fn show(store: Result<Box<dyn Store>, String>, no_window: bool) {
         .expect("spawn settings server");
     let addr = match addr_rx.recv() {
         Ok(Ok(a)) => a,
-        Ok(Err(e)) => return report(&format!("The settings could not start: {e}")),
-        Err(_) => return report("The settings could not start."),
+        Ok(Err(e)) => {
+            return report(
+                lang,
+                &i18n::tr(lang, "settings.cantStart", &[("error", &e)]),
+            )
+        }
+        Err(_) => {
+            let e = "the server did not start";
+            return report(
+                lang,
+                &i18n::tr(lang, "settings.cantStart", &[("error", &e)]),
+            );
+        }
     };
     let url = format!("http://{addr}/#key={key}");
     if no_window {
@@ -100,8 +123,8 @@ pub fn show(store: Result<Box<dyn Store>, String>, no_window: bool) {
             std::thread::park();
         }
     }
-    if let Err(e) = open_window(&url) {
-        report(&format!("The settings window could not be opened: {e}"));
+    if let Err(e) = open_window(&url, &i18n::tr(lang, "settings.title", &[])) {
+        report(lang, &i18n::tr(lang, "settings.cantOpen", &[("error", &e)]));
     }
 }
 
@@ -246,12 +269,15 @@ impl Drop for InstanceFile {
     }
 }
 
-fn report(msg: &str) {
+fn report(lang: &str, msg: &str) {
     tracing::error!("{msg}");
     #[cfg(windows)]
-    dalker_platform::windows::settings::error_box(msg);
+    dalker_platform::windows::settings::error_box(&i18n::tr(lang, "settings.title", &[]), msg);
     #[cfg(not(windows))]
-    eprintln!("dalkerd settings: {msg}");
+    {
+        let _ = lang;
+        eprintln!("dalkerd settings: {msg}");
+    }
 }
 
 fn constant_eq(a: &str, b: &str) -> bool {
@@ -262,8 +288,8 @@ fn constant_eq(a: &str, b: &str) -> bool {
             == 0
 }
 
-#[cfg(any(windows, target_os = "linux"))]
-fn open_window(url: &str) -> Result<(), String> {
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+fn open_window(url: &str, title: &str) -> Result<(), String> {
     use tao::dpi::LogicalSize;
     use tao::event::{Event, WindowEvent};
     use tao::event_loop::{ControlFlow, EventLoopBuilder};
@@ -290,7 +316,7 @@ fn open_window(url: &str) -> Result<(), String> {
         .unwrap_or(680.0)
         .clamp(560.0, 820.0);
     let window = WindowBuilder::new()
-        .with_title(TITLE)
+        .with_title(title)
         .with_inner_size(LogicalSize::new(1000.0, height))
         .with_min_inner_size(LogicalSize::new(760.0, 560.0))
         .with_window_icon(icon)
@@ -312,7 +338,7 @@ fn open_window(url: &str) -> Result<(), String> {
         .with_url(url)
         .with_background_color((6, 9, 14, 255))
         .with_devtools(cfg!(debug_assertions));
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let webview = builder.build(&window).map_err(|e| e.to_string())?;
     #[cfg(target_os = "linux")]
     let webview = {
@@ -344,7 +370,7 @@ fn open_window(url: &str) -> Result<(), String> {
 }
 
 /// Brings the window to the front, restored if it was minimized.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn raise(window: &tao::window::Window, _token: Option<String>) {
     window.set_minimized(false);
     window.set_visible(true);
@@ -366,8 +392,8 @@ fn raise(window: &tao::window::Window, token: Option<String>) {
     gtk_window.present();
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
-fn open_window(_url: &str) -> Result<(), String> {
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+fn open_window(_url: &str, _title: &str) -> Result<(), String> {
     Err("no settings window on this OS".into())
 }
 
@@ -380,10 +406,18 @@ fn spawn_probe(live: Arc<Mutex<Live>>, targets: Arc<Mutex<Option<(SocketAddr, So
             if let Some((web, mcp)) = now {
                 let web_up = probe_http(web, "/", "<title>Dalker</title>");
                 let mcp_up = probe_http(mcp, "/mcp", "realm=\"dalker\"");
+                // The certificate the agent presents, whichever server is up (they share it).
+                let fingerprint = [(web_up, web), (mcp_up, mcp)]
+                    .into_iter()
+                    .filter(|(up, _)| *up)
+                    .find_map(|(_, addr)| {
+                        dalker_web::tls::fetch_fingerprint(local(addr), Duration::from_secs(1))
+                    });
                 if *targets.lock().unwrap() == now {
                     *live.lock().unwrap() = Live {
                         web: Some(web_up),
                         mcp: Some(mcp_up),
+                        fingerprint,
                     };
                 } else {
                     *live.lock().unwrap() = Live::default();
@@ -394,15 +428,20 @@ fn spawn_probe(live: Arc<Mutex<Live>>, targets: Arc<Mutex<Option<(SocketAddr, So
         .ok();
 }
 
-/// Whether a Dalker server answers `GET path` on `addr` with something containing `marker`
-/// (the web client's title; the MCP server's 401 with its bearer realm).
-fn probe_http(addr: SocketAddr, path: &str, marker: &str) -> bool {
+/// Where this computer reaches a server bound to `addr` (loopback for "every address").
+fn local(addr: SocketAddr) -> SocketAddr {
     let ip = match addr.ip() {
         IpAddr::V4(v4) if v4.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
         IpAddr::V6(v6) if v6.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
         ip => ip,
     };
-    let target = SocketAddr::new(ip, addr.port());
+    SocketAddr::new(ip, addr.port())
+}
+
+/// Whether a Dalker server answers `GET path` on `addr` with something containing `marker`
+/// (the web client's title; the MCP server's 401 with its bearer realm).
+fn probe_http(addr: SocketAddr, path: &str, marker: &str) -> bool {
+    let target = local(addr);
     let Ok(mut s) = TcpStream::connect_timeout(&target, Duration::from_millis(600)) else {
         return false;
     };

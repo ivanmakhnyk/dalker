@@ -5,8 +5,9 @@ minutes.
 
 You need:
 
-- the computer you want to reach (the **host**): Windows 10 or 11, or Ubuntu with the standard
-  GNOME desktop;
+- the computer you want to reach (the **host**): Windows 10 or 11, Linux (Ubuntu's standard
+  GNOME desktop is the tested one; see [Platform support](../../README.md#platform-support)), or
+  macOS 14 or later on Apple silicon;
 - a device to connect from (the **viewer**): any laptop, PC or tablet with Chrome, Edge, Firefox
   or Safari, on the same network as the host.
 
@@ -16,7 +17,8 @@ On the host, open [the latest release](https://github.com/ivanmakhnyk/dalker/rel
 and download:
 
 - **Windows:** `Dalker-<version>-x64.msi`
-- **Ubuntu:** `dalker_<version>_amd64.deb`
+- **Ubuntu or Debian:** `dalker_<version>_amd64.deb`
+- **macOS:** `Dalker-<version>.pkg`
 
 ## Step 2. Install
 
@@ -40,7 +42,25 @@ can also reach the Windows sign-in screen.
 3. **Log out and back in** (or restart). This loads the small GNOME extension that draws the red
    frame while someone is connected. Dalker shows nothing until it is loaded.
 
+On **KDE Plasma, sway, Hyprland** and other Wayland desktops (experimental), there is no extension:
+the red frame is drawn by Dalker itself. The first time someone connects, the desktop shows a
+"share your screen" dialog on the host. Someone at the computer has to pick the screen and click
+**Share** once (keep "Allow restoring on future sessions" ticked); later connections start without
+asking.
+
 Dalker now runs as the `dalker` system service and starts with the computer.
+
+### macOS
+
+1. Open the `.pkg`. The first time, macOS blocks it because it isn't notarized: open
+   **System Settings → Privacy & Security** and click **Open Anyway**.
+2. In **Set up Dalker**, use **Open Settings…** beside each permission to allow Dalker under
+   **Screen & System Audio Recording** and **Accessibility**. You can reopen the window from
+   **Set Up Permissions…** in Dalker's menu bar menu.
+3. After allowing Screen Recording, choose **Restart Dalker**. When both permissions are
+   allowed, choose **Continue to Password** to open Dalker Settings.
+
+Dalker now runs in the background and starts when you sign in.
 
 ## Step 3. Choose an access password
 
@@ -49,18 +69,30 @@ characters).
 
 1. Open **Dalker Settings**:
    - Windows: Start menu → **Dalker Settings** (it opens by itself after installing);
-   - Ubuntu: open the app grid and search for **Dalker Settings**.
-2. Confirm the administrator prompt (UAC on Windows, your password on Ubuntu).
+   - Ubuntu: open the app grid and search for **Dalker Settings**;
+   - macOS: click the Dalker icon in the menu bar.
+2. On Windows and Ubuntu, confirm the administrator prompt (UAC on Windows, your password on
+   Ubuntu).
 3. In **Web Remote Access**, type the password under **New password** and again under **Repeat
    password**, then click **Apply**.
 
 ![Web Remote Access in Dalker Settings](../images/settings-web.png)
 
-Viewers open `http://<this computer>:8742`, where *this computer* is the host's IP address. To
-find it, run `ipconfig` on Windows (the "IPv4 Address" line) or `hostname -I` on Ubuntu.
+Viewers open `http://<this computer>:8742`, where *this computer* is the host's IP address. Dalker
+Settings shows it under **Address for browsers**. From a terminal: `ipconfig` on Windows (the "IPv4
+Address" line), `hostname -I` on Linux, or `ipconfig getifaddr en0` on macOS.
 
 > Nobody can connect until a password is set. Changing the password later signs out everyone who
 > is connected.
+
+On KDE Plasma, sway, Hyprland and other Wayland desktops besides GNOME, **Web Remote Access** also
+shows **Allow screen sharing now**. Click it while you are at the computer, pick the screen and
+click **Share** (keep "Allow restoring on future sessions" ticked). Otherwise the desktop asks when
+the first viewer connects, and that viewer sees a black screen until somebody here answers.
+
+> The sign-in page uses plain HTTP, so on a network you don't trust (café, hotel, shared office)
+> someone could read the password. There, connect through a VPN or an HTTPS reverse proxy; see
+> [Is the connection encrypted?](../../README.md#questions).
 
 ## Step 4. Connect from another device
 
@@ -113,7 +145,9 @@ has everything else.
 
   <img src="../images/widget-settings.png" alt="The viewer's Settings panel" width="368">
 - **Move the toolbar** by dragging its handle (double-click the handle to put it back), or fold it
-  away with the arrow.
+  away with the arrow. To keep it out of the way, turn on Gear → **Auto-hide the toolbar**: it
+  folds away a few seconds after the pointer leaves it, and comes back when you move the pointer
+  to the top edge of the screen or tap the small tab there.
 - **Disconnect** with the red button. The frame on the host disappears.
 
 ![Dalker showing a Windows desktop](../images/viewer-windows.jpg)
@@ -131,6 +165,8 @@ is what appears, and shortcuts still work.
   password box, or use **Keys → Ctrl + Alt + Del**, then type the Windows password.
 - **Ubuntu:** you see the lock screen and can unlock it by typing the password. The Ubuntu login
   screen after a restart is not shown yet: someone has to sign in at the computer first.
+- **macOS:** while the Mac is locked, the viewer shows a "locked" notice instead of the picture;
+  someone has to unlock it at the computer. Dalker only runs once a user has signed in.
 
 ## Changing settings later
 
@@ -138,7 +174,9 @@ Open **Dalker Settings** on the host again to:
 
 - turn browser access off (everyone watching is disconnected at once);
 - change the port (8742 by default) and click **Apply**;
-- change the access password.
+- change the access password;
+- raise or lower the stream limits: the most frame rate (30 fps by default, up to 120), bitrate and
+  picture width every viewer gets.
 
 Changes apply within a few seconds without a restart.
 
@@ -148,10 +186,11 @@ Changes apply within a few seconds without a restart.
 |---|---|
 | The page doesn't open | Check the address and that both devices are on the same network. Is **Allow browser remote access** on in Dalker Settings? |
 | "Wrong password" | Set a new one in Dalker Settings on the host. |
-| The page opens, the picture stays black | Make sure a firewall isn't blocking Dalker. On Ubuntu, log out and back in after installing; `journalctl -u dalker` shows what's missing. |
+| The page opens, the picture stays black | Make sure a firewall isn't blocking Dalker. On Linux open TCP 8742 and UDP 8443 (`sudo ufw allow 8742/tcp && sudo ufw allow 8443/udp`). On Ubuntu, log out and back in after installing; `journalctl -u dalker` shows what's missing. |
 | Letters come out wrong | Switch **Keyboard mode** to **Direct text**. |
 | The host goes to sleep while I watch | Gear → **Prevent host sleep (keep-alive jiggler)**. |
 
-Logs are in `C:\ProgramData\Dalker\logs` (Windows) or `journalctl -u dalker` (Ubuntu).
+Logs are in `C:\ProgramData\Dalker\logs` (Windows), `journalctl -u dalker` (Ubuntu) or
+`~/Library/Logs/Dalker` (macOS).
 
 Next: [let an AI assistant use the computer](ai-agents.md).

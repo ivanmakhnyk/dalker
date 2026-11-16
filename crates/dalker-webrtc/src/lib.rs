@@ -5,7 +5,8 @@
 //!
 //! The same channel carries the text clipboard both ways (see [`clipboard`]), the
 //! viewer's stream settings (see [`settings`]) and, when the host ends a session, the
-//! reason (see [`EndReason`]). File transfers use a second channel,
+//! reason (see [`EndReason`]), and the encoder the session uses (see [`ActiveEncoder`]).
+//! File transfers use a second channel,
 //! `"files"` (see [`files`]).
 //!
 //! Signaling is a single non-trickle offer/answer exchange: the browser sends
@@ -52,7 +53,7 @@ use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSampl
 use webrtc::track::track_local::TrackLocal;
 
 pub use clipboard::{ClipboardState, ClipboardWatch};
-pub use encoder::EncoderSettings;
+pub use encoder::{ActiveEncoder, EncoderBackend, EncoderSettings};
 pub use files::{FileAccessFactory, FILES_CHANNEL};
 
 /// Label of the DataChannel that carries input events.
@@ -90,6 +91,12 @@ pub enum EndReason {
     WebOff,
     /// The agent is shutting down (service stop or restart, host shutdown).
     HostShutdown,
+    /// The viewer's sign-in was signed out (from another tab, for example).
+    SignedOut,
+    /// The viewer's sign-in reached its lifetime.
+    SessionExpired,
+    /// The person at the host chose "Disconnect everyone".
+    HostDisconnected,
 }
 
 impl EndReason {
@@ -99,6 +106,9 @@ impl EndReason {
             EndReason::PasswordChanged => "password_changed",
             EndReason::WebOff => "web_off",
             EndReason::HostShutdown => "host_shutdown",
+            EndReason::SignedOut => "signed_out",
+            EndReason::SessionExpired => "session_expired",
+            EndReason::HostDisconnected => "host_disconnected",
         }
     }
 
@@ -125,22 +135,177 @@ pub struct WebRtcConfig {
     /// viewer reaches a port-forwarded VM on.
     pub public_ips: Vec<String>,
     pub encoder: EncoderSettings,
+    /// Hardware or software H.264 encoding.
+    pub encoder_backend: EncoderBackend,
     /// A viewer that has not reached `Connected` this long after the answer was sent is
     /// dropped, so a browser that can never complete ICE does not hold a viewer slot (and the
     /// on-screen border) until the ICE agent finally gives up. `None` = 20 s.
     pub connect_timeout: Option<Duration>,
+    /// How long a viewer whose connection dropped (`Disconnected`) may take to get back to
+    /// `Connected` before the session ends. `None` = 5 s.
+    pub disconnect_grace: Option<Duration>,
 }
 
-/// Shared WebRTC API object; one per process.
-pub struct WebRtcEngine {
-    api: API,
-    config: WebRtcConfig,
-    next_id: AtomicU64,
-    files: Option<FileAccessFactory>,
+const DEFAULT_DISCONNECT_GRACE: Duration = Duration::from_secs(5);
+
+/// Ends a session once, whichever way it ended: stops the encoder, tells the agent (held keys
+/// and buttons are released), wakes [`Session::wait_closed`] and closes the peer connection.
+struct SessionEnd {
+    id: SessionId,
+    ended: AtomicBool,
+    stop: Arc<AtomicBool>,
+    control: mpsc::UnboundedSender<(SessionId, ControlMessage)>,
+    closed: watch::Sender<bool>,
+    pc: std::sync::Weak<RTCPeerConnection>,
 }
 
-impl WebRtcEngine {
-    pub async fn new(config: WebRtcConfig) -> Result<Self> {
+impl SessionEnd {
+    fn end(&self) {
+        if self.ended.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = self.control.send((self.id, ControlMessage::Closed));
+        let _ = self.closed.send(true);
+        if let Some(pc) = self.pc.upgrade() {
+            tokio::spawn(async move {
+                let _ = pc.close().await;
+            });
+        }
+    }
+}
+
+/// How long to wait for each STUN server's answer in [`discover_public_ip`].
+const STUN_TIMEOUT: Duration = Duration::from_secs(3);
+
+fn has_stun(urls: &[String]) -> bool {
+    urls.iter().any(|u| u.starts_with("stun:"))
+}
+
+/// Asks the STUN server again every [`STUN_REFRESH`], or when a viewer failed to connect,
+/// and rebuilds the API for new sessions when the public IP changed. Running sessions keep
+/// theirs. Ends with the engine.
+async fn follow_public_ip(
+    stun: std::sync::Weak<PublicIp>,
+    api: std::sync::Weak<std::sync::RwLock<Arc<API>>>,
+    settings: ApiSettings,
+) {
+    let mut last_check = tokio::time::Instant::now();
+    loop {
+        let Some(s) = stun.upgrade() else { return };
+        let failed = tokio::select! {
+            _ = tokio::time::sleep(STUN_REFRESH) => false,
+            _ = s.check.notified() => true,
+        };
+        if failed {
+            // Many viewers failing at once ask once.
+            tokio::time::sleep_until(last_check + STUN_RETRY_MIN).await;
+        }
+        last_check = tokio::time::Instant::now();
+        let Some(ip) = discover_public_ip(&s.ice_servers).await else {
+            continue;
+        };
+        if *s.current.lock().unwrap() == Some(ip) {
+            continue;
+        }
+        let Some(api) = api.upgrade() else { return };
+        match settings.build(&[ip.to_string()]) {
+            Ok(new) => {
+                let old = s.current.lock().unwrap().replace(ip);
+                tracing::info!(?old, new = %ip, "public IP changed; new viewers get the new address");
+                *api.write().unwrap() = Arc::new(new);
+            }
+            Err(e) => tracing::warn!(
+                "public IP changed to {ip}, but the WebRTC API could not be rebuilt: {e:#}"
+            ),
+        }
+    }
+}
+
+/// Asks the first answering `stun:` server in `urls` for this host's public IPv4 address.
+/// `None` (logged) when there is no STUN server or none answers.
+async fn discover_public_ip(urls: &[String]) -> Option<std::net::IpAddr> {
+    let hosts: Vec<&str> = urls
+        .iter()
+        .filter_map(|u| u.strip_prefix("stun:"))
+        .map(|h| h.split('?').next().unwrap_or(h))
+        .collect();
+    if hosts.is_empty() {
+        return None;
+    }
+    for host in hosts {
+        match tokio::time::timeout(STUN_TIMEOUT, stun_binding(host)).await {
+            Ok(Ok(ip)) => {
+                tracing::info!(stun = host, %ip, "discovered public IP");
+                return Some(ip);
+            }
+            Ok(Err(e)) => tracing::warn!(stun = host, "STUN request failed: {e:#}"),
+            Err(_) => tracing::warn!(stun = host, "STUN server did not answer"),
+        }
+    }
+    tracing::warn!("no public IP discovered; pass --public-ip for viewers outside the LAN");
+    None
+}
+
+/// Sends one STUN binding request to `host` (`name:port`, port 3478 when left out) and
+/// returns the mapped address it reports.
+async fn stun_binding(host: &str) -> Result<std::net::IpAddr> {
+    use webrtc::stun::agent::TransactionId;
+    use webrtc::stun::message::{Getter, Message, BINDING_REQUEST};
+    use webrtc::stun::xoraddr::XorMappedAddress;
+
+    let target = if host
+        .rsplit_once(':')
+        .is_some_and(|(_, p)| p.parse::<u16>().is_ok())
+    {
+        host.to_owned()
+    } else {
+        format!("{host}:3478")
+    };
+    let addr = tokio::net::lookup_host(&target)
+        .await
+        .with_context(|| format!("resolve {target}"))?
+        .find(|a| a.is_ipv4())
+        .with_context(|| format!("{target} has no IPv4 address"))?;
+    let socket = tokio::net::UdpSocket::bind(("0.0.0.0", 0)).await?;
+    let mut request = Message::new();
+    request.build(&[Box::new(TransactionId::new()), Box::new(BINDING_REQUEST)])?;
+    socket.send_to(&request.raw, addr).await?;
+    let mut buf = [0u8; 1500];
+    loop {
+        let (n, from) = socket.recv_from(&mut buf).await?;
+        if from != addr {
+            continue;
+        }
+        let mut response = Message::new();
+        response.raw = buf[..n].to_vec();
+        response.decode()?;
+        if response.transaction_id != request.transaction_id {
+            continue;
+        }
+        let mut mapped = XorMappedAddress::default();
+        mapped.get_from(&response)?;
+        return Ok(mapped.ip);
+    }
+}
+
+/// How often the STUN-discovered public IP is checked again (see [`PublicIp`]).
+const STUN_REFRESH: Duration = Duration::from_secs(10 * 60);
+/// The soonest a failed viewer triggers another STUN check.
+const STUN_RETRY_MIN: Duration = if cfg!(test) {
+    Duration::from_millis(50)
+} else {
+    Duration::from_secs(30)
+};
+
+/// How the engine's [`API`] is built. NAT 1:1 IPs can't be changed on a live `API`, so a new
+/// public IP means a new one, built from the same settings (and the same UDP mux).
+struct ApiSettings {
+    mux: Option<Arc<UDPMuxDefault>>,
+}
+
+impl ApiSettings {
+    fn build(&self, public_ips: &[String]) -> Result<API> {
         let mut media = MediaEngine::default();
         media.register_default_codecs()?;
         let registry = register_default_interceptors(Registry::new(), &mut media)?;
@@ -150,25 +315,19 @@ impl WebRtcEngine {
         // its host candidates and shows up as peer-reflexive), and the mDNS socket logs a
         // warning for every LAN packet it cannot parse.
         settings.set_ice_multicast_dns_mode(MulticastDnsMode::Disabled);
-        if let Some(port) = config.udp_port {
-            let socket = tokio::net::UdpSocket::bind(("0.0.0.0", port))
-                .await
-                .with_context(|| format!("bind ICE UDP port {port}"))?;
-            tracing::info!("ICE UDP mux listening on 0.0.0.0:{port}");
-            settings.set_udp_network(UDPNetwork::Muxed(UDPMuxDefault::new(UDPMuxParams::new(
-                socket,
-            ))));
+        if let Some(mux) = &self.mux {
+            settings.set_udp_network(UDPNetwork::Muxed(Arc::clone(mux) as _));
             settings.set_network_types(vec![NetworkType::Udp4]);
         }
-        if !config.public_ips.is_empty() {
-            settings.set_nat_1to1_ips(config.public_ips.clone(), RTCIceCandidateType::Host);
-            if config.udp_port.is_some() {
+        if !public_ips.is_empty() {
+            settings.set_nat_1to1_ips(public_ips.to_vec(), RTCIceCandidateType::Host);
+            if self.mux.is_some() {
                 // With a mux every local IP maps to the same public ip:port, and
                 // webrtc-ice drops the duplicates by closing them — which closes
                 // the shared muxed conn. Gather from a single local IPv4 only:
                 // the first one offered (loopback is never offered).
                 let chosen = std::sync::Mutex::new(None::<std::net::IpAddr>);
-                tracing::info!(public = ?config.public_ips, "advertising NAT 1:1 host candidate");
+                tracing::info!(public = ?public_ips, "advertising NAT 1:1 host candidate");
                 settings.set_ip_filter(Box::new(move |ip| {
                     if !ip.is_ipv4() {
                         return false;
@@ -179,17 +338,103 @@ impl WebRtcEngine {
             }
         }
 
-        let api = APIBuilder::new()
+        Ok(APIBuilder::new()
             .with_media_engine(media)
             .with_interceptor_registry(registry)
             .with_setting_engine(settings)
-            .build();
+            .build())
+    }
+}
+
+/// The public IP asked of a STUN server (single UDP port, no `--public-ip`). It is asked
+/// again every [`STUN_REFRESH`] and after a viewer fails to connect, so a home connection
+/// whose address changes keeps working without a restart.
+struct PublicIp {
+    ice_servers: Vec<String>,
+    current: std::sync::Mutex<Option<std::net::IpAddr>>,
+    /// A viewer failed to connect: check now (rate limited by [`STUN_RETRY_MIN`]).
+    check: tokio::sync::Notify,
+}
+
+/// Shared WebRTC API object; one per process.
+pub struct WebRtcEngine {
+    /// Replaced (for new sessions only) when the public IP changes.
+    api: Arc<std::sync::RwLock<Arc<API>>>,
+    stun: Option<Arc<PublicIp>>,
+    config: WebRtcConfig,
+    /// The host's encoder settings (its limits for every viewer); starts as `config.encoder`.
+    host_encoder: watch::Sender<EncoderSettings>,
+    next_id: AtomicU64,
+    files: Option<FileAccessFactory>,
+}
+
+impl WebRtcEngine {
+    pub async fn new(config: WebRtcConfig) -> Result<Self> {
+        // A port another program holds must not take the whole agent down (the sign-in page
+        // too): fall back to ephemeral ports, which still work on the LAN, and say so loudly.
+        let mut mux = None;
+        if let Some(port) = config.udp_port {
+            match tokio::net::UdpSocket::bind(("0.0.0.0", port)).await {
+                Ok(socket) => {
+                    tracing::info!("ICE UDP mux listening on 0.0.0.0:{port}");
+                    mux = Some(UDPMuxDefault::new(UDPMuxParams::new(socket)));
+                }
+                Err(e) => tracing::error!(
+                    "can't use UDP port {port} for WebRTC ({e}); another program may be using it. \
+                     Using random UDP ports instead: viewers on this network can still connect, \
+                     but a port forward to {port} won't work. Free the port or change \
+                     DALKER_UDP_PORT, then restart Dalker."
+                ),
+            }
+        }
+        let muxed = mux.is_some();
+        let settings = ApiSettings { mux };
+        // With a single UDP port webrtc-ice gathers no server-reflexive candidates, so the
+        // STUN servers would go unused: ask one for the public IP here and advertise it as
+        // the host candidate instead, as if it had been given with --public-ip.
+        let mut public_ips = config.public_ips.clone();
+        let mut stun = None;
+        if muxed && public_ips.is_empty() && has_stun(&config.ice_servers) {
+            let ip = discover_public_ip(&config.ice_servers).await;
+            if let Some(ip) = ip {
+                public_ips.push(ip.to_string());
+            }
+            stun = Some(Arc::new(PublicIp {
+                ice_servers: config.ice_servers.clone(),
+                current: std::sync::Mutex::new(ip),
+                check: tokio::sync::Notify::new(),
+            }));
+        }
+        let api = Arc::new(std::sync::RwLock::new(Arc::new(
+            settings.build(&public_ips)?,
+        )));
+        if let Some(stun) = &stun {
+            tokio::spawn(follow_public_ip(
+                Arc::downgrade(stun),
+                Arc::downgrade(&api),
+                settings,
+            ));
+        }
         Ok(Self {
             api,
+            stun,
+            host_encoder: watch::channel(config.encoder).0,
             config,
             next_id: AtomicU64::new(1),
             files: None,
         })
+    }
+
+    /// The host's current encoder settings: the most a viewer can ask for.
+    pub fn encoder(&self) -> EncoderSettings {
+        *self.host_encoder.borrow()
+    }
+
+    /// Changes the host's encoder settings. Running sessions switch at once (each keeps what
+    /// its viewer asked for, within the new limits, and is told the new limits); new sessions
+    /// start with them.
+    pub fn set_encoder(&self, settings: EncoderSettings) {
+        self.host_encoder.send_replace(settings);
     }
 
     /// Offers file transfers to viewers (their `"files"` channel), run as the user `access`
@@ -221,7 +466,9 @@ impl WebRtcEngine {
             },
             ..Default::default()
         };
-        let pc = Arc::new(self.api.new_peer_connection(rtc_config).await?);
+        let api = Arc::clone(&self.api.read().unwrap());
+        let pc = Arc::new(api.new_peer_connection(rtc_config).await?);
+        drop(api);
 
         // Video track. Added before applying the offer so it binds to the
         // browser's recvonly video transceiver.
@@ -260,10 +507,16 @@ impl WebRtcEngine {
             });
         }
 
-        // This viewer's encoder settings: the host's, until the viewer asks for others.
-        let base_settings = self.config.encoder;
-        let (settings_tx, settings_rx) = watch::channel(base_settings);
+        // This viewer's encoder settings: the host's, until the viewer asks for others. The
+        // host's can change while the session runs (Dalker Settings); the viewer's last
+        // request is then applied again within the new limits.
+        let mut host_settings = self.host_encoder.subscribe();
+        let (settings_tx, settings_rx) = watch::channel(*host_settings.borrow_and_update());
         let settings_tx = Arc::new(settings_tx);
+        let last_request: Arc<std::sync::Mutex<settings::Request>> = Arc::default();
+
+        // The encoder the session uses, set by the encoder thread, for the viewer.
+        let (active_tx, active_rx) = watch::channel::<Option<ActiveEncoder>>(None);
 
         // Control DataChannel → input worker; host clipboard → viewer; stream settings.
         // The "files" channel carries file transfers.
@@ -272,11 +525,18 @@ impl WebRtcEngine {
             let control = control.clone();
             let files = self.files.clone();
             let control_dc = Arc::clone(&control_dc);
+            let settings_tx = Arc::clone(&settings_tx);
+            let host_settings = host_settings.clone();
+            let last_request = Arc::clone(&last_request);
+            let active_rx = active_rx.clone();
             pc.on_data_channel(Box::new(move |dc| {
+                let active_rx = active_rx.clone();
                 let control = control.clone();
                 let control_dc = Arc::clone(&control_dc);
                 let clipboard = clipboard.clone();
                 let settings_tx = Arc::clone(&settings_tx);
+                let host_settings = host_settings.clone();
+                let last_request = Arc::clone(&last_request);
                 let files = files.clone();
                 Box::pin(async move {
                     if dc.label() == FILES_CHANNEL {
@@ -306,7 +566,9 @@ impl WebRtcEngine {
                     let dc_weak = Arc::downgrade(&dc);
                     dc.on_message(Box::new(move |msg: DataChannelMessage| {
                         if let Some(req) = settings::parse(&msg.data) {
+                            let base_settings = *host_settings.borrow();
                             let applied = settings::apply(&base_settings, &req);
+                            *last_request.lock().unwrap() = req;
                             tracing::info!(
                                 session = id,
                                 fps = applied.max_fps,
@@ -345,8 +607,10 @@ impl WebRtcEngine {
                         Box::pin(async {})
                     }));
                     let dc2 = Arc::clone(&dc);
+                    let active = active_rx.clone();
                     dc.on_open(Box::new(move || {
                         Box::pin(async move {
+                            tokio::spawn(forward_encoder(Arc::clone(&dc2), active));
                             tokio::spawn(clipboard::forward_to_viewer(id, dc2, clipboard));
                         })
                     }));
@@ -358,43 +622,76 @@ impl WebRtcEngine {
         // is set then), the agent hears of it, so held keys and buttons are released.
         let (closed_tx, closed_rx) = watch::channel(false);
         {
-            let stop = Arc::clone(&stop);
-            let ended = AtomicBool::new(false);
-            let control = control.clone();
             let pc_weak = Arc::downgrade(&pc);
+            let end = Arc::new(SessionEnd {
+                id,
+                ended: AtomicBool::new(false),
+                stop: Arc::clone(&stop),
+                control: control.clone(),
+                closed: closed_tx,
+                pc: pc_weak.clone(),
+            });
+            let grace = self
+                .config
+                .disconnect_grace
+                .unwrap_or(DEFAULT_DISCONNECT_GRACE);
+            let stun = self.stun.clone();
             pc.on_peer_connection_state_change(Box::new(move |state| {
                 tracing::info!(session = id, ?state, "peer connection state");
-                let terminal = matches!(
-                    state,
-                    RTCPeerConnectionState::Failed
-                        | RTCPeerConnectionState::Closed
-                        | RTCPeerConnectionState::Disconnected
-                );
-                if terminal && !ended.swap(true, Ordering::SeqCst) {
-                    stop.store(true, Ordering::SeqCst);
-                    let _ = control.send((id, ControlMessage::Closed));
-                    let _ = closed_tx.send(true);
-                    if let Some(pc) = pc_weak.upgrade() {
+                if state == RTCPeerConnectionState::Failed {
+                    if let Some(stun) = &stun {
+                        stun.check.notify_one();
+                    }
+                }
+                match state {
+                    RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => end.end(),
+                    // Often only for a moment (Wi-Fi roaming, a few lost consent checks): give
+                    // ICE a chance to get back to Connected before the session is torn down.
+                    RTCPeerConnectionState::Disconnected => {
+                        let end = Arc::clone(&end);
+                        let pc = pc_weak.clone();
                         tokio::spawn(async move {
-                            let _ = pc.close().await;
+                            tokio::time::sleep(grace).await;
+                            let back = pc.upgrade().is_some_and(|pc| {
+                                pc.connection_state() == RTCPeerConnectionState::Connected
+                            });
+                            if back {
+                                tracing::info!(session = id, "connection came back");
+                            } else {
+                                tracing::info!(
+                                    session = id,
+                                    ?grace,
+                                    "connection did not come back"
+                                );
+                                end.end();
+                            }
                         });
                     }
+                    _ => {}
                 }
                 Box::pin(async {})
             }));
         }
 
-        // SDP exchange (non-trickle).
-        pc.set_remote_description(RTCSessionDescription::offer(offer_sdp)?)
-            .await?;
-        let answer = pc.create_answer(None).await?;
-        let mut gathered = pc.gathering_complete_promise().await;
-        pc.set_local_description(answer).await?;
-        let _ = tokio::time::timeout(Duration::from_secs(5), gathered.recv()).await;
-        let local = pc
-            .local_description()
-            .await
-            .context("no local description")?;
+        // SDP exchange (non-trickle). A peer connection that is dropped without `close()` leaves
+        // webrtc-rs tasks running, so close it whenever this fails.
+        let exchange = async {
+            pc.set_remote_description(RTCSessionDescription::offer(offer_sdp)?)
+                .await?;
+            let answer = pc.create_answer(None).await?;
+            let mut gathered = pc.gathering_complete_promise().await;
+            pc.set_local_description(answer).await?;
+            let _ = tokio::time::timeout(Duration::from_secs(5), gathered.recv()).await;
+            pc.local_description().await.context("no local description")
+        };
+        let local = match exchange.await {
+            Ok(local) => local,
+            Err(e) => {
+                stop.store(true, Ordering::SeqCst);
+                let _ = pc.close().await;
+                return Err(e);
+            }
+        };
 
         // A peer that never connects must not keep its slot.
         {
@@ -404,6 +701,7 @@ impl WebRtcEngine {
                 .config
                 .connect_timeout
                 .unwrap_or(DEFAULT_CONNECT_TIMEOUT);
+            let stun = self.stun.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(limit).await;
                 if let Some(pc) = weak.upgrade() {
@@ -411,7 +709,43 @@ impl WebRtcEngine {
                         && pc.connection_state() != RTCPeerConnectionState::Connected
                     {
                         tracing::info!(session = id, ?limit, "viewer never connected; dropping it");
+                        if let Some(stun) = &stun {
+                            stun.check.notify_one();
+                        }
                         let _ = pc.close().await;
+                    }
+                }
+            });
+        }
+
+        // New host limits: this viewer's request again, within them, and the viewer is told.
+        // Ends with the encoder (the only receiver of `settings_tx`).
+        {
+            let settings_tx = Arc::clone(&settings_tx);
+            let last_request = Arc::clone(&last_request);
+            let control_dc = Arc::clone(&control_dc);
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        changed = host_settings.changed() => if changed.is_err() { return },
+                        _ = settings_tx.closed() => return,
+                    }
+                    let base = *host_settings.borrow_and_update();
+                    let applied = settings::apply(&base, &last_request.lock().unwrap());
+                    tracing::info!(
+                        session = id,
+                        fps = applied.max_fps,
+                        kbps = applied.bitrate_bps / 1000,
+                        downscale = applied.downscale,
+                        "host stream limits changed"
+                    );
+                    settings_tx.send_replace(applied);
+                    let dc = control_dc.lock().unwrap().clone();
+                    if let Some(dc) = dc.filter(|dc| dc.ready_state() == RTCDataChannelState::Open)
+                    {
+                        let _ = dc
+                            .send_text(settings::applied_message(&base, &applied))
+                            .await;
                     }
                 }
             });
@@ -420,11 +754,14 @@ impl WebRtcEngine {
         // Encoder thread (OpenH264 is blocking, keep it off the async runtime).
         let runtime = tokio::runtime::Handle::current();
         let thread_stop = Arc::clone(&stop);
-        std::thread::Builder::new()
+        let backend = self.config.encoder_backend;
+        let spawned = std::thread::Builder::new()
             .name(format!("dalker-enc-{id}"))
             .spawn(move || {
                 encode_loop(
                     id,
+                    backend,
+                    active_tx,
                     settings_rx,
                     frames,
                     track,
@@ -433,7 +770,12 @@ impl WebRtcEngine {
                     runtime,
                 )
             })
-            .context("spawn encoder thread")?;
+            .context("spawn encoder thread");
+        if let Err(e) = spawned {
+            stop.store(true, Ordering::SeqCst);
+            let _ = pc.close().await;
+            return Err(e);
+        }
 
         tracing::info!(session = id, "session negotiated");
         Ok((
@@ -496,8 +838,62 @@ const IDLE_REFRESH: Duration = Duration::from_millis(500);
 /// settings and the stop flag again.
 const FRAME_POLL: Duration = Duration::from_millis(20);
 
+/// Sends the viewer the session's encoder ([`ActiveEncoder::message`]) now and whenever it
+/// changes. Ends with the channel or the encoder thread.
+async fn forward_encoder(
+    dc: Arc<RTCDataChannel>,
+    mut active: watch::Receiver<Option<ActiveEncoder>>,
+) {
+    loop {
+        let current = active.borrow_and_update().clone();
+        if let Some(enc) = current {
+            if dc.ready_state() != RTCDataChannelState::Open
+                || dc.send_text(enc.message()).await.is_err()
+            {
+                return;
+            }
+        }
+        if active.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Blocks this thread until `frames` holds a new frame or `timeout` passes.
+///
+/// Doesn't use the async runtime's timer: the runtime can be shutting down while the
+/// encoder thread still runs, and a timer created then panics.
+fn wait_for_frame(frames: &FrameWatch, timeout: Duration) {
+    use std::future::Future;
+    use std::task::{Context, Wake, Waker};
+
+    struct Unpark(std::thread::Thread);
+    impl Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    // A clone so `changed()` doesn't mark the frame seen for the encoder loop's check.
+    let mut next = frames.clone();
+    let mut changed = std::pin::pin!(next.changed());
+    let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut cx = Context::from_waker(&waker);
+    let deadline = Instant::now() + timeout;
+    while changed.as_mut().poll(&mut cx).is_pending() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        std::thread::park_timeout(left);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn encode_loop(
     id: SessionId,
+    backend: encoder::EncoderBackend,
+    active: watch::Sender<Option<ActiveEncoder>>,
     mut settings: watch::Receiver<EncoderSettings>,
     mut frames: FrameWatch,
     track: Arc<TrackLocalStaticSample>,
@@ -506,7 +902,7 @@ fn encode_loop(
     runtime: tokio::runtime::Handle,
 ) {
     let current = *settings.borrow_and_update();
-    let mut enc = encoder::H264Encoder::new(current);
+    let mut enc = encoder::H264Encoder::with_backend(current, backend);
     let frame_interval = |s: &EncoderSettings| Duration::from_secs_f32(1.0 / s.max_fps.max(1.0));
     let mut interval = frame_interval(&current);
     let mut last_sent = Instant::now();
@@ -554,6 +950,9 @@ fn encode_loop(
                 Ok(None) => {}
                 Err(e) => tracing::warn!(session = id, "encode failed: {e:#}"),
             }
+            if enc.active() != active.borrow().as_ref() {
+                active.send_replace(enc.active().cloned());
+            }
         }
 
         // Hold the frame rate to `max_fps`, then wake as soon as the next frame is captured.
@@ -563,10 +962,7 @@ fn encode_loop(
             std::thread::sleep(rest);
         }
         if !frames.has_changed().unwrap_or(true) {
-            // A clone so `changed()` doesn't mark the frame seen for the check at the top.
-            let mut next = frames.clone();
-            let _ =
-                runtime.block_on(async { tokio::time::timeout(FRAME_POLL, next.changed()).await });
+            wait_for_frame(&frames, FRAME_POLL);
         }
     }
     tracing::info!(session = id, encoded, "encoder stopped");
@@ -575,6 +971,92 @@ fn encode_loop(
 #[cfg(test)]
 mod tests {
     use super::EndReason;
+    use super::*;
+
+    /// A STUN server on loopback that reports whatever address `ip` holds.
+    async fn fake_stun(ip: Arc<std::sync::Mutex<std::net::IpAddr>>) -> u16 {
+        use webrtc::stun::message::{Message, Setter, BINDING_SUCCESS};
+        use webrtc::stun::xoraddr::XorMappedAddress;
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = socket.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 1500];
+            while let Ok((n, from)) = socket.recv_from(&mut buf).await {
+                let mut req = Message::new();
+                req.raw = buf[..n].to_vec();
+                if req.decode().is_err() {
+                    continue;
+                }
+                let mut resp = Message::new();
+                resp.transaction_id = req.transaction_id;
+                resp.typ = BINDING_SUCCESS;
+                resp.write_header();
+                let mapped = XorMappedAddress {
+                    ip: *ip.lock().unwrap(),
+                    port: 4242,
+                };
+                mapped.add_to(&mut resp).unwrap();
+                let _ = socket.send_to(&resp.raw, from).await;
+            }
+        });
+        port
+    }
+
+    /// The encoder thread's wait ends with a new frame or the timeout, and works with no
+    /// async runtime at all (as when the runtime has shut down under it).
+    #[test]
+    fn frame_wait_needs_no_runtime() {
+        let (tx, rx) = watch::channel::<Option<Arc<RawFrame>>>(None);
+        let started = Instant::now();
+        wait_for_frame(&rx, Duration::from_millis(50));
+        assert!(started.elapsed() >= Duration::from_millis(50));
+
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            tx.send_replace(None);
+            tx
+        });
+        let started = Instant::now();
+        wait_for_frame(&rx, Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(rx.has_changed().unwrap(), "the frame is left unseen");
+        drop(sender.join());
+    }
+
+    #[tokio::test]
+    async fn a_failed_viewer_refreshes_a_changed_public_ip() {
+        let first: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+        let second: std::net::IpAddr = "198.51.100.9".parse().unwrap();
+        let reported = Arc::new(std::sync::Mutex::new(first));
+        let port = fake_stun(Arc::clone(&reported)).await;
+        let engine = WebRtcEngine::new(WebRtcConfig {
+            ice_servers: vec![format!("stun:127.0.0.1:{port}")],
+            udp_port: Some(0),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let stun = engine.stun.clone().expect("STUN refresh is on");
+        assert_eq!(*stun.current.lock().unwrap(), Some(first));
+        let before = Arc::clone(&engine.api.read().unwrap());
+
+        // Same address: nothing is rebuilt.
+        stun.check.notify_one();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(Arc::ptr_eq(&before, &engine.api.read().unwrap()));
+
+        *reported.lock().unwrap() = second;
+        stun.check.notify_one();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while *stun.current.lock().unwrap() != Some(second) {
+            assert!(Instant::now() < deadline, "public IP was not refreshed");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            !Arc::ptr_eq(&before, &engine.api.read().unwrap()),
+            "new API for new viewers"
+        );
+    }
 
     #[test]
     fn end_reason_messages() {

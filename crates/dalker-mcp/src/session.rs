@@ -80,7 +80,8 @@ pub(crate) struct Session {
     pub id: u64,
     pub token_id: String,
     pub token_name: String,
-    closed: AtomicBool,
+    /// Shared with [`State`], so a tool call still running after `close()` reads no more frames.
+    closed: Arc<AtomicBool>,
     last_used: Mutex<Instant>,
     desktop: Arc<dyn DesktopHandle>,
     /// Sessions can be ended from threads outside the runtime (the tray).
@@ -92,6 +93,8 @@ pub(crate) struct Session {
 pub(crate) struct State {
     /// Held for the session's lifetime: keeps the (border-gated) capture running.
     frames: FrameWatch,
+    /// The session's `closed` flag.
+    closed: Arc<AtomicBool>,
     /// Whether a frame published after this session started has been seen.
     fresh: bool,
     /// Size of the last full screenshot: what the model's coordinates refer to.
@@ -110,8 +113,10 @@ impl Session {
         desktop: Arc<dyn DesktopHandle>,
         limits: RateLimits,
     ) -> Self {
+        let closed = Arc::new(AtomicBool::new(false));
         let state = State {
             frames: desktop.frames(),
+            closed: Arc::clone(&closed),
             fresh: false,
             frame: None,
             max_width: screen::DEFAULT_MAX_WIDTH,
@@ -122,7 +127,7 @@ impl Session {
             id,
             token_id,
             token_name,
-            closed: AtomicBool::new(false),
+            closed,
             last_used: Mutex::new(Instant::now()),
             desktop,
             runtime: tokio::runtime::Handle::current(),
@@ -213,6 +218,18 @@ impl State {
         &mut self,
         desktop: &dyn DesktopHandle,
     ) -> Result<Arc<RawFrame>, String> {
+        let frame = self.wait_frame(desktop).await?;
+        // The session may have ended (border off, viewer slot given back) while we waited.
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(ENDED.into());
+        }
+        Ok(frame)
+    }
+
+    async fn wait_frame(&mut self, desktop: &dyn DesktopHandle) -> Result<Arc<RawFrame>, String> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(ENDED.into());
+        }
         if !desktop.screen_ready() {
             return Err("the screen is not available right now (the on-screen border that tells people at the \
                         host they are being watched can't be shown, or there is no display yet); try again later"
@@ -277,8 +294,19 @@ impl State {
         region: Option<Region>,
     ) -> Result<(Shot, String), String> {
         self.take_screenshot()?;
-        let max_width = max_width.clamp(screen::MIN_MAX_WIDTH, screen::MAX_MAX_WIDTH);
         let raw = self.latest_frame(desktop).await?;
+        self.encode_raw_frame(raw, max_width, format, region).await
+    }
+
+    /// Encodes a given `RawFrame` as a screenshot and updates the coordinate frame when `region` is `None`.
+    pub(crate) async fn encode_raw_frame(
+        &mut self,
+        raw: Arc<RawFrame>,
+        max_width: u32,
+        format: Option<Format>,
+        region: Option<Region>,
+    ) -> Result<(Shot, String), String> {
+        let max_width = max_width.clamp(screen::MIN_MAX_WIDTH, screen::MAX_MAX_WIDTH);
         let (nw, nh) = (raw.width, raw.height);
         let native = match region {
             Some(r) => {
@@ -333,6 +361,40 @@ impl State {
         };
         Ok((shot, text))
     }
+
+    /// Waits until the captured frame differs from the current one, or `timeout` elapses.
+    /// Returns `Some(frame)` on change, `None` on timeout.
+    pub(crate) async fn wait_for_screen_change(
+        &mut self,
+        desktop: &dyn DesktopHandle,
+        timeout: Duration,
+    ) -> Result<Option<Arc<RawFrame>>, String> {
+        let baseline = self.latest_frame(desktop).await?;
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            match tokio::time::timeout_at(deadline, self.frames.changed()).await {
+                Err(_) | Ok(Err(_)) => return Ok(None),
+                Ok(Ok(())) => {
+                    if self.closed.load(Ordering::SeqCst) {
+                        return Err(ENDED.into());
+                    }
+                    if let Some(next) = self.frames.borrow_and_update().clone() {
+                        if frames_differ(&baseline, &next) {
+                            return Ok(Some(next));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn frames_differ(a: &RawFrame, b: &RawFrame) -> bool {
+    a.width != b.width
+        || a.height != b.height
+        || a.format != b.format
+        || a.stride != b.stride
+        || a.data != b.data
 }
 
 #[cfg(test)]

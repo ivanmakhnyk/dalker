@@ -8,9 +8,16 @@ window:
 |----|-------------|
 | Windows | `C:\ProgramData\Dalker\dalker.conf` |
 | Linux | `/etc/dalker/dalker.conf` |
+| macOS | `~/Library/Application Support/Dalker/dalker.conf` |
 
-One `KEY=VALUE` per line, `#` for comments. Edit it as an administrator. The listener keys
-(`DALKER_WEB`, `DALKER_BIND`, `DALKER_MCP`, `DALKER_MCP_BIND`) take effect within a few
+Dalker serves HTTPS itself on its own ports (with a self-signed certificate unless you give it
+yours, see `DALKER_TLS` in [DEVELOPMENT.md](../DEVELOPMENT.md#configuration)), so a proxy is only
+needed for a domain name, a trusted certificate from your proxy, or a shared port. The proxy can
+talk plain HTTP to Dalker on `127.0.0.1` as before.
+
+One `KEY=VALUE` per line, `#` for comments. Edit it as an administrator (on macOS the file belongs to your user). The listener keys
+(`DALKER_WEB`, `DALKER_BIND`, `DALKER_MCP`, `DALKER_MCP_BIND`, `DALKER_TLS`,
+`DALKER_TLS_REDIRECT`) take effect within a few
 seconds; the others when the Dalker service restarts.
 
 ## What can sit behind the proxy
@@ -29,6 +36,20 @@ should use if the host is behind NAT:
 DALKER_UDP_PORT=8744
 DALKER_PUBLIC_IP=203.0.113.7
 ```
+
+Instead of a fixed `DALKER_PUBLIC_IP`, Dalker can ask a public STUN server for the address, which
+suits a home connection whose IP changes. It asks when it starts, again every 10 minutes, and
+when a viewer fails to connect; new viewers get the new address without a restart:
+
+```ini
+DALKER_UDP_PORT=8744
+DALKER_STUN=stun:stun.l.google.com:19302
+```
+
+Either way, forward that UDP port on the router to the host (`UDP 8744 → the host's LAN IP`).
+Viewers on the same network then reach the host through the router's public address too, which
+needs the router to support NAT loopback (most do). If your provider gives the router no public
+IP (carrier-grade NAT), no port forward can work; use a VPN to your network instead.
 
 ## Settings
 

@@ -17,6 +17,7 @@
 //! no media dependencies.
 
 pub mod auth;
+pub mod tls;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -28,19 +29,21 @@ use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
-pub use auth::{hash_password, Authenticator, CookieSecure, Credentials};
+pub use auth::{hash_password, Authenticator, CookieSecure, Credentials, SignIn, SignOut};
 
 pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 /// Implemented by the agent to plug WebRTC into the HTTP API.
 pub trait SignalingHandler: Send + Sync + 'static {
-    /// Accepts a complete SDP offer and returns a complete SDP answer.
-    fn handle_offer(&self, offer_sdp: String) -> BoxFuture<Result<String, String>>;
+    /// Accepts a complete SDP offer and returns a complete SDP answer. The stream should end
+    /// when `sign_in` does (sign-out, expiry, new password).
+    fn handle_offer(&self, offer_sdp: String, sign_in: SignIn)
+        -> BoxFuture<Result<String, String>>;
     /// Arbitrary JSON shown by the UI (hostname, OS, capture backend...).
     fn info(&self) -> serde_json::Value;
 }
@@ -145,10 +148,29 @@ pub async fn serve_listener_with(
     extra: Router,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
-    tracing::info!("web UI on http://{}", listener.local_addr()?);
-    axum::serve(listener, router_with(auth, signaling, extra))
-        .with_graceful_shutdown(shutdown)
-        .await?;
+    serve_listener_tls(listener, None, auth, signaling, extra, shutdown).await
+}
+
+/// [`serve_listener_with`] that also takes HTTPS on the same port when `tls` is given.
+pub async fn serve_listener_tls(
+    listener: tokio::net::TcpListener,
+    tls: Option<tls::Tls>,
+    auth: Arc<Authenticator>,
+    signaling: Arc<dyn SignalingHandler>,
+    extra: Router,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
+    let addr = listener.local_addr()?;
+    match &tls {
+        Some(t) if t.has_certificate() => {
+            tracing::info!("web UI on http://{addr} and https://{addr}")
+        }
+        Some(_) => tracing::warn!(
+            "web UI on http://{addr} for this computer only: HTTPS is required and not available yet"
+        ),
+        None => tracing::info!("web UI on http://{addr}"),
+    }
+    tls::serve(listener, tls, router_with(auth, signaling, extra), shutdown).await?;
     Ok(())
 }
 
@@ -161,6 +183,9 @@ fn session_token(headers: &HeaderMap) -> Option<String> {
         .map(str::to_owned)
 }
 
+// The error is the response to send as it is; this runs once per request, so its size doesn't
+// matter.
+#[allow(clippy::result_large_err)]
 fn require_auth(state: &AppState, headers: &HeaderMap) -> Result<String, Response> {
     match session_token(headers) {
         Some(t) if state.auth.is_valid(&t) => Ok(t),
@@ -171,6 +196,7 @@ fn require_auth(state: &AppState, headers: &HeaderMap) -> Result<String, Respons
 async fn login(
     State(state): State<AppState>,
     headers: HeaderMap,
+    transport: Option<Extension<tls::Transport>>,
     Json(req): Json<LoginRequest>,
 ) -> Response {
     if !state.auth.has_password() {
@@ -192,7 +218,7 @@ async fn login(
                 "{}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}{}",
                 auth::COOKIE_NAME,
                 state.auth.ttl().as_secs(),
-                secure_attr(&state.auth, &headers)
+                secure_attr(&state.auth, &headers, transport.is_some_and(|t| t.https))
             );
             let mut resp = Json(serde_json::json!({"ok": true})).into_response();
             resp.headers_mut()
@@ -208,15 +234,19 @@ async fn login(
 }
 
 /// `; Secure` when the cookie should carry it (see [`CookieSecure`]).
-fn secure_attr(auth: &Authenticator, headers: &HeaderMap) -> &'static str {
+/// `https`: the request came in over the agent's own TLS.
+fn secure_attr(auth: &Authenticator, headers: &HeaderMap, https: bool) -> &'static str {
     let https = match auth.cookie_secure() {
         CookieSecure::Always => true,
         CookieSecure::Never => false,
-        CookieSecure::Auto => headers
-            .get("x-forwarded-proto")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.split(',').next())
-            .is_some_and(|v| v.trim().eq_ignore_ascii_case("https")),
+        CookieSecure::Auto => {
+            https
+                || headers
+                    .get("x-forwarded-proto")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.split(',').next())
+                    .is_some_and(|v| v.trim().eq_ignore_ascii_case("https"))
+        }
     };
     if https {
         "; Secure"
@@ -225,14 +255,18 @@ fn secure_attr(auth: &Authenticator, headers: &HeaderMap) -> &'static str {
     }
 }
 
-async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
+async fn logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    transport: Option<Extension<tls::Transport>>,
+) -> Response {
     if let Some(t) = session_token(&headers) {
         state.auth.logout(&t);
     }
     let cookie = format!(
         "{}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0{}",
         auth::COOKIE_NAME,
-        secure_attr(&state.auth, &headers)
+        secure_attr(&state.auth, &headers, transport.is_some_and(|t| t.https))
     );
     let mut resp = Json(serde_json::json!({"ok": true})).into_response();
     resp.headers_mut()
@@ -252,10 +286,11 @@ async fn offer(
     headers: HeaderMap,
     Json(req): Json<SdpMessage>,
 ) -> Response {
-    if let Err(r) = require_auth(&state, &headers) {
-        return r;
-    }
-    match state.signaling.handle_offer(req.sdp).await {
+    let sign_in = match session_token(&headers).and_then(|t| state.auth.sign_in(&t)) {
+        Some(s) => s,
+        None => return error(StatusCode::UNAUTHORIZED, "not logged in"),
+    };
+    match state.signaling.handle_offer(req.sdp, sign_in).await {
         Ok(sdp) => Json(SdpMessage { sdp }).into_response(),
         Err(e) => {
             tracing::warn!("offer rejected: {e}");
@@ -272,6 +307,13 @@ async fn asset(Path(path): Path<String>) -> Response {
     serve_asset(&path)
 }
 
+/// Everything the web client and Dalker Settings load comes from the agent itself. Frames only
+/// from the same origin: the viewer shows the settings page in its "AI agents" panel.
+pub const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; \
+     style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; \
+     frame-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'; \
+     object-src 'none'";
+
 fn serve_asset(path: &str) -> Response {
     match Assets::get(path) {
         Some(file) => {
@@ -281,6 +323,12 @@ fn serve_asset(path: &str) -> Response {
                     (header::CONTENT_TYPE, mime.as_ref().to_owned()),
                     (header::CACHE_CONTROL, "no-cache".to_owned()),
                     (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+                    (
+                        header::CONTENT_SECURITY_POLICY,
+                        CONTENT_SECURITY_POLICY.to_owned(),
+                    ),
+                    (header::X_FRAME_OPTIONS, "SAMEORIGIN".to_owned()),
+                    (header::REFERRER_POLICY, "no-referrer".to_owned()),
                 ],
                 file.data.into_owned(),
             )
@@ -289,6 +337,9 @@ fn serve_asset(path: &str) -> Response {
         None => error(StatusCode::NOT_FOUND, "not found"),
     }
 }
+
+#[cfg(test)]
+mod i18n_tests;
 
 #[cfg(test)]
 mod tests {
@@ -300,7 +351,11 @@ mod tests {
 
     struct EchoSignaling;
     impl SignalingHandler for EchoSignaling {
-        fn handle_offer(&self, offer_sdp: String) -> BoxFuture<Result<String, String>> {
+        fn handle_offer(
+            &self,
+            offer_sdp: String,
+            _sign_in: SignIn,
+        ) -> BoxFuture<Result<String, String>> {
             Box::pin(async move { Ok(format!("answer-to:{offer_sdp}")) })
         }
         fn info(&self) -> serde_json::Value {
@@ -483,6 +538,12 @@ mod tests {
             .to_str()
             .unwrap()
             .starts_with("text/html"));
+        let csp = r.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap();
+        assert!(csp.contains("frame-ancestors 'self'") && csp.contains("script-src 'self'"));
+        assert_eq!(r.headers()[header::X_FRAME_OPTIONS], "SAMEORIGIN");
+        assert_eq!(r.headers()[header::REFERRER_POLICY], "no-referrer");
         let r = app()
             .oneshot(Request::get("/app.js").body(Body::empty()).unwrap())
             .await

@@ -51,7 +51,8 @@ on your branch don't need to be polished; the pull request title is what lands o
   |---|---|
   | `fmt` | `cargo fmt --all --check` |
   | `licenses` | `cargo deny check licenses`: every dependency's license must be allowed in `deny.toml` |
-  | `Linux`, `Windows` | the version check, `cargo build`, `cargo clippy` and `cargo test` for the workspace |
+  | `advisories` | `cargo deny check advisories`: no dependency with a known vulnerability (RustSec), unless `deny.toml` lists it as reviewed |
+  | `Linux`, `Windows` | the version check, `cargo build`, `cargo clippy` (warnings fail it) and `cargo test` for the workspace |
   | `pr-rules` | the branch name, title, `Fixes #N` line and Contributor Agreement box; it also adds the label |
 
 - **Merging:** pull requests into `develop` are squash-merged by the maintainer. A release

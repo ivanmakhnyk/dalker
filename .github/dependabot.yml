@@ -12,6 +12,10 @@ updates:
       # webrtc 0.20+ is a rewrite without a single-port UDP mux yet; stay on 0.17.x (#69).
       - dependency-name: webrtc
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # zbus 6 removed zbus::blocking, which the Linux backends use; stay on 5.x until they
+      # move to the async API (#89).
+      - dependency-name: zbus
+        update-types: ["version-update:semver-major"]
     groups:
       cargo-minor-and-patch:
         update-types: [minor, patch]

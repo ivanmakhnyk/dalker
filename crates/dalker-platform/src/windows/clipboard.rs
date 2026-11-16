@@ -8,7 +8,7 @@
 use std::thread::sleep;
 use std::time::Duration;
 
-use dalker_core::{Clipboard, ClipboardError};
+use dalker_core::{Clipboard, ClipboardError, PlatformError};
 use windows::core::w;
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
 use windows::Win32::System::DataExchange::{
@@ -34,7 +34,7 @@ pub struct WinClipboard {
 unsafe impl Send for WinClipboard {}
 
 impl WinClipboard {
-    pub fn new() -> Result<Self, String> {
+    pub fn new() -> Result<Self, PlatformError> {
         let hwnd = unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE(0),
@@ -51,7 +51,7 @@ impl WinClipboard {
                 None,
             )
         }
-        .map_err(|e| format!("clipboard window: {e}"))?;
+        .map_err(|e| PlatformError::Fatal(format!("clipboard window: {e}")))?;
         Ok(Self { hwnd })
     }
 

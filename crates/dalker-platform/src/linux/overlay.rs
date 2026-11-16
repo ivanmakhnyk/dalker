@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use dalker_core::ViewerIndicator;
+use dalker_core::{PlatformError, ViewerIndicator};
 use x11rb::connection::Connection;
 use x11rb::protocol::shape::{self, ConnectionExt as _, SK, SO};
 use x11rb::protocol::xproto::{
@@ -25,28 +25,32 @@ const TICK: Duration = Duration::from_millis(100);
 /// events pass straight through to the windows below.
 pub struct BorderOverlay {
     active: Arc<AtomicBool>,
+    shown: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl BorderOverlay {
-    pub fn new() -> Result<Self, String> {
+    pub fn new() -> Result<Self, PlatformError> {
         let active = Arc::new(AtomicBool::new(false));
+        let shown = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
-        let (a, s) = (Arc::clone(&active), Arc::clone(&stop));
+        let (a, v, s) = (Arc::clone(&active), Arc::clone(&shown), Arc::clone(&stop));
         let thread = std::thread::Builder::new()
             .name("dalker-border".into())
-            .spawn(move || run(a, s, ready_tx))
-            .map_err(|e| format!("spawn overlay thread: {e}"))?;
+            .spawn(move || run(a, v, s, ready_tx))
+            .map_err(|e| PlatformError::Fatal(format!("spawn overlay thread: {e}")))?;
         match ready_rx.recv_timeout(Duration::from_secs(5)) {
             Ok(Ok(())) => Ok(Self {
                 active,
+                shown,
                 stop,
                 thread: Some(thread),
             }),
-            Ok(Err(e)) => Err(e),
-            Err(_) => Err("overlay thread did not start".into()),
+            // Retried: the X server may not be up yet.
+            Ok(Err(e)) => Err(PlatformError::Transient(e)),
+            Err(_) => Err(PlatformError::Fatal("overlay thread did not start".into())),
         }
     }
 }
@@ -58,6 +62,10 @@ impl ViewerIndicator for BorderOverlay {
 
     fn set_active(&self, active: bool) {
         self.active.store(active, Ordering::SeqCst);
+    }
+
+    fn shown(&self) -> bool {
+        self.shown.load(Ordering::SeqCst)
     }
 }
 
@@ -176,7 +184,12 @@ fn setup() -> Result<Setup, String> {
     })
 }
 
-fn run(active: Arc<AtomicBool>, stop: Arc<AtomicBool>, ready: mpsc::Sender<Result<(), String>>) {
+fn run(
+    active: Arc<AtomicBool>,
+    visible: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+    ready: mpsc::Sender<Result<(), String>>,
+) {
     let Setup {
         conn,
         win,
@@ -201,9 +214,20 @@ fn run(active: Arc<AtomicBool>, stop: Arc<AtomicBool>, ready: mpsc::Sender<Resul
             let _ = if want {
                 conn.map_window(win)
             } else {
+                visible.store(false, Ordering::SeqCst);
                 conn.unmap_window(win)
             };
             shown = want;
+        } else if shown && !visible.load(Ordering::SeqCst) {
+            // Mapped on the previous tick and the request went out with that flush: count it as
+            // visible once the X server has answered a round trip after it.
+            if conn
+                .get_input_focus()
+                .map(|c| c.reply().is_ok())
+                .unwrap_or(false)
+            {
+                visible.store(true, Ordering::SeqCst);
+            }
         }
         if shown {
             // Stay above everything, including other override-redirect windows.
@@ -212,7 +236,7 @@ fn run(active: Arc<AtomicBool>, stop: Arc<AtomicBool>, ready: mpsc::Sender<Resul
         }
         // Follow resolution changes about once a second.
         tick = tick.wrapping_add(1);
-        if tick % 10 == 0 {
+        if tick.is_multiple_of(10) {
             if let Ok(Ok(g)) = conn.get_geometry(root).map(|c| c.reply()) {
                 if (g.width, g.height) != size && g.width > 0 && g.height > 0 {
                     size = (g.width, g.height);
@@ -229,6 +253,7 @@ fn run(active: Arc<AtomicBool>, stop: Arc<AtomicBool>, ready: mpsc::Sender<Resul
         let _ = conn.flush();
         std::thread::sleep(TICK);
     }
+    visible.store(false, Ordering::SeqCst);
     let _ = conn.destroy_window(win);
     let _ = conn.flush();
 }
